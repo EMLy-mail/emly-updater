@@ -26,9 +26,11 @@ type Logger struct {
 	ev   *eventlog.Log // nil when the event source is unavailable (run mode without install)
 }
 
-// New creates the file logger (5 MB × 5 rotated files). With console=true
+// New creates the file logger (5 MB × 5 rotated files). When exeLogPath is
+// non-empty a second plain log is also written next to the executable (useful
+// for on-site diagnostics without accessing ProgramData). With console=true
 // (foreground `run` mode) lines are mirrored to stdout at debug level.
-func New(logDir string, console bool) *Logger {
+func New(logDir string, exeLogPath string, console bool) *Logger {
 	rolling := &lumberjack.Logger{
 		Filename:   filepath.Join(logDir, "updater.log"),
 		MaxSize:    5, // megabytes
@@ -36,9 +38,17 @@ func New(logDir string, console bool) *Logger {
 	}
 
 	var w io.Writer = rolling
+	if exeLogPath != "" {
+		exeLog := &lumberjack.Logger{
+			Filename:   exeLogPath,
+			MaxSize:    5,
+			MaxBackups: 3,
+		}
+		w = io.MultiWriter(rolling, exeLog)
+	}
 	level := slog.LevelInfo
 	if console {
-		w = io.MultiWriter(rolling, os.Stdout)
+		w = io.MultiWriter(w, os.Stdout)
 		level = slog.LevelDebug
 	}
 
@@ -74,12 +84,12 @@ func (l *Logger) Error(msg string, kv ...any) { l.file.Error(msg, kv...) }
 
 // Event IDs grouped per area, so Event Viewer filtering stays meaningful.
 const (
-	EventGeneric       = 1
-	EventUpdateFound   = 100
-	EventInstallOK     = 200
-	EventInstallFailed = 201
-	EventForcedKill    = 300
-	EventAssocRepaired = 400
+	EventGeneric        = 1
+	EventUpdateFound    = 100
+	EventInstallOK      = 200
+	EventInstallFailed  = 201
+	EventForcedKill     = 300
+	EventAssocRepaired  = 400
 	EventSourceFallback = 500
 )
 

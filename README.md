@@ -10,6 +10,16 @@ everything else (config, state, logs, download cache) under
 `C:\ProgramData\EMLyUpdater`, which survives EMLy uninstall/reinstall and is
 never touched by EMLy's own installer.
 
+## Requirements
+
+| Requirement | Detail |
+|---|---|
+| **OS** | Windows 10 / Windows Server 2016 or later (64-bit) |
+| **Privileges** | `install` / `uninstall` / `start` / `stop` require administrator rights; the service itself runs as `LocalSystem` |
+| **EMLy** | `C:\3gIT\EMLy\config.ini` must exist and contain `GUI_SEMVER` for version detection (configurable via `emlyConfigFile`) |
+| **Network** | HTTPS access to the external manifest URL, **or** LAN access to an internal HTTP manifest, **or** access to a UNC share — at least one source must be reachable |
+| **Build-time** | Go 1.22+ and [Inno Setup 6](https://jrsoftware.org/isdl.php) (only to compile the installer; not needed for the service itself) |
+
 ## How an update is applied
 
 | EMLy state | Behavior |
@@ -39,17 +49,92 @@ manifest at `<uncRoot>\version.json`, `stableDownload`/`betaDownload` are
 filenames relative to the share root, and `sha256Checksums` is keyed by
 filename. HTTP manifests key checksums by version and carry full download URLs.
 
+## Installation
+
+### Via Installer (recommended)
+
+1. Download `EMLyUpdater_Installer_<version>.exe` from the release or build it (see [Build](#build)).
+2. Run as administrator (or deploy silently via GPO/Intune/SCCM):
+
+   ```
+   EMLyUpdater_Installer_<version>.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+   ```
+
+The installer:
+- Places the binary in `C:\Program Files\EMLyUpdater\`
+- Calls `install` (seeds `config.ini`, registers the Windows service and Event Log source)
+- Starts the service immediately
+- On upgrade: gracefully stops the running service first, replaces the binary, restarts
+
+**Uninstall** via Add/Remove Programs or:
+```
+EMLyUpdater_Installer_<version>.exe /VERYSILENT /UNINSTALL
+```
+`C:\ProgramData\EMLyUpdater` (config, state, logs) is **kept** intentionally.
+
+### Manual (admin PowerShell)
+
+```powershell
+Copy-Item .\build\bin\emly-updater.exe "C:\Program Files\EMLyUpdater\" -Force
+& "C:\Program Files\EMLyUpdater\emly-updater.exe" install
+& "C:\Program Files\EMLyUpdater\emly-updater.exe" start
+```
+
 ## Configuration
 
-`C:\ProgramData\EMLyUpdater\config.ini` — created from embedded defaults on
-first `install`/start if absent (see `internal/config/config.default.ini`).
-Update channel follows each machine's `[EMLy].GUI_RELEASE_CHANNEL` unless
-`channelOverride` forces `stable`/`beta` fleet-wide.
+`C:\ProgramData\EMLyUpdater\config.ini` is created from embedded defaults on
+the first `install` or service start (see [`internal/config/config.default.ini`](internal/config/config.default.ini)).
+Edits survive upgrades and uninstall. Changes take effect on the next poll cycle.
+
+### `[updater]`
+
+| Key | Default | Description |
+|---|---|---|
+| `emlyInstallDir` | `C:\3gIT\EMLy` | Directory containing EMLy's executable |
+| `emlyExeName` | `EMLy.exe` | EMLy executable filename |
+| `emlyConfigFile` | `C:\3gIT\EMLy\config.ini` | EMLy config read for version, channel, language |
+| `pollIntervalMinutes` | `30` | How often to check for updates |
+| `channelOverride` | _(empty)_ | Leave empty to follow each machine's `GUI_RELEASE_CHANNEL`; set `stable` or `beta` to force fleet-wide |
+
+### `[source]`
+
+| Key | Default | Description |
+|---|---|---|
+| `primary` | `external` | `external` (public HTTPS) or `internal` (LAN HTTP) |
+| `externalManifestURL` | (API URL) | Required when `primary = external` |
+| `internalManifestURL` | _(empty)_ | Required when `primary = internal` |
+| `uncRoot` | `\\dc-rm2\logo\update` | UNC fallback share; `version.json` lives here |
+| `userAgent` | _(empty)_ | Optional `User-Agent` header sent on HTTP requests |
+| `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
+
+### `[criticalUpdate]`
+
+| Key | Default | Description |
+|---|---|---|
+| `criticalWarningEnabled` | `true` | Show a countdown dialog in the user's session before a forced close |
+| `criticalWarningSeconds` | `30` | Countdown duration; warning language follows EMLy's `LANGUAGE` key (fallback `en`) |
+
+### `[fileAssociations]`
+
+| Key | Default | Description |
+|---|---|---|
+| `progIdEml` | `EMLy.EML` | ProgID for `.eml` files; self-healed after every install |
+| `progIdMsg` | `EMLy.MSG` | ProgID for `.msg` files |
+
+## Deployment
+
+### GPO / Intune / SCCM
+
+Deploy the installer silently to domain-joined machines. The service registers
+itself as `EMLyUpdater`, auto-start, `LocalSystem`. No user session is required
+for the service to function. Post-deployment, push a customised `config.ini` to
+`C:\ProgramData\EMLyUpdater\` via a File-based GPO preference or Intune
+deployment script (the file is never overwritten by upgrades).
 
 ## Build
 
 ```
-go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
+go build -ldflags "-s -w" -o build\bin\emly-updater.exe .
 go test ./...
 ```
 

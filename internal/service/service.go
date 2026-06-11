@@ -103,8 +103,11 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	}
 
 	// 2) Normal poll: manifest via primary source, UNC as fallback.
+	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
+	httpSrc.UserAgent = u.Cfg.UserAgent
+	httpSrc.APIKey = u.Cfg.APIKey
 	resolver := &source.Resolver{
-		Primary:  source.NewHTTPSource(u.Cfg.PrimaryManifestURL()),
+		Primary:  httpSrc,
 		Fallback: source.NewUNCSource(u.Cfg.UNCRoot),
 		Logf: func(format string, args ...any) {
 			u.Log.Info(fmt.Sprintf(format, args...))

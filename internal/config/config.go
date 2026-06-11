@@ -37,6 +37,8 @@ type Config struct {
 	ExternalManifestURL string
 	InternalManifestURL string
 	UNCRoot             string
+	UserAgent           string // optional User-Agent header for HTTP requests
+	APIKey              string // optional X-Api-Key header for HTTP requests
 
 	// [fileAssociations]
 	ProgIDEml string
@@ -96,6 +98,8 @@ func Load(path string) (*Config, error) {
 		ExternalManifestURL: strings.TrimSpace(src.Key("externalManifestURL").String()),
 		InternalManifestURL: strings.TrimSpace(src.Key("internalManifestURL").String()),
 		UNCRoot:             strings.TrimSpace(src.Key("uncRoot").String()),
+		UserAgent:           strings.TrimSpace(src.Key("userAgent").String()),
+		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
 
 		ProgIDEml: fa.Key("progIdEml").MustString("EMLy.EML"),
 		ProgIDMsg: fa.Key("progIdMsg").MustString("EMLy.MSG"),

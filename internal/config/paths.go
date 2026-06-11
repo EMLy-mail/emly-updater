@@ -34,6 +34,18 @@ func DownloadsDir() string { return filepath.Join(DataDir(), "downloads") }
 // LogsDir returns the directory for the rolling file log and installer logs.
 func LogsDir() string { return filepath.Join(DataDir(), "logs") }
 
+// ExeDir returns the directory that contains the running executable.
+func ExeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "."
+	}
+	return filepath.Dir(exe)
+}
+
+// ExeLogPath returns the path of the local log file written next to the exe.
+func ExeLogPath() string { return filepath.Join(ExeDir(), "updater.log") }
+
 // EnsureDirs creates the ProgramData directory tree if it does not exist.
 func EnsureDirs() error {
 	for _, dir := range []string{DataDir(), DownloadsDir(), LogsDir()} {

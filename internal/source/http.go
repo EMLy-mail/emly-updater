@@ -16,6 +16,8 @@ import (
 type HTTPSource struct {
 	ManifestURL string
 	Client      *http.Client
+	UserAgent   string // optional; sent as User-Agent header when non-empty
+	APIKey      string // optional; sent as X-Api-Key header when non-empty
 }
 
 // NewHTTPSource builds an HTTPSource with a sensibly timeouted client.
@@ -33,6 +35,16 @@ func (s *HTTPSource) Name() string {
 	return fmt.Sprintf("http(%s)", s.ManifestURL)
 }
 
+// applyHeaders sets the optional User-Agent and X-Api-Key headers on req.
+func (s *HTTPSource) applyHeaders(req *http.Request) {
+	if s.UserAgent != "" {
+		req.Header.Set("User-Agent", s.UserAgent)
+	}
+	if s.APIKey != "" {
+		req.Header.Set("X-Api-Key", s.APIKey)
+	}
+}
+
 func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, error) {
 	// Bound the manifest request tighter than the shared client timeout:
 	// a manifest is a few KB and a hung endpoint should fail over to UNC fast.
@@ -43,6 +55,7 @@ func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, err
 	if err != nil {
 		return nil, fmt.Errorf("invalid manifest URL: %w", err)
 	}
+	s.applyHeaders(req)
 
 	resp, err := s.Client.Do(req)
 	if err != nil {
@@ -79,6 +92,7 @@ func (s *HTTPSource) FetchSetup(ctx context.Context, t manifest.Target, destPath
 	if err != nil {
 		return fmt.Errorf("invalid download URL %q: %w", t.DownloadRef, err)
 	}
+	s.applyHeaders(req)
 
 	resp, err := s.Client.Do(req)
 	if err != nil {

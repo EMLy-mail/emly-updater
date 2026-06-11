@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"time"
 	"unsafe"
 
@@ -89,7 +90,7 @@ func runService() {
 		os.Exit(1)
 	}
 
-	log := logging.New(config.LogsDir(), false)
+	log := logging.New(config.LogsDir(), config.ExeLogPath(), false)
 	log.AttachEventLog()
 	defer log.Close()
 
@@ -121,7 +122,7 @@ func cmdRun() error {
 	}
 	defer release()
 
-	log := logging.New(config.LogsDir(), true)
+	log := logging.New(config.LogsDir(), config.ExeLogPath(), true)
 	log.AttachEventLog() // best-effort: works only after `install` registered the source
 	defer log.Close()
 
@@ -240,7 +241,19 @@ func cmdInstall() error {
 // cmdUninstall stops and deletes the service and removes the Event Log
 // source. ProgramData (config, state, logs, downloads) is deliberately left
 // behind so a later re-install resumes where it left off.
+// The local log file (next to the exe) is copied to the ProgramData logs
+// directory before the InnoSetup uninstaller can delete it.
 func cmdUninstall() error {
+	// Preserve the exe-dir log to ProgramData before InnoSetup can delete it.
+	src := config.ExeLogPath()
+	if data, err := os.ReadFile(src); err == nil {
+		_ = os.MkdirAll(config.LogsDir(), 0755)
+		dst := filepath.Join(config.LogsDir(), "updater-final.log")
+		if wErr := os.WriteFile(dst, data, 0644); wErr == nil {
+			fmt.Printf("log saved to %s\n", dst)
+		}
+	}
+
 	_ = cmdStop() // best-effort; service may not be running
 
 	m, err := mgr.Connect()

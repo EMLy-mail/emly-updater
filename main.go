@@ -36,7 +36,7 @@ import (
 
 const (
 	displayName = "EMLy Updater Service"
-	description = "Keeps the EMLy email viewer up to date: polls the update manifest, verifies and installs new releases silently."
+	description = "Bootstrapper e updater per EMLy, il visualizzatore EML/MSG di 3gIT. "
 )
 
 func main() {

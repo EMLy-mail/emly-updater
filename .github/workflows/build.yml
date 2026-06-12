@@ -1,0 +1,39 @@
+name: Build EMLy Updater
+
+on:
+  push:
+    branches: [stable]
+  pull_request:
+    branches: [stable]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: "stable"
+          cache: true
+
+      - name: Install InnoSetup
+        run: choco install innosetup -y
+
+      - name: Build EMLy Updater
+        run: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
+
+      - name: Compile installer
+        run: iscc installer\installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: EMLy-Updater-Installer
+          path: installer\Output\EMLyUpdater_Installer_*.exe
+          if-no-files-found: error

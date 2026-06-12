@@ -64,7 +64,7 @@ func (r *Resolver) Resolve(ctx context.Context) (Source, *manifest.Manifest, err
 		}
 	}
 
-	// Fallback is a file read on the share — a single attempt is enough.
+	// Fallback is a file read on the share - a single attempt is enough.
 	m, err := r.Fallback.FetchManifest(ctx)
 	if err != nil {
 		return nil, nil, fmt.Errorf("primary source failed (%v) and UNC fallback failed: %w", lastErr, err)

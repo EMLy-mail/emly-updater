@@ -21,7 +21,7 @@ WizardStyle=modern
 Source: "..\build\{#ApplicationName}.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; No config file is shipped: the `install` subcommand below seeds
 ; C:\ProgramData\EMLyUpdater\config.ini from defaults embedded in the binary,
-; only when the file does not exist yet — per-machine tweaks survive upgrades
+; only when the file does not exist yet - per-machine tweaks survive upgrades
 ; and the updater's uninstall (requirement 8).
 
 [Run]

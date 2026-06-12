@@ -1,6 +1,6 @@
 // Package notify shows the pre-kill warning for critical updates via
 // WTSSendMessageW. Called from the SYSTEM service, the message box renders
-// inside the active console user's session — no helper process, no toast
+// inside the active console user's session - no helper process, no toast
 // registration.
 package notify
 
@@ -34,11 +34,11 @@ const (
 // warning text per language; %d is the countdown in seconds.
 var messages = map[string]struct{ title, body string }{
 	"en": {
-		title: "EMLy — Critical Update",
+		title: "EMLy - Critical Update",
 		body:  "EMLy will close in %d seconds to install a critical update.\n\nPlease save your work.",
 	},
 	"it": {
-		title: "EMLy — Aggiornamento critico",
+		title: "EMLy - Aggiornamento critico",
 		body:  "EMLy verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
 	},
 }
@@ -46,7 +46,7 @@ var messages = map[string]struct{ title, body string }{
 // WarnCriticalUpdate shows the countdown warning in the active console
 // session and returns true when a box was actually displayed. It does NOT
 // sleep: the box is sent with bWait=FALSE and auto-dismisses after `seconds`,
-// while the caller owns the full countdown — that way the promised N seconds
+// while the caller owns the full countdown - that way the promised N seconds
 // elapse even if the user clicks OK immediately.
 //
 // Returns false (warn skipped) when no console session is active: nobody is

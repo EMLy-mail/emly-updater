@@ -1,5 +1,5 @@
 // Package process detects, waits on, and terminates EMLy instances using the
-// toolhelp snapshot API and kernel object waits — no busy-polling of the
+// toolhelp snapshot API and kernel object waits - no busy-polling of the
 // process list while EMLy stays open.
 package process
 
@@ -90,7 +90,7 @@ func WaitForExit(ctx context.Context, exeName string) error {
 
 		// WaitForMultipleObjects tops out at 64 handles; one slot is reserved
 		// for the cancel event. More than 63 EMLy instances is implausible,
-		// but cap defensively — the survivors are picked up on re-snapshot.
+		// but cap defensively - the survivors are picked up on re-snapshot.
 		if len(pids) > 63 {
 			pids = pids[:63]
 		}
@@ -105,7 +105,7 @@ func WaitForExit(ctx context.Context, exeName string) error {
 		}
 
 		if len(handles) == 1 {
-			// Every OpenProcess failed — the instances raced to exit between
+			// Every OpenProcess failed - the instances raced to exit between
 			// snapshot and open. Loop to confirm via a fresh snapshot.
 			continue
 		}
@@ -125,7 +125,7 @@ func WaitForExit(ctx context.Context, exeName string) error {
 	}
 }
 
-// TerminateAll force-kills every exeName instance (no graceful IPC — this is
+// TerminateAll force-kills every exeName instance (no graceful IPC - this is
 // the critical-update path) and waits briefly for each to disappear.
 // Returns how many processes were terminated.
 func TerminateAll(exeName string) (int, error) {

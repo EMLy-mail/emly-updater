@@ -1,4 +1,4 @@
-# EMLyUpdater — Agent Instructions
+# EMLyUpdater - Agent Instructions
 
 ## Build & Test
 
@@ -14,7 +14,7 @@ go test ./...
 iscc installer\installer.iss
 ```
 
-- **Windows-only** — the binary uses `golang.org/x/sys/windows`; do not attempt to build or test on Linux/macOS.
+- **Windows-only** - the binary uses `golang.org/x/sys/windows`; do not attempt to build or test on Linux/macOS.
 - All tests are pure-Go (no Windows API calls); `go test ./...` works in CI without admin rights.
 
 ## Architecture
@@ -39,16 +39,16 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 
 ## Key Conventions
 
-- **Config is never shipped** — `config.default.ini` is embedded via `//go:embed` and written to `%ProgramData%\EMLyUpdater\config.ini` only when the file is absent. Per-machine edits survive upgrades.
-- **ProgramData survives uninstall** — `cmdUninstall` deletes the service but never removes `%ProgramData%\EMLyUpdater`. The InnoSetup `[UninstallRun]` block does the same.
-- **Exe-dir log is preserved on uninstall** — `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
-- **SHA256 is mandatory** — a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
-- **Atomic state writes** — `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
-- **Singleton guard** — a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
+- **Config is never shipped** - `config.default.ini` is embedded via `//go:embed` and written to `%ProgramData%\EMLyUpdater\config.ini` only when the file is absent. Per-machine edits survive upgrades.
+- **ProgramData survives uninstall** - `cmdUninstall` deletes the service but never removes `%ProgramData%\EMLyUpdater`. The InnoSetup `[UninstallRun]` block does the same.
+- **Exe-dir log is preserved on uninstall** - `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
+- **SHA256 is mandatory** - a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
+- **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
+- **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
 
 ## Configuration Reference
 
-`%ProgramData%\EMLyUpdater\config.ini` — full annotated defaults in [internal/config/config.default.ini](internal/config/config.default.ini).
+`%ProgramData%\EMLyUpdater\config.ini` - full annotated defaults in [internal/config/config.default.ini](internal/config/config.default.ini).
 
 | Key | Section | Default | Notes |
 |-----|---------|---------|-------|
@@ -95,7 +95,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 
 | File | Content |
 |------|---------|
-| `%ProgramData%\EMLyUpdater\logs\updater.log` | Rolling 5 MB × 5 — all events |
+| `%ProgramData%\EMLyUpdater\logs\updater.log` | Rolling 5 MB × 5 - all events |
 | `<ExeDir>\updater.log` | Same events, kept next to exe for on-site access |
 | `%ProgramData%\EMLyUpdater\logs\emly-install-<ver>.log` | InnoSetup silent install log |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
@@ -104,6 +104,6 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 ## Common Pitfalls
 
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs).
-- **HTTP headers**: set them in `HTTPSource` only — `UNCSource` and the `Resolver` are header-agnostic.
-- **`logging.New` signature**: `(logDir, exeLogPath, console)` — passing an empty string for `exeLogPath` disables the exe-side sink.
+- **HTTP headers**: set them in `HTTPSource` only - `UNCSource` and the `Resolver` are header-agnostic.
+- **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.

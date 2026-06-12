@@ -71,7 +71,7 @@ func (u *Updater) RunLoop(ctx context.Context) {
 func (u *Updater) Cycle(ctx context.Context) error {
 	emly := u.Cfg.ResolveEMLy()
 	if emly.FreshInstall {
-		u.Log.Info("EMLy config.ini not found — fresh-install mode",
+		u.Log.Info("EMLy config.ini not found - fresh-install mode",
 			"assumedVersion", emly.InstalledVersion, "channel", emly.Channel)
 	}
 
@@ -200,7 +200,7 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 			u.Log.WarnEvent(logging.EventForcedKill, "terminated EMLy for forced update",
 				"instances", killed, "target", p.Version)
 		} else {
-			u.Log.Info("EMLy is running and update is not forced — waiting for exit", "target", p.Version)
+			u.Log.Info("EMLy is running and update is not forced - waiting for exit", "target", p.Version)
 			if err := process.WaitForExit(ctx, exe); err != nil {
 				// Context cancelled (service stop) or wait failure: the
 				// pending entry stays persisted and resumes next start.

@@ -16,7 +16,7 @@ import (
 const ManifestFileName = "version.json"
 
 // UNCSource reads the manifest and the setup from a network share (or any
-// directory path — handy for testing with a local folder).
+// directory path - handy for testing with a local folder).
 //
 // Share conventions, inherited from EMLy's in-app updater: the manifest's
 // stableDownload/betaDownload fields hold *filenames relative to the share

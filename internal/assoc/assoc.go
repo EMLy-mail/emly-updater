@@ -2,7 +2,7 @@
 // EMLy's installer writes to HKLM\Software\Classes. The installer (running as
 // SYSTEM via this service) normally maintains them; this is the backstop for
 // drifted or deleted keys. UserChoice/default-handler manipulation is
-// deliberately out of scope — no other app claims these extensions on the
+// deliberately out of scope - no other app claims these extensions on the
 // target machines.
 package assoc
 
@@ -16,8 +16,8 @@ import (
 )
 
 var (
-	shell32              = windows.NewLazySystemDLL("shell32.dll")
-	procSHChangeNotify   = shell32.NewProc("SHChangeNotify")
+	shell32            = windows.NewLazySystemDLL("shell32.dll")
+	procSHChangeNotify = shell32.NewProc("SHChangeNotify")
 )
 
 const (

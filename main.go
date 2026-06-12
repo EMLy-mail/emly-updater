@@ -1,7 +1,7 @@
 // EMLyUpdater is a standalone Windows service (LocalSystem, auto-start) that
 // keeps EMLy up to date on domain-joined machines: it polls an update
 // manifest (HTTP primary, UNC fallback), downloads and SHA256-verifies the
-// InnoSetup installer, and applies it silently — immediately when EMLy is
+// InnoSetup installer, and applies it silently - immediately when EMLy is
 // closed, on exit when it is open, or force-killing it for critical updates.
 //
 // Subcommands:
@@ -109,7 +109,7 @@ func runService() {
 	log.Info("EMLyUpdater service stopped")
 }
 
-// cmdRun executes the update loop in the foreground with console logging —
+// cmdRun executes the update loop in the foreground with console logging -
 // the debug path; Ctrl+C stops it cleanly.
 func cmdRun() error {
 	if err := config.EnsureDirs(); err != nil {
@@ -232,7 +232,7 @@ func cmdInstall() error {
 
 	if err := eventlog.InstallAsEventCreate(service.Name,
 		eventlog.Error|eventlog.Warning|eventlog.Info); err != nil {
-		// Re-installs hit "already exists" — that is fine.
+		// Re-installs hit "already exists" - that is fine.
 		fmt.Printf("note: event log source not (re)registered: %v\n", err)
 	}
 	return nil

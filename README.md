@@ -17,7 +17,7 @@ never touched by EMLy's own installer.
 | **OS** | Windows 10 / Windows Server 2016 or later (64-bit) |
 | **Privileges** | `install` / `uninstall` / `start` / `stop` require administrator rights; the service itself runs as `LocalSystem` |
 | **EMLy** | `C:\3gIT\EMLy\config.ini` must exist and contain `GUI_SEMVER` for version detection (configurable via `emlyConfigFile`) |
-| **Network** | HTTPS access to the external manifest URL, **or** LAN access to an internal HTTP manifest, **or** access to a UNC share — at least one source must be reachable |
+| **Network** | HTTPS access to the external manifest URL, **or** LAN access to an internal HTTP manifest, **or** access to a UNC share - at least one source must be reachable |
 | **Build-time** | Go 1.22+ and [Inno Setup 6](https://jrsoftware.org/isdl.php) (only to compile the installer; not needed for the service itself) |
 
 ## How an update is applied

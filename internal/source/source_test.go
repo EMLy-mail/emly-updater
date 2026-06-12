@@ -13,7 +13,7 @@ import (
 
 func uncManifest() *manifest.Manifest {
 	// Share manifests carry filenames as download refs and key checksums by
-	// filename — the convention EMLy's in-app updater established.
+	// filename - the convention EMLy's in-app updater established.
 	return &manifest.Manifest{
 		StableVersion:  "1.7.3",
 		BetaVersion:    "1.7.5",
@@ -89,7 +89,7 @@ func TestHTTPResolveTargetVersionKeyed(t *testing.T) {
 }
 
 func TestUNCFetchManifestAndSetup(t *testing.T) {
-	// A local directory stands in for the share — same code path.
+	// A local directory stands in for the share - same code path.
 	root := t.TempDir()
 	manifestJSON := `{"stableVersion":"1.0.0","stableDownload":"setup.exe","sha256Checksums":{"setup.exe":"x"}}`
 	if err := os.WriteFile(filepath.Join(root, ManifestFileName), []byte("\xEF\xBB\xBF"+manifestJSON), 0644); err != nil {

@@ -15,6 +15,7 @@ import (
 	"emlyupdater/internal/download"
 	"emlyupdater/internal/installer"
 	"emlyupdater/internal/logging"
+	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/manifest"
 	"emlyupdater/internal/notify"
 	"emlyupdater/internal/process"
@@ -31,6 +32,7 @@ type Updater struct {
 	Log       *logging.Logger
 	Store     *state.Store
 	Downloads *download.Manager
+	Machine   machineinfo.Info
 }
 
 // New builds an Updater on the standard ProgramData paths.
@@ -40,6 +42,7 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 		Log:       log,
 		Store:     &state.Store{Path: config.StatePath()},
 		Downloads: &download.Manager{Dir: config.DownloadsDir()},
+		Machine:   machineinfo.Collect(),
 	}
 }
 
@@ -106,6 +109,10 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
 	httpSrc.UserAgent = u.Cfg.UserAgent
 	httpSrc.APIKey = u.Cfg.APIKey
+	httpSrc.Hostname = u.Machine.Hostname
+	httpSrc.HWID = u.Machine.HWID
+	httpSrc.ADDomain = u.Machine.ADDomain
+	httpSrc.InternalIP = u.Machine.InternalIP
 	resolver := &source.Resolver{
 		Primary:  httpSrc,
 		Fallback: source.NewUNCSource(u.Cfg.UNCRoot),

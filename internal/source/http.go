@@ -18,6 +18,10 @@ type HTTPSource struct {
 	Client      *http.Client
 	UserAgent   string // optional; sent as User-Agent header when non-empty
 	APIKey      string // optional; sent as X-Api-Key header when non-empty
+	Hostname    string // optional; sent as X-EMLy-Hostname header when non-empty
+	HWID        string // optional; sent as X-EMLy-HWID header when non-empty
+	ADDomain    string // optional; sent as X-EMLy-ADDomain header when non-empty
+	InternalIP  string // optional; sent as X-EMLy-IntIP header when non-empty
 }
 
 // NewHTTPSource builds an HTTPSource with a sensibly timeouted client.
@@ -35,13 +39,25 @@ func (s *HTTPSource) Name() string {
 	return fmt.Sprintf("http(%s)", s.ManifestURL)
 }
 
-// applyHeaders sets the optional User-Agent and X-Api-Key headers on req.
+// applyHeaders sets the optional request headers on req.
 func (s *HTTPSource) applyHeaders(req *http.Request) {
 	if s.UserAgent != "" {
 		req.Header.Set("User-Agent", s.UserAgent)
 	}
 	if s.APIKey != "" {
 		req.Header.Set("X-Api-Key", s.APIKey)
+	}
+	if s.Hostname != "" {
+		req.Header.Set("X-EMLy-Hostname", s.Hostname)
+	}
+	if s.HWID != "" {
+		req.Header.Set("X-EMLy-HWID", s.HWID)
+	}
+	if s.ADDomain != "" {
+		req.Header.Set("X-EMLy-ADDomain", s.ADDomain)
+	}
+	if s.InternalIP != "" {
+		req.Header.Set("X-EMLy-IntIP", s.InternalIP)
 	}
 }
 

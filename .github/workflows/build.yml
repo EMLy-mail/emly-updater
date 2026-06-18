@@ -2,7 +2,7 @@ name: Build EMLy Updater
 
 on:
   push:
-    branches: [stable]
+    branches: [master]
   pull_request:
     branches: [stable]
   workflow_dispatch:

@@ -13,16 +13,24 @@ DisableProgramGroupPage=yes
 ; Service registration requires elevation; deployment runs via IT tooling
 ; (GPO/Intune) or an admin shell anyway.
 PrivilegesRequired=admin
-UninstallDisplayIcon={app}\{#ApplicationName}.exe
+UninstallDisplayIcon={app}\appicon.ico
 WizardStyle=modern
+SetupIconFile=appicon.ico
+SignTool=signtool
+SignedUninstaller=yes
 
 [Files]
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
 Source: "..\build\{#ApplicationName}.exe"; DestDir: "{app}"; Flags: ignoreversion
-; No config file is shipped: the `install` subcommand below seeds
-; C:\ProgramData\EMLyUpdater\config.ini from defaults embedded in the binary,
-; only when the file does not exist yet - per-machine tweaks survive upgrades
-; and the updater's uninstall (requirement 8).
+Source: "appicon.ico"; DestDir: "{app}"; Flags: ignoreversion
+; Nessun config.ini viene distribuito: il subcommand `install` in [Run]
+; lo scrive sempre da zero dai default embedded nel binario (il vecchio
+; config viene rimosso in [InstallDelete] prima dell'esecuzione di [Run]).
+
+[InstallDelete]
+; Rimuove il config precedente prima di [Run], così il subcommand `install`
+; lo riscrive sempre dai default embedded nel nuovo binario.
+Type: files; Name: "{commonappdata}\EMLyUpdater\config.ini"
 
 [Run]
 ; Register (or refresh, on upgrade) the auto-start LocalSystem service, the

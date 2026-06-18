@@ -28,8 +28,44 @@ jobs:
       - name: Build EMLy Updater
         run: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
 
+      - name: Decode signing certificate
+        env:
+          CODE_SIGN_PFX: ${{ secrets.CODE_SIGN_PFX }}
+        run: |
+          $bytes = [Convert]::FromBase64String("$env:CODE_SIGN_PFX")
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", $bytes)
+
+      - name: Sign EMLyUpdater.exe
+        env:
+          CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\codesign.pfx" /p "$env:CODE_SIGN_PASSWORD" `
+            /fd sha256 /tr http://timestamp.digicert.com /td sha256 build\EMLyUpdater.exe
+
       - name: Compile installer
-        run: iscc installer\installer.iss
+        env:
+          CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1).FullName
+          $sign = "$signtool sign /f `"$env:RUNNER_TEMP\codesign.pfx`" /p `"$env:CODE_SIGN_PASSWORD`" /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
+          iscc "/Ssigntool=$sign" installer\installer.iss
+
+      - name: Sign installer
+        env:
+          CODE_SIGN_PASSWORD: ${{ secrets.CODE_SIGN_PASSWORD }}
+        run: |
+          $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
+            Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1).FullName
+          $installer = (Get-ChildItem installer\Output\EMLyUpdater_Installer_*.exe | Select-Object -First 1).FullName
+          & $signtool sign /f "$env:RUNNER_TEMP\codesign.pfx" /p "$env:CODE_SIGN_PASSWORD" `
+            /fd sha256 /tr http://timestamp.digicert.com /td sha256 $installer
+
+      - name: Remove certificate
+        if: always()
+        run: Remove-Item "$env:RUNNER_TEMP\codesign.pfx" -ErrorAction SilentlyContinue
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v6

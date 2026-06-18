@@ -50,7 +50,7 @@ jobs:
         run: |
           $signtool = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe |
             Where-Object { $_.FullName -match "x64" } | Select-Object -Last 1).FullName
-          $sign = "$signtool sign /f `"$env:RUNNER_TEMP\codesign.pfx`" /p `"$env:CODE_SIGN_PASSWORD`" /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
+          $sign = "$signtool sign /f `$q$env:RUNNER_TEMP\codesign.pfx`$q /p `$q$env:CODE_SIGN_PASSWORD`$q /fd sha256 /tr http://timestamp.digicert.com /td sha256 `$f"
           iscc "/Ssigntool=$sign" installer\installer.iss
 
       - name: Sign installer

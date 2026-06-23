@@ -13,6 +13,8 @@
 //	run        run the update loop in the foreground (debug)
 //
 // Without arguments the binary expects to be launched by the SCM.
+//
+//go:generate goversioninfo -64
 package main
 
 import (

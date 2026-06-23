@@ -3,6 +3,9 @@
 ## Build & Test
 
 ```powershell
+# Generate version resources (requires goversioninfo)
+go generate
+
 # Build (output in build\bin\ or build\)
 go build -ldflags "-s -w" -o build\bin\emly-updater.exe .
 
@@ -69,9 +72,10 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 
 ### Installer (recommended)
 
-1. Build: `go build -ldflags "-s -w" -o build\bin\emly-updater.exe .`
-2. Compile `installer\installer.iss` with Inno Setup 6 → `installer\Output\EMLyUpdater_Installer_<ver>.exe`
-3. Deploy the setup via GPO / Intune / SCCM (requires admin; runs silently).
+1. Generate version resources: `go generate`
+2. Build: `go build -ldflags "-s -w" -o build\bin\emly-updater.exe .`
+3. Compile `installer\installer.iss` with Inno Setup 6 → `installer\Output\EMLyUpdater_Installer_<ver>.exe`
+4. Deploy the setup via GPO / Intune / SCCM (requires admin; runs silently).
 
 The setup:
 - Installs the binary to `%ProgramFiles%\EMLyUpdater\`

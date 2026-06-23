@@ -1,0 +1,23 @@
+{
+  "FixedFileInfo": {
+    "FileVersion": { "Major": 1, "Minor": 0, "Patch": 0, "Build": 0 },
+    "ProductVersion": { "Major": 1, "Minor": 0, "Patch": 0, "Build": 0 },
+    "FileFlagsMask": "63",
+    "FileFlags": "0",
+    "FileOS": "4",
+    "FileType": "1",
+    "FileSubtype": "0"
+  },
+  "StringFileInfo": {
+    "CompanyName": "3gIT",
+    "FileDescription": "EMLy Updater",
+    "FileVersion": "1.0.0",
+    "InternalName": "EMLyUpdater.exe",
+    "OriginalFilename": "EMLyUpdater.exe",
+    "ProductName": "EMLy Updater",
+    "ProductVersion": "1.0.0"
+  },
+  "VarFileInfo": {
+    "Translation": { "LangID": 1033, "Charset": 1200 }
+  }
+}

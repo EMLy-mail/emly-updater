@@ -19,5 +19,6 @@
   },
   "VarFileInfo": {
     "Translation": { "LangID": 1033, "Charset": 1200 }
-  }
+  },
+  "icon_path": "installer/appicon.ico"
 }

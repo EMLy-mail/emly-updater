@@ -22,6 +22,21 @@ jobs:
           go-version: "stable"
           cache: true
 
+      - name: Install goversioninfo
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+
+      - name: Generate version resources (goversioninfo)
+        shell: pwsh
+        run: |
+          $gopath = go env GOPATH
+          $gov = Join-Path $gopath 'bin\goversioninfo.exe'
+          if (-Not (Test-Path $gov)) {
+            Write-Host "goversioninfo not found at $gov; attempting to run from PATH"
+            & goversioninfo -64
+          } else {
+            & $gov -64
+          }
+
       - name: Install InnoSetup
         run: choco install innosetup -y
 

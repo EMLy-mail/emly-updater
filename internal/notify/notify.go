@@ -31,15 +31,21 @@ const (
 	noConsoleSession = 0xFFFFFFFF
 )
 
+// Message is the language-specific message shown to users.
+type Message struct {
+	Title string
+	Body  string
+}
+
 // warning text per language; %d is the countdown in seconds.
-var messages = map[string]struct{ title, body string }{
+var messages = map[string]Message{
 	"en": {
-		title: "EMLy - Critical Update",
-		body:  "EMLy will close in %d seconds to install a critical update.\n\nPlease save your work.",
+		Title: "EMLy - Critical Update",
+		Body:  "EMLy will close in %d seconds to install a critical update.\n\nPlease save your work.",
 	},
 	"it": {
-		title: "EMLy - Aggiornamento critico",
-		body:  "EMLy verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
+		Title: "EMLy - Aggiornamento critico",
+		Body:  "EMLy verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
 	},
 }
 
@@ -61,8 +67,44 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 	if !ok {
 		msg = messages["en"]
 	}
-	title := msg.title
-	body := fmt.Sprintf(msg.body, seconds)
+	title := msg.Title
+	body := fmt.Sprintf(msg.Body, seconds)
+
+	titleU16, err := windows.UTF16FromString(title)
+	if err != nil {
+		return false
+	}
+	bodyU16, err := windows.UTF16FromString(body)
+	if err != nil {
+		return false
+	}
+
+	var response uint32
+	// Title/message lengths are in BYTES, excluding the NUL terminator.
+	// bWait=FALSE: return immediately; Timeout still auto-dismisses the box.
+	ret, _, _ := procWTSSendMessage.Call(
+		wtsCurrentServerHandle,
+		session,
+		uintptr(unsafe.Pointer(&titleU16[0])),
+		uintptr((len(titleU16)-1)*2),
+		uintptr(unsafe.Pointer(&bodyU16[0])),
+		uintptr((len(bodyU16)-1)*2),
+		uintptr(mbOK|mbIconWarning|mbSetForeground|mbTopMost),
+		uintptr(seconds),
+		uintptr(unsafe.Pointer(&response)),
+		0, // bWait = FALSE
+	)
+	return ret != 0
+}
+
+func SendNotifyBox(msg Message, seconds int) bool {
+	session, _, _ := procActiveConsole.Call()
+	if uint32(session) == noConsoleSession {
+		return false
+	}
+
+	title := msg.Title
+	body := fmt.Sprintf(msg.Body, seconds)
 
 	titleU16, err := windows.UTF16FromString(title)
 	if err != nil {

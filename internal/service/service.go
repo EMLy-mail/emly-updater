@@ -207,6 +207,16 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 			u.Log.WarnEvent(logging.EventForcedKill, "terminated EMLy for forced update",
 				"instances", killed, "target", p.Version)
 		} else {
+			// Notify the user via MSGBox that EMLy will be updated after they exit, then wait for the process to exit.
+			msg := notify.Message{}
+			if emly.Language == "it" {
+				msg.Title = "EMLy - Aggiornamento sospeso"
+				msg.Body = "Un aggiornamento per EMLy è pronto per essere installato. Chiudere l'applicazione per completare l'aggiornamento."
+			} else {
+				msg.Title = "EMLy - Update Pending"
+				msg.Body = "An update for EMLy is ready to be installed. Please close the application to complete the update."
+			}
+			notify.SendNotifyBox(msg, 60)
 			u.Log.Info("EMLy is running and update is not forced - waiting for exit", "target", p.Version)
 			if err := process.WaitForExit(ctx, exe); err != nil {
 				// Context cancelled (service stop) or wait failure: the

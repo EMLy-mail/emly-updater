@@ -6,6 +6,7 @@ package notify
 
 import (
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -68,7 +69,12 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 		msg = messages["en"]
 	}
 	title := msg.Title
-	body := fmt.Sprintf(msg.Body, seconds)
+	var body string
+	if strings.Contains(msg.Body, "%") {
+		body = fmt.Sprintf(msg.Body, seconds)
+	} else {
+		body = msg.Body
+	}
 
 	titleU16, err := windows.UTF16FromString(title)
 	if err != nil {

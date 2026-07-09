@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -14,6 +15,7 @@ import (
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/download"
 	"emlyupdater/internal/installer"
+	"emlyupdater/internal/ipc"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/manifest"
@@ -33,17 +35,22 @@ type Updater struct {
 	Store     *state.Store
 	Downloads *download.Manager
 	Machine   machineinfo.Info
+	IPC       *ipc.Server
 }
 
 // New builds an Updater on the standard ProgramData paths.
 func New(cfg *config.Config, log *logging.Logger) *Updater {
-	return &Updater{
+	machine := machineinfo.Collect()
+	u := &Updater{
 		Cfg:       cfg,
 		Log:       log,
 		Store:     &state.Store{Path: config.StatePath()},
 		Downloads: &download.Manager{Dir: config.DownloadsDir()},
-		Machine:   machineinfo.Collect(),
+		Machine:   machine,
 	}
+	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
+		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
+	return u
 }
 
 // RunLoop runs update cycles until the context is cancelled. The first cycle
@@ -292,10 +299,20 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 	changes <- svc.Status{State: svc.StartPending}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
 	done := make(chan struct{})
+	wg.Add(2)
 	go func() {
-		defer close(done)
+		defer wg.Done()
 		h.Updater.RunLoop(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		h.Updater.IPC.Serve(ctx)
+	}()
+	go func() {
+		wg.Wait()
+		close(done)
 	}()
 
 	changes <- svc.Status{State: svc.Running, Accepts: accepted}

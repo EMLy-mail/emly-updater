@@ -39,6 +39,21 @@ func writeConfig(t *testing.T, content string) string {
 	return path
 }
 
+func TestLoadIPCDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.ini")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with missing file failed: %v", err)
+	}
+	if !cfg.IPCEnabled {
+		t.Error("default ipc.enabled = false, want true")
+	}
+	if cfg.IPCPipeName != "EMLyUpdater" {
+		t.Errorf("default ipc.pipeName = %q, want EMLyUpdater", cfg.IPCPipeName)
+	}
+}
+
 func TestValidationRejectsInternalWithoutURL(t *testing.T) {
 	path := writeConfig(t, "[source]\nprimary = internal\n")
 	if _, err := Load(path); err == nil {
@@ -57,6 +72,19 @@ func TestValidationRejectsBadPollInterval(t *testing.T) {
 	path := writeConfig(t, "[updater]\npollIntervalMinutes = 0\n[source]\nprimary = external\nexternalManifestURL = https://x\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected error for pollIntervalMinutes=0")
+	}
+}
+
+func TestValidationRejectsIPCPipeNameWithSlash(t *testing.T) {
+	path := writeConfig(t, `[source]
+primary = external
+externalManifestURL = https://x
+[ipc]
+enabled = true
+pipeName = foo\bar
+`)
+	if _, err := Load(path); err == nil {
+		t.Fatal("expected error for ipc.pipeName containing a backslash")
 	}
 }
 

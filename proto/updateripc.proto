@@ -1,0 +1,82 @@
+syntax = "proto3";
+
+package emly.updateripc.v1;
+
+// go_package is a placeholder: each repo generates into its own local
+// package directory independently (paths=source_relative), so this does not
+// need to resolve to a real cross-repo import path.
+option go_package = "emlyipc/ipcpb;ipcpb";
+
+// THIS FILE IS MANUALLY SYNCED between emly-updater/proto/updateripc.proto
+// and emly/proto/updateripc.proto. There is no shared Go module between the
+// two repos. Any change here MUST be copied verbatim to the other repo and
+// both sides' generated code regenerated. Bump PROTOCOL_VERSION (a Go const
+// in each repo, not a field in this file) on any wire-incompatible change.
+//
+// Compatibility matrix — which EMLyUpdater / EMLy releases speak which
+// protocol_version. Both sides carry their own semver in sender_version
+// (below) and enforce the *min* column of their own repo's compatibility
+// consts (internal/ipc/version.go server-side, backend/utils/updateripc's
+// version.go client-side) — a peer older than the min is rejected with
+// ERROR_CODE_UNSUPPORTED_VERSION even when protocol_version matches, since
+// not every required fix changes the wire format. The *max* column is
+// informational only (logged, never enforced): a newer peer is assumed
+// forward-compatible unless proven otherwise. Bump the max on every
+// EMLyUpdater/EMLy release, even one that doesn't touch this package; open
+// a new row (with a fresh min) and freeze the previous row's max only when
+// protocol_version itself is bumped for a wire-incompatible change.
+//
+//   protocol_version | EMLyUpdater min | EMLyUpdater max | EMLy min | EMLy max
+//   -----------------+------------------+------------------+----------+----------
+//   1                | 1.2.0b           | 1.2.0b           | 1.8.0    | 1.8.0
+
+// Envelope is the single message written to and read from the pipe per
+// exchange: one request Envelope in, one response Envelope out, then the
+// connection closes.
+message Envelope {
+  uint32 protocol_version = 1;
+
+  // Semver of the sending binary (EMLyUpdater on responses, EMLy on
+  // requests) — never the wire protocol_version, which only tracks
+  // schema/framing compatibility. Used by the receiving side to enforce
+  // the min column of the compatibility matrix above.
+  string sender_version = 2;
+
+  oneof body {
+    SystemInfoRequest system_info_request = 10;
+    SystemInfoResponse system_info_response = 11;
+    ADStatusRequest ad_status_request = 12;
+    ADStatusResponse ad_status_response = 13;
+    ErrorResponse error = 99;
+  }
+}
+
+message SystemInfoRequest {}
+
+message SystemInfoResponse {
+  string hostname = 1;
+  string hwid = 2;
+  string internal_ip = 3;
+  string os_version = 4;
+}
+
+message ADStatusRequest {}
+
+message ADStatusResponse {
+  string ad_domain = 1;
+  bool domain_joined = 2;
+}
+
+enum ErrorCode {
+  ERROR_CODE_UNSPECIFIED = 0;
+  ERROR_CODE_UNAUTHORIZED = 1;
+  ERROR_CODE_UNSUPPORTED_VERSION = 2;
+  ERROR_CODE_BAD_REQUEST = 3;
+  ERROR_CODE_INTERNAL = 4;
+}
+
+message ErrorResponse {
+  ErrorCode code = 1;
+  // Generic only — never echoes a path or PID back to the client.
+  string message = 2;
+}

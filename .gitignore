@@ -1,3 +1,5 @@
 build/
 installer/Output/
 *.exe
+.idea/
+.vscode/

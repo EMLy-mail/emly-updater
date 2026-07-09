@@ -3,6 +3,7 @@
 package machineinfo
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -11,12 +12,15 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// Info holds the four values sent as X-EMLy-* request headers.
+// Info holds machine identity data: the four values sent as X-EMLy-*
+// request headers, plus OSVersion (added for the IPC SystemInfo payload,
+// not sent as a header).
 type Info struct {
 	Hostname   string
 	HWID       string
 	ADDomain   string
 	InternalIP string
+	OSVersion  string
 }
 
 // Collect gathers machine identity data. Fields that cannot be retrieved are
@@ -40,7 +44,23 @@ func Collect() Info {
 		info.InternalIP = ip
 	}
 
+	if v, err := osVersion(); err == nil {
+		info.OSVersion = v
+	}
+
 	return info
+}
+
+// DomainJoined derives whether the machine is AD domain-joined from the
+// already-collected ADDomain string: WMI's Win32_ComputerSystem.Domain
+// returns the local workgroup name ("WORKGROUP") or the hostname itself
+// when the machine is not domain-joined, rather than an empty string.
+func DomainJoined(adDomain, hostname string) bool {
+	d := strings.TrimSpace(adDomain)
+	if d == "" || strings.EqualFold(d, "WORKGROUP") {
+		return false
+	}
+	return !strings.EqualFold(d, hostname)
 }
 
 // machineGUID reads the persistent machine GUID from the Windows registry.
@@ -67,6 +87,31 @@ func adDomain() (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// osVersion reads a human-readable OS version string from the registry,
+// e.g. "Windows 11 Pro 23H2 (Build 22631.3007)".
+func osVersion() (string, error) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
+	if err != nil {
+		return "", err
+	}
+	defer k.Close()
+
+	product, _, _ := k.GetStringValue("ProductName")
+	display, _, _ := k.GetStringValue("DisplayVersion")
+	build, _, _ := k.GetStringValue("CurrentBuild")
+	ubr, _, _ := k.GetIntegerValue("UBR")
+
+	v := strings.TrimSpace(product)
+	if display != "" {
+		v += " " + display
+	}
+	if build != "" {
+		v += fmt.Sprintf(" (Build %s.%d)", build, ubr)
+	}
+	return strings.TrimSpace(v), nil
 }
 
 // internalIP returns the first non-loopback IPv4 address found on an up

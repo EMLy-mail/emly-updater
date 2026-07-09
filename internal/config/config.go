@@ -47,6 +47,10 @@ type Config struct {
 	// [criticalUpdate]
 	CriticalWarningEnabled bool
 	CriticalWarningSeconds int
+
+	// [ipc]
+	IPCEnabled  bool
+	IPCPipeName string
 }
 
 // PrimaryManifestURL returns the manifest URL selected by Primary.
@@ -87,6 +91,7 @@ func Load(path string) (*Config, error) {
 	src := f.Section("source")
 	fa := f.Section("fileAssociations")
 	crit := f.Section("criticalUpdate")
+	ipcSec := f.Section("ipc")
 
 	cfg := &Config{
 		EMLyInstallDir:  upd.Key("emlyInstallDir").MustString(`C:\3gIT\EMLy`),
@@ -106,6 +111,9 @@ func Load(path string) (*Config, error) {
 
 		CriticalWarningEnabled: crit.Key("criticalWarningEnabled").MustBool(true),
 		CriticalWarningSeconds: crit.Key("criticalWarningSeconds").MustInt(30),
+
+		IPCEnabled:  ipcSec.Key("enabled").MustBool(true),
+		IPCPipeName: strings.TrimSpace(ipcSec.Key("pipeName").MustString("EMLyUpdater")),
 	}
 
 	minutes := upd.Key("pollIntervalMinutes").MustInt(30)
@@ -145,6 +153,12 @@ func (c *Config) validate() error {
 	}
 	if c.CriticalWarningSeconds < 1 {
 		return fmt.Errorf("criticalWarningSeconds must be >= 1, got %d", c.CriticalWarningSeconds)
+	}
+
+	if c.IPCEnabled {
+		if c.IPCPipeName == "" || strings.ContainsAny(c.IPCPipeName, `\/`) {
+			return fmt.Errorf("ipc.pipeName must be non-empty and must not contain '\\' or '/', got %q", c.IPCPipeName)
+		}
 	}
 	return nil
 }

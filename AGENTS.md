@@ -3,7 +3,9 @@
 ## Build & Test
 
 ```powershell
-# Generate version resources (requires goversioninfo)
+# Generate version resources (requires goversioninfo) and propagate
+# versioninfo.json's version into version_generated.go, installer.iss and
+# config.default.ini (see tools/genversion)
 go generate
 
 # Build (output in build\bin\ or build\)
@@ -26,6 +28,7 @@ iscc installer\installer.iss
 ```
 main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
+tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
   config/                INI loader; paths.go owns all %ProgramData%\EMLyUpdater\* paths + ExeDir helpers
   source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + UNCSource + Resolver
@@ -92,7 +95,8 @@ tampering with this channel is meant to require Administrator, not just a logged
   sides' `ipcpb` packages (`go generate ./internal/ipc/ipcpb`, requires `protoc`+`protoc-gen-go`,
   not required for `go build`/CI since generated code is committed).
 - **Versioning**: every `Envelope` also carries `sender_version` — the sending binary's own semver
-  (`internal/ipc/version.go`'s `Version` const here, EMLy's `GUI_SEMVER` on the other side), distinct
+  (`internal/ipc/version_generated.go`'s `Version` const here, generated from `versioninfo.json` —
+  see below — EMLy's `GUI_SEMVER` on the other side), distinct
   from `protocol_version` which only tracks wire/schema compatibility. Each side enforces the *min*
   half of its own compatibility consts (`MinCompatibleEMLyVersion` here, `MinCompatibleUpdaterVersion`
   in `emly`) and rejects an older peer with `UNSUPPORTED_VERSION` even when `protocol_version`
@@ -155,7 +159,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs).
 - **Editing `proto/updateripc.proto`**: copy the change verbatim to `emly/proto/updateripc.proto` and regenerate both repos' `ipcpb` packages. The two repos share no Go module, so nothing enforces this automatically — a one-sided edit silently desyncs the wire protocol.
-- **Cutting an EMLyUpdater release**: bump `internal/ipc/version.go`'s `Version` const and `MaxCompatibleEMLyVersion` to the release being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the compatibility matrix and the (informational) forward-compat log silently go stale. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
+- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/ipc/version_generated.go` and rewrites the version tokens in `installer/installer.iss` (`ApplicationVersion`) and `internal/config/config.default.ini` (`userAgent`) — no other file should ever hardcode the version string by hand again. Also bump `MaxCompatibleEMLyVersion` in `internal/ipc/version.go` to the release being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the compatibility matrix and the (informational) forward-compat log silently go stale. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
 - **HTTP headers**: set them in `HTTPSource` only - `UNCSource` and the `Resolver` are header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.

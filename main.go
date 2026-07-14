@@ -15,6 +15,7 @@
 // Without arguments the binary expects to be launched by the SCM.
 //
 //go:generate goversioninfo -64
+//go:generate go run ./tools/genversion
 package main
 
 import (

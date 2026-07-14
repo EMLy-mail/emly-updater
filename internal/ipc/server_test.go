@@ -7,6 +7,7 @@ import (
 	"emlyupdater/internal/ipc/ipcpb"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/version"
 )
 
 func testServer() *Server {
@@ -74,8 +75,8 @@ func TestErrorEnvelope(t *testing.T) {
 	if errResp == nil || errResp.Code != ipcpb.ErrorCode_ERROR_CODE_UNAUTHORIZED || errResp.Message != "unauthorized" {
 		t.Errorf("unexpected error envelope: %+v", env)
 	}
-	if env.SenderVersion != Version {
-		t.Errorf("errorEnvelope sender_version = %q, want %q", env.SenderVersion, Version)
+	if env.SenderVersion != version.Version {
+		t.Errorf("errorEnvelope sender_version = %q, want %q", env.SenderVersion, version.Version)
 	}
 }
 

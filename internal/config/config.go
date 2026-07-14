@@ -2,6 +2,7 @@ package config
 
 import (
 	_ "embed"
+	"emlyupdater/internal/version"
 	"fmt"
 	"os"
 	"strings"
@@ -75,6 +76,11 @@ func WriteDefault(path string) (bool, error) {
 	return true, nil
 }
 
+// BuildUserAgent replaces the {{VERSION}} placeholder in rawUAString with ver.
+func BuildUserAgent(rawUAString, ver string) string {
+	return strings.ReplaceAll(rawUAString, "{{VERSION}}", ver)
+}
+
 // Load reads, defaults, and validates the updater configuration at path.
 // A missing file is created from the embedded defaults first.
 func Load(path string) (*Config, error) {
@@ -103,7 +109,7 @@ func Load(path string) (*Config, error) {
 		ExternalManifestURL: strings.TrimSpace(src.Key("externalManifestURL").String()),
 		InternalManifestURL: strings.TrimSpace(src.Key("internalManifestURL").String()),
 		UNCRoot:             strings.TrimSpace(src.Key("uncRoot").String()),
-		UserAgent:           strings.TrimSpace(src.Key("userAgent").String()),
+		UserAgent:           BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
 		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
 
 		ProgIDEml: fa.Key("progIdEml").MustString("EMLy.EML"),

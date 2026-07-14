@@ -17,6 +17,7 @@ import (
 	"emlyupdater/internal/ipc/ipcpb"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/version"
 )
 
 // ProtocolVersion is bumped on any wire-incompatible change to
@@ -137,7 +138,7 @@ func (s *Server) dispatch(req *ipcpb.Envelope) *ipcpb.Envelope {
 		m := s.machine()
 		return &ipcpb.Envelope{
 			ProtocolVersion: ProtocolVersion,
-			SenderVersion:   Version,
+			SenderVersion:   version.Version,
 			Body: &ipcpb.Envelope_SystemInfoResponse{
 				SystemInfoResponse: &ipcpb.SystemInfoResponse{
 					Hostname:   m.Hostname,
@@ -151,7 +152,7 @@ func (s *Server) dispatch(req *ipcpb.Envelope) *ipcpb.Envelope {
 		m := s.machine()
 		return &ipcpb.Envelope{
 			ProtocolVersion: ProtocolVersion,
-			SenderVersion:   Version,
+			SenderVersion:   version.Version,
 			Body: &ipcpb.Envelope_AdStatusResponse{
 				AdStatusResponse: &ipcpb.ADStatusResponse{
 					AdDomain:     m.ADDomain,
@@ -167,7 +168,7 @@ func (s *Server) dispatch(req *ipcpb.Envelope) *ipcpb.Envelope {
 func errorEnvelope(code ipcpb.ErrorCode, msg string) *ipcpb.Envelope {
 	return &ipcpb.Envelope{
 		ProtocolVersion: ProtocolVersion,
-		SenderVersion:   Version,
+		SenderVersion:   version.Version,
 		Body: &ipcpb.Envelope_Error{
 			Error: &ipcpb.ErrorResponse{Code: code, Message: msg},
 		},

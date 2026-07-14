@@ -6,12 +6,6 @@ import (
 	"emlyupdater/internal/manifest"
 )
 
-// Version is this build's own semver, stamped into every outgoing
-// Envelope's sender_version field. Kept in sync by hand with
-// versioninfo.json's FileVersion/ProductVersion — this repo has no single
-// source of truth for the version string (see AGENTS.md Common Pitfalls).
-const Version = "1.2.0b"
-
 // MinCompatibleEMLyVersion / MaxCompatibleEMLyVersion bound the EMLy
 // releases known to speak ProtocolVersion — see the compatibility matrix
 // atop proto/updateripc.proto. A connecting client whose sender_version is

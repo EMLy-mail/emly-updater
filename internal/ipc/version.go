@@ -6,11 +6,6 @@ import (
 	"emlyupdater/internal/manifest"
 )
 
-// Version is defined in version_generated.go, regenerated from
-// versioninfo.json by "go generate" (see tools/genversion) — that is the
-// single source of truth for the version string, propagated from there to
-// every place that needs it (see tools/genversion's doc comment).
-
 // MinCompatibleEMLyVersion / MaxCompatibleEMLyVersion bound the EMLy
 // releases known to speak ProtocolVersion — see the compatibility matrix
 // atop proto/updateripc.proto. A connecting client whose sender_version is

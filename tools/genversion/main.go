@@ -2,7 +2,7 @@
 // (the single source of truth) to every other place in the repo that needs
 // it, so it is never edited by hand more than once:
 //
-//   - internal/ipc/version_generated.go: the Version Go const
+//   - internal/version/version_generated.go: the Version Go const
 //   - installer/installer.iss: the ApplicationVersion Inno Setup #define
 //   - internal/config/config.default.ini: the userAgent default's version tag
 //
@@ -19,7 +19,7 @@ import (
 
 const (
 	versionInfoPath     = "versioninfo.json"
-	versionGoPath       = "internal/ipc/version_generated.go"
+	versionGoPath       = "internal/version/version_generated.go"
 	installerISSPath    = "installer/installer.iss"
 	configDefaultPath   = "internal/config/config.default.ini"
 	userAgentProductTag = "EMLy-Updater/"
@@ -55,11 +55,9 @@ func writeGoConst(v string) {
 	out := fmt.Sprintf(`// Code generated from versioninfo.json by "go generate"; DO NOT EDIT.
 // Run "go generate ./..." after bumping versioninfo.json.
 
-package ipc
+package version
 
-// Version is this build's own semver, stamped into every outgoing
-// Envelope's sender_version field and (when self-update is enabled) compared
-// against the updater's own update manifest. versioninfo.json is the single
+// Version is this build's own semver. versioninfo.json is the single
 // source of truth; this file is regenerated from it.
 const Version = %q
 `, v)

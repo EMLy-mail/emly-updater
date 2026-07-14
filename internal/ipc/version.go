@@ -6,11 +6,10 @@ import (
 	"emlyupdater/internal/manifest"
 )
 
-// Version is this build's own semver, stamped into every outgoing
-// Envelope's sender_version field. Kept in sync by hand with
-// versioninfo.json's FileVersion/ProductVersion — this repo has no single
-// source of truth for the version string (see AGENTS.md Common Pitfalls).
-const Version = "1.2.0b"
+// Version is defined in version_generated.go, regenerated from
+// versioninfo.json by "go generate" (see tools/genversion) — that is the
+// single source of truth for the version string, propagated from there to
+// every place that needs it (see tools/genversion's doc comment).
 
 // MinCompatibleEMLyVersion / MaxCompatibleEMLyVersion bound the EMLy
 // releases known to speak ProtocolVersion — see the compatibility matrix

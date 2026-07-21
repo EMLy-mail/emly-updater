@@ -64,14 +64,32 @@ func Parse(data []byte) (*Manifest, error) {
 
 // ChannelVersion returns the manifest's target version and download reference
 // for the given channel. Anything that is not "beta" resolves to stable.
+//
+// A beta client never falls behind a stable release that has overtaken it:
+// if StableVersion is strictly newer than BetaVersion, stable wins even on
+// the beta channel. Otherwise (the normal case) beta stays ahead of stable
+// and is returned as-is.
 func (m *Manifest) ChannelVersion(channel string) (version, downloadRef string, err error) {
-	if channel == "beta" {
-		version, downloadRef = m.BetaVersion, m.BetaDownload
-	} else {
+	if channel != "beta" {
 		version, downloadRef = m.StableVersion, m.StableDownload
+		if version == "" || downloadRef == "" {
+			return "", "", fmt.Errorf("manifest has no target for channel %q", channel)
+		}
+		return version, downloadRef, nil
 	}
+
+	version, downloadRef = m.BetaVersion, m.BetaDownload
 	if version == "" || downloadRef == "" {
 		return "", "", fmt.Errorf("manifest has no target for channel %q", channel)
+	}
+	if m.StableVersion != "" && m.StableDownload != "" {
+		betaOutdated, err := Less(version, m.StableVersion)
+		if err != nil {
+			return "", "", err
+		}
+		if betaOutdated {
+			version, downloadRef = m.StableVersion, m.StableDownload
+		}
 	}
 	return version, downloadRef, nil
 }

@@ -62,6 +62,36 @@ func TestChannelVersionMissingBeta(t *testing.T) {
 	}
 }
 
+// A stable release that overtakes the current beta build must be offered to
+// beta clients too: stable 1.8.1 vs. beta 1.8.0 should resolve to stable.
+func TestChannelVersionStableOvertakesBeta(t *testing.T) {
+	m := &Manifest{
+		StableVersion:  "1.8.1",
+		BetaVersion:    "1.8.0",
+		StableDownload: "https://api.example/releases/1.8.1/download",
+		BetaDownload:   "https://api.example/releases/1.8.0/download",
+	}
+	v, ref, err := m.ChannelVersion("beta")
+	if err != nil || v != "1.8.1" || ref != "https://api.example/releases/1.8.1/download" {
+		t.Fatalf("expected beta channel to resolve to overtaking stable, got %s %s (%v)", v, ref, err)
+	}
+}
+
+// When beta is still ahead of (or equal to) stable, beta clients keep
+// getting the beta build.
+func TestChannelVersionBetaAheadOfStable(t *testing.T) {
+	m := &Manifest{
+		StableVersion:  "1.7.9",
+		BetaVersion:    "1.8.0",
+		StableDownload: "https://api.example/releases/1.7.9/download",
+		BetaDownload:   "https://api.example/releases/1.8.0/download",
+	}
+	v, _, err := m.ChannelVersion("beta")
+	if err != nil || v != "1.8.0" {
+		t.Fatalf("expected beta 1.8.0 to stay ahead of stable, got %s (%v)", v, err)
+	}
+}
+
 func TestLess(t *testing.T) {
 	cases := []struct {
 		a, b string

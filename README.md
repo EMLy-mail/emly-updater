@@ -30,8 +30,12 @@ never touched by EMLy's own installer.
 | EMLy not installed (no `config.ini`) | Fresh-install mode: treat installed version as `0.0.0` and install the channel target (channel = `channelOverride` or `stable`) |
 
 After every successful install the service re-reads `GUI_SEMVER` from EMLy's
-`config.ini` to confirm the version, and self-heals the machine-wide
-`.eml`/`.msg` HKLM file associations (+ `SHChangeNotify`).
+`config.ini` to confirm the version, self-heals the machine-wide `.eml`/`.msg`
+HKLM file associations (+ `SHChangeNotify`), and shows a Windows notification
+in the active user's session announcing the new version and channel (e.g.
+"EMLy has been updated to version 1.4.2 (beta)."), carrying EMLy's own icon.
+This is a courtesy notification only: it is skipped silently when nobody is
+logged in at the console, and never affects update success/failure.
 
 A queued update survives reboots: the pending entry lives in
 `C:\ProgramData\EMLyUpdater\state.json` (written atomically) and its setup is

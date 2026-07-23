@@ -26,7 +26,7 @@ iscc installer\installer.iss
 ## Architecture
 
 ```
-main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug)
+main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug) | show-toast (internal, see notify/)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
@@ -38,7 +38,8 @@ internal/
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
-  notify/                WTS warning dialog in the active user session
+  notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
+  toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
   assoc/                 HKLM file-association self-heal after install
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus to the EMLy client (protobuf)
@@ -163,3 +164,4 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 - **HTTP headers**: set them in `HTTPSource` only - `UNCSource` and the `Resolver` are header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.
+- **Update-complete toast**: shown via `internal/toast.Show`, which must run inside the console user's desktop session (session 0, where the SYSTEM service lives, has none). `internal/notify.LaunchToast` does the SYSTEM -> user-session hop with `WTSQueryUserToken` + `CreateProcessAsUser`, re-launching the updater's own exe with the hidden `show-toast` subcommand. The icon shown is extracted at runtime from the installed `EMLy.exe` (`ExtractIconEx`) - there is nothing to keep in sync when EMLy's icon changes. Toast failures (no console session, token/privilege errors, missing icon) are always best-effort/logged, never fail the (already-successful) update.

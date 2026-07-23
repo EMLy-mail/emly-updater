@@ -263,6 +263,8 @@ func (u *Updater) install(p *state.Pending) error {
 
 	u.Log.InfoEvent(logging.EventInstallOK, "EMLy updated successfully", "version", p.Version)
 
+	u.showUpdateToast(p.Version)
+
 	if err := u.Store.ClearPending(); err != nil {
 		u.Log.Warn("failed to clear pending state", "error", err.Error())
 	}
@@ -284,6 +286,30 @@ func (u *Updater) install(p *state.Pending) error {
 	}
 
 	return nil
+}
+
+// showUpdateToast announces a completed update in the active console user's
+// session. Best-effort and non-fatal: EMLy is already updated by this point,
+// so a toast failure (no console session, WTS/token errors, ...) is only
+// ever logged, never returned as an install error. Channel/language are
+// re-read post-install so the notification reflects EMLy's actual current
+// config rather than the pre-update snapshot.
+func (u *Updater) showUpdateToast(version string) {
+	post := u.Cfg.ResolveEMLy()
+	msg := notify.UpdateCompleteMessage(post.Language, version, post.Channel)
+
+	self, err := os.Executable()
+	if err != nil {
+		u.Log.Warn("failed to resolve own executable path, skipping update toast", "error", err.Error())
+		return
+	}
+
+	emlyExe := assoc.ExePath(u.Cfg.EMLyInstallDir, u.Cfg.EMLyExeName)
+	if notify.LaunchToast(self, emlyExe, msg.Title, msg.Body) {
+		u.Log.Info("update-complete toast shown", "version", version)
+	} else {
+		u.Log.Info("update-complete toast skipped (no active console session)", "version", version)
+	}
 }
 
 // Handler adapts Updater to the SCM. svc.Run blocks until Execute returns.

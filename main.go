@@ -6,11 +6,14 @@
 //
 // Subcommands:
 //
-//	install    register the auto-start service + Event Log source (admin)
-//	uninstall  stop and remove the service (ProgramData state is kept)
-//	start      start the service
-//	stop       stop the service
-//	run        run the update loop in the foreground (debug)
+//	install     register the auto-start service + Event Log source (admin)
+//	uninstall   stop and remove the service (ProgramData state is kept)
+//	start       start the service
+//	stop        stop the service
+//	run         run the update loop in the foreground (debug)
+//	show-toast  display the update-complete notification (internal use: the
+//	            SYSTEM service re-launches itself with this subcommand inside
+//	            the console user's session, see internal/notify.LaunchToast)
 //
 // Without arguments the binary expects to be launched by the SCM.
 //
@@ -20,6 +23,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -35,6 +39,7 @@ import (
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/service"
+	"emlyupdater/internal/toast"
 )
 
 const (
@@ -68,6 +73,8 @@ func main() {
 		err = cmdStop()
 	case "run":
 		err = cmdRun()
+	case "show-toast":
+		err = cmdShowToast(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -79,6 +86,21 @@ func main() {
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run\n", os.Args[0])
+}
+
+// cmdShowToast displays the update-complete notification in the caller's
+// own desktop session. Not meant to be invoked directly - the SYSTEM
+// service launches it inside the console user's session via
+// internal/notify.LaunchToast, since session 0 has no desktop to draw on.
+func cmdShowToast(args []string) error {
+	fs := flag.NewFlagSet("show-toast", flag.ContinueOnError)
+	exe := fs.String("exe", "", "path to EMLy.exe (icon source)")
+	title := fs.String("title", "", "toast title")
+	body := fs.String("body", "", "toast body")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return toast.Show(*exe, *title, *body)
 }
 
 func fatalf(format string, args ...any) {

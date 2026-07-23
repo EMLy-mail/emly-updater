@@ -44,6 +44,16 @@ func readEnvelope(r io.Reader) (*ipcpb.Envelope, error) {
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
 		return nil, fmt.Errorf("ipc: read length prefix: %w", err)
 	}
+	return readEnvelopeAfterLengthPrefix(r, lenBuf)
+}
+
+// readEnvelopeAfterLengthPrefix reads the remainder of a length-prefixed
+// Envelope whose 4-byte length prefix has already been read into lenBuf.
+// handleConn uses this to resume a legacy (protocol_version 1) read after
+// it has already consumed the first of those 4 bytes to decide, versus a v2
+// client, which protocol dialect a connection is speaking — see the
+// FrameType doc comment in proto/updateripc.proto.
+func readEnvelopeAfterLengthPrefix(r io.Reader, lenBuf [4]byte) (*ipcpb.Envelope, error) {
 	n := binary.BigEndian.Uint32(lenBuf[:])
 	if n > MaxFrameSize {
 		return nil, fmt.Errorf("ipc: frame too large (%d bytes)", n)

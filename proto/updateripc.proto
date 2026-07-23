@@ -28,7 +28,17 @@ option go_package = "emlyipc/ipcpb;ipcpb";
 //
 //   protocol_version | EMLyUpdater min | EMLyUpdater max | EMLy min | EMLy max
 //   -----------------+------------------+------------------+----------+----------
-//   1                | 1.2.0b           | 1.2.0b           | 1.8.0    | 1.8.0
+//   1 (frozen)       | 1.2.0b           | 1.2.0b           | 1.8.0    | 1.8.0
+//   2                | 1.3.0            | 1.3.0            | 2.1.0    | 2.1.0
+
+// ===== v1 (frozen legacy one-shot protocol) =====
+//
+// Everything below in this section is UNCHANGED and must stay wire-compatible
+// with already-deployed EMLy builds older than 2.1.0. Do not edit these
+// messages — add new ones in the v2 section instead. See internal/ipc's
+// handleConn (server) / requestV2 (client, emly repo) for how a server built
+// against protocol_version 2 still serves protocol_version 1 clients on the
+// same pipe.
 
 // Envelope is the single message written to and read from the pipe per
 // exchange: one request Envelope in, one response Envelope out, then the
@@ -79,4 +89,71 @@ message ErrorResponse {
   ErrorCode code = 1;
   // Generic only — never echoes a path or PID back to the client.
   string message = 2;
+}
+
+// ===== v2 (explicit handshake protocol) =====
+//
+// Every v2 message is written to the wire as
+// [1-byte FrameType tag][4-byte big-endian length][protobuf bytes] — no
+// Envelope/oneof wrapper. FRAME_TYPE_UNSPECIFIED (0) is RESERVED and must
+// never be sent as a real tag: MaxFrameSize is 64KiB (65536), so a v1
+// client's first wire byte — the most-significant byte of its 4-byte
+// length prefix — is always 0x00 for any legacy-valid frame. A dual-protocol
+// server therefore treats a first byte of 0x00 as unambiguously v1, and any
+// other byte as a v2 FrameType tag. See emly-updater's internal/ipc/server.go
+// handleConn and emly's backend/utils/updateripc/handshake.go requestV2.
+//
+// Exchange, one connection per session, in order:
+//   ClientHello -> ServerAnswHello
+//   ClientSemverSend -> ServerSemverOk | ServerSemverReject (closes on reject)
+//   ServerRequestAuthChallenge -> ClientAuthResponse (closes on bad HMAC)
+//   ClientSystemInfoRequest | ClientADStatusRequest
+//     -> ServerSystemInfoResponse | ServerADStatusResponse | (wraps ErrorResponse)
+//
+// The payload phase deliberately reuses SystemInfoRequest/SystemInfoResponse
+// and ADStatusRequest/ADStatusResponse above as-is (already independent
+// top-level messages, never nested inside Envelope's oneof) — tagging them
+// directly avoids duplicating identical message shapes.
+enum FrameType {
+  FRAME_TYPE_UNSPECIFIED = 0; // reserved — legacy-protocol discriminator, never a real message
+  FRAME_TYPE_CLIENT_HELLO = 1;
+  FRAME_TYPE_SERVER_ANSW_HELLO = 2;
+  FRAME_TYPE_CLIENT_SEMVER_SEND = 3;
+  FRAME_TYPE_SERVER_SEMVER_OK = 4;
+  FRAME_TYPE_SERVER_SEMVER_REJECT = 5;
+  FRAME_TYPE_SERVER_REQUEST_AUTH_CHALLENGE = 6;
+  FRAME_TYPE_CLIENT_AUTH_RESPONSE = 7;
+  FRAME_TYPE_CLIENT_SYSTEM_INFO_REQUEST = 8;
+  FRAME_TYPE_SERVER_SYSTEM_INFO_RESPONSE = 9;
+  FRAME_TYPE_CLIENT_AD_STATUS_REQUEST = 10;
+  FRAME_TYPE_SERVER_AD_STATUS_RESPONSE = 11;
+  FRAME_TYPE_SERVER_ERROR = 12; // wraps ErrorResponse; any v2 rejection after ClientHello
+}
+
+message ClientHello {
+  uint32 protocol_version = 1; // must equal 2
+}
+
+message ServerAnswHello {
+  uint32 protocol_version = 1; // echoed, always 2
+  string server_version = 2; // EMLyUpdater's own semver
+}
+
+message ClientSemverSend {
+  string client_version = 1; // EMLy's own semver
+}
+
+message ServerSemverOk {}
+
+message ServerSemverReject {
+  // Generic only — never echoes a path or PID back to the client.
+  string reason = 1;
+}
+
+message ServerRequestAuthChallenge {
+  bytes nonce = 1; // 32 random bytes, crypto/rand
+}
+
+message ClientAuthResponse {
+  bytes hmac = 1; // HMAC-SHA256(sharedSecret, nonce)
 }

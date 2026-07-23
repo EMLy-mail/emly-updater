@@ -76,6 +76,109 @@ func (ErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_updateripc_proto_rawDescGZIP(), []int{0}
 }
 
+// ===== v2 (explicit handshake protocol) =====
+//
+// Every v2 message is written to the wire as
+// [1-byte FrameType tag][4-byte big-endian length][protobuf bytes] — no
+// Envelope/oneof wrapper. FRAME_TYPE_UNSPECIFIED (0) is RESERVED and must
+// never be sent as a real tag: MaxFrameSize is 64KiB (65536), so a v1
+// client's first wire byte — the most-significant byte of its 4-byte
+// length prefix — is always 0x00 for any legacy-valid frame. A dual-protocol
+// server therefore treats a first byte of 0x00 as unambiguously v1, and any
+// other byte as a v2 FrameType tag. See emly-updater's internal/ipc/server.go
+// handleConn and emly's backend/utils/updateripc/handshake.go requestV2.
+//
+// Exchange, one connection per session, in order:
+//
+//	ClientHello -> ServerAnswHello
+//	ClientSemverSend -> ServerSemverOk | ServerSemverReject (closes on reject)
+//	ServerRequestAuthChallenge -> ClientAuthResponse (closes on bad HMAC)
+//	ClientSystemInfoRequest | ClientADStatusRequest
+//	  -> ServerSystemInfoResponse | ServerADStatusResponse | (wraps ErrorResponse)
+//
+// The payload phase deliberately reuses SystemInfoRequest/SystemInfoResponse
+// and ADStatusRequest/ADStatusResponse above as-is (already independent
+// top-level messages, never nested inside Envelope's oneof) — tagging them
+// directly avoids duplicating identical message shapes.
+type FrameType int32
+
+const (
+	FrameType_FRAME_TYPE_UNSPECIFIED                   FrameType = 0 // reserved — legacy-protocol discriminator, never a real message
+	FrameType_FRAME_TYPE_CLIENT_HELLO                  FrameType = 1
+	FrameType_FRAME_TYPE_SERVER_ANSW_HELLO             FrameType = 2
+	FrameType_FRAME_TYPE_CLIENT_SEMVER_SEND            FrameType = 3
+	FrameType_FRAME_TYPE_SERVER_SEMVER_OK              FrameType = 4
+	FrameType_FRAME_TYPE_SERVER_SEMVER_REJECT          FrameType = 5
+	FrameType_FRAME_TYPE_SERVER_REQUEST_AUTH_CHALLENGE FrameType = 6
+	FrameType_FRAME_TYPE_CLIENT_AUTH_RESPONSE          FrameType = 7
+	FrameType_FRAME_TYPE_CLIENT_SYSTEM_INFO_REQUEST    FrameType = 8
+	FrameType_FRAME_TYPE_SERVER_SYSTEM_INFO_RESPONSE   FrameType = 9
+	FrameType_FRAME_TYPE_CLIENT_AD_STATUS_REQUEST      FrameType = 10
+	FrameType_FRAME_TYPE_SERVER_AD_STATUS_RESPONSE     FrameType = 11
+	FrameType_FRAME_TYPE_SERVER_ERROR                  FrameType = 12 // wraps ErrorResponse; any v2 rejection after ClientHello
+)
+
+// Enum value maps for FrameType.
+var (
+	FrameType_name = map[int32]string{
+		0:  "FRAME_TYPE_UNSPECIFIED",
+		1:  "FRAME_TYPE_CLIENT_HELLO",
+		2:  "FRAME_TYPE_SERVER_ANSW_HELLO",
+		3:  "FRAME_TYPE_CLIENT_SEMVER_SEND",
+		4:  "FRAME_TYPE_SERVER_SEMVER_OK",
+		5:  "FRAME_TYPE_SERVER_SEMVER_REJECT",
+		6:  "FRAME_TYPE_SERVER_REQUEST_AUTH_CHALLENGE",
+		7:  "FRAME_TYPE_CLIENT_AUTH_RESPONSE",
+		8:  "FRAME_TYPE_CLIENT_SYSTEM_INFO_REQUEST",
+		9:  "FRAME_TYPE_SERVER_SYSTEM_INFO_RESPONSE",
+		10: "FRAME_TYPE_CLIENT_AD_STATUS_REQUEST",
+		11: "FRAME_TYPE_SERVER_AD_STATUS_RESPONSE",
+		12: "FRAME_TYPE_SERVER_ERROR",
+	}
+	FrameType_value = map[string]int32{
+		"FRAME_TYPE_UNSPECIFIED":                   0,
+		"FRAME_TYPE_CLIENT_HELLO":                  1,
+		"FRAME_TYPE_SERVER_ANSW_HELLO":             2,
+		"FRAME_TYPE_CLIENT_SEMVER_SEND":            3,
+		"FRAME_TYPE_SERVER_SEMVER_OK":              4,
+		"FRAME_TYPE_SERVER_SEMVER_REJECT":          5,
+		"FRAME_TYPE_SERVER_REQUEST_AUTH_CHALLENGE": 6,
+		"FRAME_TYPE_CLIENT_AUTH_RESPONSE":          7,
+		"FRAME_TYPE_CLIENT_SYSTEM_INFO_REQUEST":    8,
+		"FRAME_TYPE_SERVER_SYSTEM_INFO_RESPONSE":   9,
+		"FRAME_TYPE_CLIENT_AD_STATUS_REQUEST":      10,
+		"FRAME_TYPE_SERVER_AD_STATUS_RESPONSE":     11,
+		"FRAME_TYPE_SERVER_ERROR":                  12,
+	}
+)
+
+func (x FrameType) Enum() *FrameType {
+	p := new(FrameType)
+	*p = x
+	return p
+}
+
+func (x FrameType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (FrameType) Descriptor() protoreflect.EnumDescriptor {
+	return file_updateripc_proto_enumTypes[1].Descriptor()
+}
+
+func (FrameType) Type() protoreflect.EnumType {
+	return &file_updateripc_proto_enumTypes[1]
+}
+
+func (x FrameType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use FrameType.Descriptor instead.
+func (FrameType) EnumDescriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{1}
+}
+
 // Envelope is the single message written to and read from the pipe per
 // exchange: one request Envelope in, one response Envelope out, then the
 // connection closes.
@@ -474,6 +577,315 @@ func (x *ErrorResponse) GetMessage() string {
 	return ""
 }
 
+type ClientHello struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"` // must equal 2
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ClientHello) Reset() {
+	*x = ClientHello{}
+	mi := &file_updateripc_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClientHello) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClientHello) ProtoMessage() {}
+
+func (x *ClientHello) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClientHello.ProtoReflect.Descriptor instead.
+func (*ClientHello) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ClientHello) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+type ServerAnswHello struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"` // echoed, always 2
+	ServerVersion   string                 `protobuf:"bytes,2,opt,name=server_version,json=serverVersion,proto3" json:"server_version,omitempty"`        // EMLyUpdater's own semver
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ServerAnswHello) Reset() {
+	*x = ServerAnswHello{}
+	mi := &file_updateripc_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerAnswHello) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerAnswHello) ProtoMessage() {}
+
+func (x *ServerAnswHello) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerAnswHello.ProtoReflect.Descriptor instead.
+func (*ServerAnswHello) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ServerAnswHello) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *ServerAnswHello) GetServerVersion() string {
+	if x != nil {
+		return x.ServerVersion
+	}
+	return ""
+}
+
+type ClientSemverSend struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ClientVersion string                 `protobuf:"bytes,1,opt,name=client_version,json=clientVersion,proto3" json:"client_version,omitempty"` // EMLy's own semver
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClientSemverSend) Reset() {
+	*x = ClientSemverSend{}
+	mi := &file_updateripc_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClientSemverSend) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClientSemverSend) ProtoMessage() {}
+
+func (x *ClientSemverSend) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClientSemverSend.ProtoReflect.Descriptor instead.
+func (*ClientSemverSend) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ClientSemverSend) GetClientVersion() string {
+	if x != nil {
+		return x.ClientVersion
+	}
+	return ""
+}
+
+type ServerSemverOk struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerSemverOk) Reset() {
+	*x = ServerSemverOk{}
+	mi := &file_updateripc_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerSemverOk) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerSemverOk) ProtoMessage() {}
+
+func (x *ServerSemverOk) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerSemverOk.ProtoReflect.Descriptor instead.
+func (*ServerSemverOk) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{9}
+}
+
+type ServerSemverReject struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Generic only — never echoes a path or PID back to the client.
+	Reason        string `protobuf:"bytes,1,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerSemverReject) Reset() {
+	*x = ServerSemverReject{}
+	mi := &file_updateripc_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerSemverReject) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerSemverReject) ProtoMessage() {}
+
+func (x *ServerSemverReject) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerSemverReject.ProtoReflect.Descriptor instead.
+func (*ServerSemverReject) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *ServerSemverReject) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ServerRequestAuthChallenge struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Nonce         []byte                 `protobuf:"bytes,1,opt,name=nonce,proto3" json:"nonce,omitempty"` // 32 random bytes, crypto/rand
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ServerRequestAuthChallenge) Reset() {
+	*x = ServerRequestAuthChallenge{}
+	mi := &file_updateripc_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ServerRequestAuthChallenge) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ServerRequestAuthChallenge) ProtoMessage() {}
+
+func (x *ServerRequestAuthChallenge) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ServerRequestAuthChallenge.ProtoReflect.Descriptor instead.
+func (*ServerRequestAuthChallenge) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *ServerRequestAuthChallenge) GetNonce() []byte {
+	if x != nil {
+		return x.Nonce
+	}
+	return nil
+}
+
+type ClientAuthResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Hmac          []byte                 `protobuf:"bytes,1,opt,name=hmac,proto3" json:"hmac,omitempty"` // HMAC-SHA256(sharedSecret, nonce)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ClientAuthResponse) Reset() {
+	*x = ClientAuthResponse{}
+	mi := &file_updateripc_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ClientAuthResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ClientAuthResponse) ProtoMessage() {}
+
+func (x *ClientAuthResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ClientAuthResponse.ProtoReflect.Descriptor instead.
+func (*ClientAuthResponse) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *ClientAuthResponse) GetHmac() []byte {
+	if x != nil {
+		return x.Hmac
+	}
+	return nil
+}
+
 var File_updateripc_proto protoreflect.FileDescriptor
 
 const file_updateripc_proto_rawDesc = "" +
@@ -503,13 +915,42 @@ const file_updateripc_proto_rawDesc = "" +
 	"\rdomain_joined\x18\x02 \x01(\bR\fdomainJoined\"\\\n" +
 	"\rErrorResponse\x121\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x1d.emly.updateripc.v1.ErrorCodeR\x04code\x12\x18\n" +
-	"\amessage\x18\x02 \x01(\tR\amessage*\x9d\x01\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"8\n" +
+	"\vClientHello\x12)\n" +
+	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\"c\n" +
+	"\x0fServerAnswHello\x12)\n" +
+	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12%\n" +
+	"\x0eserver_version\x18\x02 \x01(\tR\rserverVersion\"9\n" +
+	"\x10ClientSemverSend\x12%\n" +
+	"\x0eclient_version\x18\x01 \x01(\tR\rclientVersion\"\x10\n" +
+	"\x0eServerSemverOk\",\n" +
+	"\x12ServerSemverReject\x12\x16\n" +
+	"\x06reason\x18\x01 \x01(\tR\x06reason\"2\n" +
+	"\x1aServerRequestAuthChallenge\x12\x14\n" +
+	"\x05nonce\x18\x01 \x01(\fR\x05nonce\"(\n" +
+	"\x12ClientAuthResponse\x12\x12\n" +
+	"\x04hmac\x18\x01 \x01(\fR\x04hmac*\x9d\x01\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17ERROR_CODE_UNAUTHORIZED\x10\x01\x12\"\n" +
 	"\x1eERROR_CODE_UNSUPPORTED_VERSION\x10\x02\x12\x1a\n" +
 	"\x16ERROR_CODE_BAD_REQUEST\x10\x03\x12\x17\n" +
-	"\x13ERROR_CODE_INTERNAL\x10\x04B\x15Z\x13emlyipc/ipcpb;ipcpbb\x06proto3"
+	"\x13ERROR_CODE_INTERNAL\x10\x04*\xe9\x03\n" +
+	"\tFrameType\x12\x1a\n" +
+	"\x16FRAME_TYPE_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17FRAME_TYPE_CLIENT_HELLO\x10\x01\x12 \n" +
+	"\x1cFRAME_TYPE_SERVER_ANSW_HELLO\x10\x02\x12!\n" +
+	"\x1dFRAME_TYPE_CLIENT_SEMVER_SEND\x10\x03\x12\x1f\n" +
+	"\x1bFRAME_TYPE_SERVER_SEMVER_OK\x10\x04\x12#\n" +
+	"\x1fFRAME_TYPE_SERVER_SEMVER_REJECT\x10\x05\x12,\n" +
+	"(FRAME_TYPE_SERVER_REQUEST_AUTH_CHALLENGE\x10\x06\x12#\n" +
+	"\x1fFRAME_TYPE_CLIENT_AUTH_RESPONSE\x10\a\x12)\n" +
+	"%FRAME_TYPE_CLIENT_SYSTEM_INFO_REQUEST\x10\b\x12*\n" +
+	"&FRAME_TYPE_SERVER_SYSTEM_INFO_RESPONSE\x10\t\x12'\n" +
+	"#FRAME_TYPE_CLIENT_AD_STATUS_REQUEST\x10\n" +
+	"\x12(\n" +
+	"$FRAME_TYPE_SERVER_AD_STATUS_RESPONSE\x10\v\x12\x1b\n" +
+	"\x17FRAME_TYPE_SERVER_ERROR\x10\fB\x15Z\x13emlyipc/ipcpb;ipcpbb\x06proto3"
 
 var (
 	file_updateripc_proto_rawDescOnce sync.Once
@@ -523,23 +964,31 @@ func file_updateripc_proto_rawDescGZIP() []byte {
 	return file_updateripc_proto_rawDescData
 }
 
-var file_updateripc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_updateripc_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_updateripc_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_updateripc_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_updateripc_proto_goTypes = []any{
-	(ErrorCode)(0),             // 0: emly.updateripc.v1.ErrorCode
-	(*Envelope)(nil),           // 1: emly.updateripc.v1.Envelope
-	(*SystemInfoRequest)(nil),  // 2: emly.updateripc.v1.SystemInfoRequest
-	(*SystemInfoResponse)(nil), // 3: emly.updateripc.v1.SystemInfoResponse
-	(*ADStatusRequest)(nil),    // 4: emly.updateripc.v1.ADStatusRequest
-	(*ADStatusResponse)(nil),   // 5: emly.updateripc.v1.ADStatusResponse
-	(*ErrorResponse)(nil),      // 6: emly.updateripc.v1.ErrorResponse
+	(ErrorCode)(0),                     // 0: emly.updateripc.v1.ErrorCode
+	(FrameType)(0),                     // 1: emly.updateripc.v1.FrameType
+	(*Envelope)(nil),                   // 2: emly.updateripc.v1.Envelope
+	(*SystemInfoRequest)(nil),          // 3: emly.updateripc.v1.SystemInfoRequest
+	(*SystemInfoResponse)(nil),         // 4: emly.updateripc.v1.SystemInfoResponse
+	(*ADStatusRequest)(nil),            // 5: emly.updateripc.v1.ADStatusRequest
+	(*ADStatusResponse)(nil),           // 6: emly.updateripc.v1.ADStatusResponse
+	(*ErrorResponse)(nil),              // 7: emly.updateripc.v1.ErrorResponse
+	(*ClientHello)(nil),                // 8: emly.updateripc.v1.ClientHello
+	(*ServerAnswHello)(nil),            // 9: emly.updateripc.v1.ServerAnswHello
+	(*ClientSemverSend)(nil),           // 10: emly.updateripc.v1.ClientSemverSend
+	(*ServerSemverOk)(nil),             // 11: emly.updateripc.v1.ServerSemverOk
+	(*ServerSemverReject)(nil),         // 12: emly.updateripc.v1.ServerSemverReject
+	(*ServerRequestAuthChallenge)(nil), // 13: emly.updateripc.v1.ServerRequestAuthChallenge
+	(*ClientAuthResponse)(nil),         // 14: emly.updateripc.v1.ClientAuthResponse
 }
 var file_updateripc_proto_depIdxs = []int32{
-	2, // 0: emly.updateripc.v1.Envelope.system_info_request:type_name -> emly.updateripc.v1.SystemInfoRequest
-	3, // 1: emly.updateripc.v1.Envelope.system_info_response:type_name -> emly.updateripc.v1.SystemInfoResponse
-	4, // 2: emly.updateripc.v1.Envelope.ad_status_request:type_name -> emly.updateripc.v1.ADStatusRequest
-	5, // 3: emly.updateripc.v1.Envelope.ad_status_response:type_name -> emly.updateripc.v1.ADStatusResponse
-	6, // 4: emly.updateripc.v1.Envelope.error:type_name -> emly.updateripc.v1.ErrorResponse
+	3, // 0: emly.updateripc.v1.Envelope.system_info_request:type_name -> emly.updateripc.v1.SystemInfoRequest
+	4, // 1: emly.updateripc.v1.Envelope.system_info_response:type_name -> emly.updateripc.v1.SystemInfoResponse
+	5, // 2: emly.updateripc.v1.Envelope.ad_status_request:type_name -> emly.updateripc.v1.ADStatusRequest
+	6, // 3: emly.updateripc.v1.Envelope.ad_status_response:type_name -> emly.updateripc.v1.ADStatusResponse
+	7, // 4: emly.updateripc.v1.Envelope.error:type_name -> emly.updateripc.v1.ErrorResponse
 	0, // 5: emly.updateripc.v1.ErrorResponse.code:type_name -> emly.updateripc.v1.ErrorCode
 	6, // [6:6] is the sub-list for method output_type
 	6, // [6:6] is the sub-list for method input_type
@@ -565,8 +1014,8 @@ func file_updateripc_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_updateripc_proto_rawDesc), len(file_updateripc_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   6,
+			NumEnums:      2,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -15,7 +15,7 @@ func TestFramingRoundTrip(t *testing.T) {
 	defer c2.Close()
 
 	want := &ipcpb.Envelope{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: ProtocolVersionV1,
 		Body: &ipcpb.Envelope_SystemInfoResponse{
 			SystemInfoResponse: &ipcpb.SystemInfoResponse{
 				Hostname:   "WKS01",
@@ -44,8 +44,8 @@ func TestFramingRoundTrip(t *testing.T) {
 	if resp.Hostname != "WKS01" || resp.Hwid != "abc-123" || resp.InternalIp != "10.0.0.5" || resp.OsVersion != "Windows 11 Pro" {
 		t.Errorf("round-tripped envelope mismatch: %+v", resp)
 	}
-	if got.GetProtocolVersion() != ProtocolVersion {
-		t.Errorf("protocol version = %d, want %d", got.GetProtocolVersion(), ProtocolVersion)
+	if got.GetProtocolVersion() != ProtocolVersionV1 {
+		t.Errorf("protocol version = %d, want %d", got.GetProtocolVersion(), ProtocolVersionV1)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestReadEnvelopeRejectsTruncatedFrame(t *testing.T) {
 
 func TestWriteEnvelopeRejectsOversizedMessage(t *testing.T) {
 	env := &ipcpb.Envelope{
-		ProtocolVersion: ProtocolVersion,
+		ProtocolVersion: ProtocolVersionV1,
 		Body: &ipcpb.Envelope_Error{
 			Error: &ipcpb.ErrorResponse{Message: string(make([]byte, MaxFrameSize+1))},
 		},

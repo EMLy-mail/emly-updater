@@ -80,20 +80,26 @@ func TestErrorEnvelope(t *testing.T) {
 	}
 }
 
-func TestCheckPeerVersion(t *testing.T) {
+// testServerWithLog returns a testServer() with a real Logger attached,
+// needed by checkPeerVersion*, which may log a warning (the aboveMax case).
+// lumberjack opens the log file lazily on first write and keeps the handle
+// open, which races t.TempDir()'s auto-cleanup on Windows (file still in
+// use) — use a manually removed dir with a best-effort, error-ignoring
+// cleanup instead.
+func testServerWithLog(t *testing.T) *Server {
+	t.Helper()
 	s := testServer()
-
-	// A real Logger is needed since checkPeerVersion may log a warning
-	// (the aboveMax case); lumberjack opens the log file lazily on first
-	// write and keeps the handle open, which races t.TempDir()'s
-	// auto-cleanup on Windows (file still in use) — use a manually
-	// removed dir with a best-effort, error-ignoring cleanup instead.
 	dir, err := os.MkdirTemp("", "ipc-version-test-")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	s.log = logging.New(dir, "", false)
+	return s
+}
+
+func TestCheckPeerVersionV1(t *testing.T) {
+	s := testServerWithLog(t)
 
 	tests := []struct {
 		name    string
@@ -103,14 +109,38 @@ func TestCheckPeerVersion(t *testing.T) {
 		{"empty is rejected", "", true},
 		{"below min is rejected", "1.7.9", true},
 		{"unparseable is rejected", "not-a-version", true},
-		{"exactly min is accepted", MinCompatibleEMLyVersion, false},
+		{"exactly min is accepted", MinCompatibleEMLyVersionV1, false},
 		{"above max is accepted (logged, not enforced)", "9.9.9", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := s.checkPeerVersion(tc.version)
+			err := s.checkPeerVersionV1(tc.version)
 			if (err != nil) != tc.wantErr {
-				t.Errorf("checkPeerVersion(%q) error = %v, wantErr %v", tc.version, err, tc.wantErr)
+				t.Errorf("checkPeerVersionV1(%q) error = %v, wantErr %v", tc.version, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestCheckPeerVersionV2(t *testing.T) {
+	s := testServerWithLog(t)
+
+	tests := []struct {
+		name    string
+		version string
+		wantErr bool
+	}{
+		{"empty is rejected", "", true},
+		{"below min is rejected", "2.0.9", true},
+		{"unparseable is rejected", "not-a-version", true},
+		{"exactly min is accepted", MinCompatibleEMLyVersionV2, false},
+		{"above max is accepted (logged, not enforced)", "9.9.9", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := s.checkPeerVersionV2(tc.version)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("checkPeerVersionV2(%q) error = %v, wantErr %v", tc.version, err, tc.wantErr)
 			}
 		})
 	}

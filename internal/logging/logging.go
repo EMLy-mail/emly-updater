@@ -84,15 +84,16 @@ func (l *Logger) Error(msg string, kv ...any) { l.file.Error(msg, kv...) }
 
 // Event IDs grouped per area, so Event Viewer filtering stays meaningful.
 const (
-	EventGeneric        = 1
-	EventUpdateFound    = 100
-	EventInstallOK      = 200
-	EventInstallFailed  = 201
-	EventForcedKill     = 300
-	EventAssocRepaired  = 400
-	EventSourceFallback = 500
-	EventIPCRejected    = 600 // per-connection client authentication failure
-	EventIPCUnavailable = 601 // IPC pipe could not be created (e.g. name already in use)
+	EventGeneric            = 1
+	EventUpdateFound        = 100
+	EventInstallOK          = 200
+	EventInstallFailed      = 201
+	EventForcedKill         = 300
+	EventAssocRepaired      = 400
+	EventSourceFallback     = 500
+	EventIPCRejected        = 600 // per-connection client authentication failure
+	EventIPCUnavailable     = 601 // IPC pipe could not be created (e.g. name already in use)
+	EventIPCHandshakeFailed = 602 // v2 handshake failed after PID/path auth passed (semver reject or bad HMAC)
 )
 
 // InfoEvent logs to the file and mirrors an information record to the Event Log.

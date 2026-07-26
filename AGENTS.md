@@ -156,6 +156,15 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
 | Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601) |
 
+## Branching
+
+- **Feature grande che tocca un nuovo evento IPC e/o richiede bump di
+  versione dell'Updater**: lavora su un branch dedicato, non su `master`.
+  Motivo: `proto/updateripc.proto` è sincronizzato a mano col repo `emly` e
+  un bump di `ProtocolVersion`/`MaxCompatibleEMLyVersion` tocca la matrice di
+  compatibilità wire — cambi che vuoi poter revisionare/rollback come unità
+  prima che finiscano su `master`.
+
 ## Common Pitfalls
 
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs).

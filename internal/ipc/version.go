@@ -17,8 +17,8 @@ import (
 // (and copy the frozen old Max into a new compatibility-matrix row) only
 // when EMLy ships a build that requires a newer ProtocolVersion.
 const (
-	MinCompatibleEMLyVersion = "1.8.0"
-	MaxCompatibleEMLyVersion = "1.8.0"
+	MinCompatibleEMLyVersion = "2.0.0"
+	MaxCompatibleEMLyVersion = "2.0.1"
 )
 
 // checkPeerVersion enforces MinCompatibleEMLyVersion against a connecting
@@ -27,13 +27,17 @@ const (
 // unparseable sender_version is treated the same as one that is too old.
 func (s *Server) checkPeerVersion(senderVersion string) error {
 	if senderVersion == "" {
+		s.log.Error("missing sender_version (requires EMLy >= %s)", MinCompatibleEMLyVersion)
 		return fmt.Errorf("missing sender_version (requires EMLy >= %s)", MinCompatibleEMLyVersion)
 	}
 	belowMin, err := manifest.Less(senderVersion, MinCompatibleEMLyVersion)
 	if err != nil {
+		s.log.Error("invalid sender_version %q: %v", senderVersion, err)
 		return fmt.Errorf("invalid sender_version %q: %w", senderVersion, err)
 	}
 	if belowMin {
+		s.log.Error("ipc peer version older than minimum supported",
+			"senderVersion", senderVersion, "minSupported", MinCompatibleEMLyVersion)
 		return fmt.Errorf("EMLy %s is older than the minimum supported %s", senderVersion, MinCompatibleEMLyVersion)
 	}
 	if aboveMax, err := manifest.Less(MaxCompatibleEMLyVersion, senderVersion); err == nil && aboveMax {

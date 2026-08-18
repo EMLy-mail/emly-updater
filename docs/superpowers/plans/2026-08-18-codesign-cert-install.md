@@ -180,7 +180,25 @@ Delete the scratch directory. Nothing from this task is committed. If the probe 
 
 ---
 
-## Task 1: Embed the certificate
+> **Tasks 1-7 complete and verified, 2026-08-18.** `go build`, `go vet` and
+> `go test ./...` all clean; 18 automated tests green. The crypt32 path was
+> additionally verified against the real Windows stores by an opt-in live test
+> added beyond this plan (`internal/cert/store_live_test.go`, gated on
+> `EMLY_CERT_STORE_TEST`), run both as administrator and as SYSTEM.
+>
+> That live run corrected an assumption: per-user stores are *collections* that
+> include the machine store of the same name, so a healthy Ensure writes 2
+> stores, not 4, and the per-user targets are silent no-ops. Documented in
+> `target.go` and `AGENTS.md`. It also settled that per-user `Root` is a
+> protected root that denies the add unless the certificate is inherited from
+> the machine store, even with `CERT_SYSTEM_STORE_UNPROTECTED_FLAG`.
+>
+> **Still open: Task 8** (install on a test machine, confirm the UAC prompt
+> names 3G IT Innovation) and **Task 9** (release).
+
+---
+
+## Task 1: Embed the certificate ✅
 
 **Files:**
 - Create: `internal/cert/3GITInnovation.cer` (copy of `certs/3GITInnovation.cer`)
@@ -192,7 +210,7 @@ Delete the scratch directory. Nothing from this task is committed. If the probe 
 - Consumes: nothing
 - Produces: `cert.Embedded() (*x509.Certificate, []byte, error)` — the parsed certificate and its raw DER, in that order. Every later task calls this.
 
-- [ ] **Step 1: Put the certificate files in place**
+- [x] **Step 1: Put the certificate files in place**
 
 `//go:embed` cannot reference paths above its own package directory, so the certificate is copied rather than referenced. `certs/3GITInnovation.cer` stays the source of record and gets tracked in git — it is the public half, safe to version.
 
@@ -207,7 +225,7 @@ Confirm both are 778 bytes and byte-identical:
 cmp certs/3GITInnovation.cer internal/cert/3GITInnovation.cer && echo identical
 ```
 
-- [ ] **Step 2: Write the failing test**
+- [x] **Step 2: Write the failing test**
 
 Create `internal/cert/cert_test.go`:
 
@@ -310,7 +328,7 @@ func TestEmbeddedNotNearingExpiry(t *testing.T) {
 }
 ```
 
-- [ ] **Step 3: Run the tests to verify they fail**
+- [x] **Step 3: Run the tests to verify they fail**
 
 ```bash
 go test ./internal/cert/ -v
@@ -318,7 +336,7 @@ go test ./internal/cert/ -v
 
 Expected: build failure — `undefined: Embedded`.
 
-- [ ] **Step 4: Write the implementation**
+- [x] **Step 4: Write the implementation**
 
 Create `internal/cert/cert.go`:
 
@@ -359,7 +377,7 @@ func Embedded() (*x509.Certificate, []byte, error) {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [x] **Step 5: Run the tests to verify they pass**
 
 ```bash
 go test ./internal/cert/ -v
@@ -367,7 +385,7 @@ go test ./internal/cert/ -v
 
 Expected: all six PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add certs/3GITInnovation.cer internal/cert/
@@ -384,7 +402,7 @@ certificate is annual, and a silent expiry would quietly restore the
 
 ---
 
-## Task 2: Store targets
+## Task 2: Store targets ✅
 
 **Files:**
 - Create: `internal/cert/target.go`
@@ -400,7 +418,7 @@ certificate is annual, and a silent expiry would quietly restore the
   - `cert.MachineTargets() []Target`
   - `cert.UserTargets(sid string) []Target`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `internal/cert/target_test.go`:
 
@@ -532,7 +550,7 @@ func TestStringIsReadable(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 ```bash
 go test ./internal/cert/ -run 'Target|StoreName|String' -v
@@ -540,7 +558,7 @@ go test ./internal/cert/ -run 'Target|StoreName|String' -v
 
 Expected: build failure — `undefined: Target`, `undefined: MachineTargets`, `undefined: UserTargets`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `internal/cert/target.go`:
 
@@ -617,7 +635,7 @@ func UserTargets(sid string) []Target {
 }
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 ```bash
 go test ./internal/cert/ -v
@@ -625,7 +643,7 @@ go test ./internal/cert/ -v
 
 Expected: all PASS (Task 1's six plus Task 2's six).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add internal/cert/target.go internal/cert/target_test.go
@@ -642,7 +660,7 @@ interactive confirmation dialog, and session 0 has no desktop for one."
 
 ---
 
-## Task 3: Add the certificate to a store
+## Task 3: Add the certificate to a store ✅
 
 **Files:**
 - Create: `internal/cert/store.go`
@@ -653,7 +671,7 @@ interactive confirmation dialog, and session 0 has no desktop for one."
 
 There is no unit test for this task: it is nothing but privileged Windows API calls, and the global constraint forbids those in CI. Task 8's manual checklist is its verification. Keep the file small and obvious for exactly that reason.
 
-- [ ] **Step 1: Write the implementation**
+- [x] **Step 1: Write the implementation**
 
 Create `internal/cert/store.go`:
 
@@ -763,7 +781,7 @@ func addToStore(ctx *windows.CertContext, t Target) (bool, error) {
 }
 ```
 
-- [ ] **Step 2: Verify it builds and nothing regressed**
+- [x] **Step 2: Verify it builds and nothing regressed**
 
 ```bash
 go build ./... && go vet ./internal/cert/ && go test ./internal/cert/ -v
@@ -771,7 +789,7 @@ go build ./... && go vet ./internal/cert/ && go test ./internal/cert/ -v
 
 Expected: builds clean, vet silent, all Task 1 and 2 tests still PASS.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/cert/store.go
@@ -787,7 +805,7 @@ writing even when the user's hive is unreachable."
 
 ---
 
-## Task 4: Resolve the console user's SID
+## Task 4: Resolve the console user's SID ✅
 
 **Files:**
 - Create: `internal/notify/console_user.go`
@@ -798,7 +816,7 @@ writing even when the user's hive is unreachable."
 
 This lives in `notify`, not `cert`, because `notify` already owns every piece of WTS and token machinery it needs. The boundary that results is clean: WTS stays in `notify`, crypt32 stays in `cert`, and `service` composes them. Like Task 3 it is untestable in CI — it is entirely Windows API calls.
 
-- [ ] **Step 1: Write the implementation**
+- [x] **Step 1: Write the implementation**
 
 Create `internal/notify/console_user.go`:
 
@@ -844,7 +862,7 @@ func ConsoleUserSID() (string, bool) {
 }
 ```
 
-- [ ] **Step 2: Verify it builds**
+- [x] **Step 2: Verify it builds**
 
 ```bash
 go build ./... && go vet ./internal/notify/
@@ -852,7 +870,7 @@ go build ./... && go vet ./internal/notify/
 
 Expected: clean.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add internal/notify/console_user.go
@@ -866,7 +884,7 @@ machinery this needs."
 
 ---
 
-## Task 5: Configuration key and Event Log ids
+## Task 5: Configuration key and Event Log ids ✅
 
 **Files:**
 - Modify: `internal/config/config.go` — struct field and `Load()`
@@ -878,7 +896,7 @@ machinery this needs."
 - Consumes: nothing
 - Produces: `config.Config.CertificateEnabled bool` (default `true`), `logging.EventCertInstalled` (700), `logging.EventCertFailed` (701)
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Append to `internal/config/config_test.go`:
 
@@ -915,7 +933,7 @@ enabled = false
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 ```bash
 go test ./internal/config/ -run Certificate -v
@@ -923,7 +941,7 @@ go test ./internal/config/ -run Certificate -v
 
 Expected: build failure — `cfg.CertificateEnabled undefined`.
 
-- [ ] **Step 3: Add the struct field**
+- [x] **Step 3: Add the struct field**
 
 In `internal/config/config.go`, after the `// [ipc]` block in the `Config` struct:
 
@@ -932,7 +950,7 @@ In `internal/config/config.go`, after the `// [ipc]` block in the `Config` struc
 	CertificateEnabled bool
 ```
 
-- [ ] **Step 4: Read the section in `Load()`**
+- [x] **Step 4: Read the section in `Load()`**
 
 In `internal/config/config.go`, alongside the other section lookups:
 
@@ -948,7 +966,7 @@ and in the `cfg := &Config{...}` literal, after the IPC fields:
 
 No entry in `validate()`: a bool has no invalid value.
 
-- [ ] **Step 5: Add the section to the shipped defaults**
+- [x] **Step 5: Add the section to the shipped defaults**
 
 Append to `internal/config/config.default.ini` (Italian, matching the rest of the file):
 
@@ -964,7 +982,7 @@ Append to `internal/config/config.default.ini` (Italian, matching the rest of th
 enabled = true
 ```
 
-- [ ] **Step 6: Run the config tests to verify they pass**
+- [x] **Step 6: Run the config tests to verify they pass**
 
 ```bash
 go test ./internal/config/ -v
@@ -972,7 +990,7 @@ go test ./internal/config/ -v
 
 Expected: all PASS, including the pre-existing ones.
 
-- [ ] **Step 7: Add the Event Log ids**
+- [x] **Step 7: Add the Event Log ids**
 
 In `internal/logging/logging.go`, extend the block at lines 87-95:
 
@@ -981,7 +999,7 @@ In `internal/logging/logging.go`, extend the block at lines 87-95:
 	EventCertFailed     = 701 // a trust store could not be opened or written
 ```
 
-- [ ] **Step 8: Verify the whole tree still builds and tests**
+- [x] **Step 8: Verify the whole tree still builds and tests**
 
 ```bash
 go build ./... && go test ./...
@@ -989,7 +1007,7 @@ go build ./... && go test ./...
 
 Expected: all PASS.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add internal/config/ internal/logging/logging.go
@@ -1002,7 +1020,7 @@ opened - Warn rather than Error, since the step is best-effort."
 
 ---
 
-## Task 6: Wire it into the service and the installer
+## Task 6: Wire it into the service and the installer ✅
 
 **Files:**
 - Modify: `internal/service/service.go` — new `ensureCertificate` method, called from `Cycle`
@@ -1012,7 +1030,7 @@ opened - Warn rather than Error, since the step is best-effort."
 - Consumes: `cert.Embedded`, `cert.MachineTargets`, `cert.UserTargets`, `cert.Ensure` (Tasks 1–3); `notify.ConsoleUserSID` (Task 4); `config.Config.CertificateEnabled`, `logging.EventCertInstalled`, `logging.EventCertFailed` (Task 5)
 - Produces: nothing consumed by later tasks
 
-- [ ] **Step 1: Add the import**
+- [x] **Step 1: Add the import**
 
 In `internal/service/service.go`, add to the `emlyupdater/internal/...` import group (they are alphabetical):
 
@@ -1020,7 +1038,7 @@ In `internal/service/service.go`, add to the `emlyupdater/internal/...` import g
 	"emlyupdater/internal/cert"
 ```
 
-- [ ] **Step 2: Write `ensureCertificate`**
+- [x] **Step 2: Write `ensureCertificate`**
 
 Add to `internal/service/service.go`, next to `showUpdateToast` — both are best-effort side quests of the main loop:
 
@@ -1081,7 +1099,7 @@ func (u *Updater) ensureCertificate() {
 }
 ```
 
-- [ ] **Step 3: Call it from `Cycle`**
+- [x] **Step 3: Call it from `Cycle`**
 
 In `internal/service/service.go`, make it the first thing `Cycle` does — before the pending-update check, so a resumed install already benefits from it:
 
@@ -1093,7 +1111,7 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	emly := u.Cfg.ResolveEMLy()
 ```
 
-- [ ] **Step 4: Verify it builds**
+- [x] **Step 4: Verify it builds**
 
 ```bash
 go build ./... && go vet ./internal/service/
@@ -1101,7 +1119,7 @@ go build ./... && go vet ./internal/service/
 
 Expected: clean.
 
-- [ ] **Step 5: Add `installCertificate` to main.go**
+- [x] **Step 5: Add `installCertificate` to main.go**
 
 Add near `cmdInstall` in `main.go`, and add `"emlyupdater/internal/cert"` to the imports:
 
@@ -1144,7 +1162,7 @@ func installCertificate() {
 }
 ```
 
-- [ ] **Step 6: Call it from `cmdInstall`**
+- [x] **Step 6: Call it from `cmdInstall`**
 
 In `main.go`, immediately after the `config.WriteDefault` block (around line 199) and before `os.Executable()` — the config has to exist first, and the service does not:
 
@@ -1152,7 +1170,7 @@ In `main.go`, immediately after the `config.WriteDefault` block (around line 199
 	installCertificate()
 ```
 
-- [ ] **Step 7: Verify the whole tree builds and tests**
+- [x] **Step 7: Verify the whole tree builds and tests**
 
 ```bash
 go build ./... && go vet ./... && go test ./...
@@ -1160,7 +1178,7 @@ go build ./... && go vet ./... && go test ./...
 
 Expected: builds clean, vet silent, all tests PASS.
 
-- [ ] **Step 8: Smoke-test in the foreground**
+- [x] **Step 8: Smoke-test in the foreground**
 
 From an elevated shell, with the service stopped:
 
@@ -1171,7 +1189,7 @@ go build -o build\bin\emly-updater.exe .
 
 Expected: the first cycle logs the certificate install (event 700) for `LocalMachine\Root` and `LocalMachine\TrustedPublisher`. Running as an administrator rather than SYSTEM, `ConsoleUserSID` should still resolve, but the per-user stores may behave differently than under the service — Task 8 is what actually verifies that path. Stop with Ctrl-C.
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add internal/service/service.go main.go
@@ -1187,7 +1205,7 @@ runs already elevates as a verified publisher."
 
 ---
 
-## Task 7: Documentation
+## Task 7: Documentation ✅
 
 **Files:**
 - Modify: `AGENTS.md` — architecture tree, config table, event id list, manual verification, rotation pitfall
@@ -1197,7 +1215,7 @@ runs already elevates as a verified publisher."
 - Consumes: everything above
 - Produces: nothing
 
-- [ ] **Step 1: Add the package to the architecture tree**
+- [x] **Step 1: Add the package to the architecture tree**
 
 In `AGENTS.md`, in the `internal/` tree, after the `assoc/` line:
 
@@ -1205,7 +1223,7 @@ In `AGENTS.md`, in the `internal/` tree, after the `assoc/` line:
   cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
 ```
 
-- [ ] **Step 2: Add the config key to the reference table**
+- [x] **Step 2: Add the config key to the reference table**
 
 In `AGENTS.md`, at the end of the Configuration Reference table:
 
@@ -1213,7 +1231,7 @@ In `AGENTS.md`, at the end of the Configuration Reference table:
 | `enabled` | `[certificate]` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher` (machine + console user) |
 ```
 
-- [ ] **Step 3: Add the event ids**
+- [x] **Step 3: Add the event ids**
 
 In `AGENTS.md`, in the Logs & Diagnostics table, extend the Event Log row's list with:
 
@@ -1221,7 +1239,7 @@ In `AGENTS.md`, in the Logs & Diagnostics table, extend the Event Log row's list
 cert installed (700), cert install failed (701)
 ```
 
-- [ ] **Step 4: Add the manual verification section**
+- [x] **Step 4: Add the manual verification section**
 
 In `AGENTS.md`, after the "IPC manual verification (admin required)" section:
 
@@ -1250,7 +1268,7 @@ rights. This checklist is their verification.
    confirm nothing is written and nothing is logged.
 ```
 
-- [ ] **Step 5: Add the rotation pitfall**
+- [x] **Step 5: Add the rotation pitfall**
 
 In `AGENTS.md`, in Common Pitfalls:
 
@@ -1270,7 +1288,7 @@ In `AGENTS.md`, in Common Pitfalls:
   sha256`) so they survive the certificate's expiry.
 ```
 
-- [ ] **Step 6: Update README.md**
+- [x] **Step 6: Update README.md**
 
 The README's Configuration section uses one `### \`[section]\`` heading per INI
 section, each followed by a `| Key | Default | Description |` table. Add a new
@@ -1284,7 +1302,7 @@ one after `### \`[criticalUpdate]\``:
 | `enabled` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher`, for the machine and for the console user. Makes EMLy's setup elevate as a verified publisher instead of "Unknown publisher". Re-checked every cycle; idempotent. |
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add AGENTS.md README.md

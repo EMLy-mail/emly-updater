@@ -1,5 +1,5 @@
 #define ApplicationName 'EMLyUpdater'
-#define ApplicationVersion '1.3.1'
+#define ApplicationVersion '1.4.0'
 #define ServiceName 'EMLyUpdater'
 
 [Setup]

@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 	"unsafe"
@@ -33,10 +34,13 @@ const liveEnv = "EMLY_CERT_STORE_TEST"
 //	EMLY_CERT_STORE_TEST=1 go test ./internal/cert/ -run Live -v
 //
 // It never installs the real 3gIT certificate: it generates a throwaway
-// self-signed certificate, asserts it lands in all four stores, asserts a
-// second Ensure is a no-op, then removes it again and confirms the stores are
-// back as they were. Run it after any change to store.go or target.go, and as
-// the quick check when rotating the certificate.
+// self-signed certificate, asserts every target ends up holding it, asserts a
+// second Ensure is a no-op, then removes it again. Run it after any change to
+// store.go or target.go, and as the quick check when rotating the certificate.
+//
+// Expect Ensure to report only the two machine stores as written even though
+// all four end up holding the certificate - see the comment on the assertion
+// below for why.
 func TestEnsureAgainstLiveStores(t *testing.T) {
 	if os.Getenv(liveEnv) == "" {
 		t.Skipf("set %s=1 and run from an elevated shell to exercise the real Windows stores", liveEnv)
@@ -56,9 +60,9 @@ func TestEnsureAgainstLiveStores(t *testing.T) {
 	removeFromAll(t, der, targets)
 	t.Cleanup(func() { removeFromAll(t, der, targets) })
 
-	// First Ensure: every store should be written. Deliberately not fatal on
-	// error - Ensure keeps going past a failed target, and which stores landed
-	// is the whole diagnostic value here. Report them all, then decide.
+	// First Ensure. Deliberately not fatal on error - Ensure keeps going past a
+	// failed target, and which stores ended up holding the certificate is the
+	// whole diagnostic value here. Report them all, then decide.
 	installed, err := Ensure(der, targets, func(format string, args ...any) {
 		t.Logf(format, args...)
 	})
@@ -76,15 +80,25 @@ func TestEnsureAgainstLiveStores(t *testing.T) {
 		t.Errorf("Ensure reported: %v", err)
 	}
 	if missing > 0 {
-		t.Fatalf("%d of %d stores were not written. Access-denied on a LocalMachine "+
-			"store means the shell is not elevated; a User store failing while the "+
-			"LocalMachine ones succeed would mean CERT_SYSTEM_STORE_UNPROTECTED_FLAG "+
-			"is not doing its job.", missing, len(targets))
+		t.Fatalf("%d of %d stores do not hold the certificate. Access-denied on a "+
+			"LocalMachine store means the shell is not elevated.", missing, len(targets))
 	}
-	if len(installed) != len(targets) {
-		t.Fatalf("every store holds the certificate but Ensure only reported %d of %d: %v",
-			len(installed), len(targets), installed)
+
+	// Only the machine stores are expected in `installed`. A per-user store is
+	// a *collection* that includes the machine store of the same name, so once
+	// LocalMachine\Root holds the certificate, <SID>\Root already shows it and
+	// CERT_STORE_ADD_NEW reports CRYPT_E_EXISTS there - present, not written.
+	// That is why the user targets are normally silent no-ops rather than a
+	// per-cycle warning, and why they are cheap to keep.
+	for _, tg := range MachineTargets() {
+		if !slices.Contains(installed, tg.String()) {
+			t.Errorf("Ensure did not report writing %s, but the certificate was absent "+
+				"beforehand: %v", tg, installed)
+		}
 	}
+	t.Logf("Ensure wrote %d store(s): %v", len(installed), installed)
+	t.Logf("the other %d target(s) inherited the certificate through the store collection",
+		len(targets)-len(installed))
 
 	// Second Ensure: CERT_STORE_ADD_NEW must report CRYPT_E_EXISTS everywhere,
 	// which Ensure turns into "wrote nothing". This is the property the poll

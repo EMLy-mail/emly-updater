@@ -137,6 +137,16 @@ publisher instead of "Unknown publisher".
   `CERT_SYSTEM_STORE_UNPROTECTED_FLAG` — the user `Root` store is a *protected
   root* whose ordinary add path raises an interactive confirmation dialog, and
   session 0 has no desktop to draw one on.
+- **The per-user targets are normally silent no-ops**, and that is expected, not
+  a bug. A per-user system store is a *collection* that includes the machine
+  store of the same name: once `LocalMachine\Root` holds the certificate,
+  `<SID>\Root` already reports it and the add returns `CRYPT_E_EXISTS`. So a
+  healthy run writes 2 stores, not 4. They matter only when a machine store
+  could not be written. Related gotcha: the per-user `Root` store is a protected
+  root and *denies* the add outright when the certificate is not already
+  inherited from the machine store, even with `CERT_SYSTEM_STORE_UNPROTECTED_FLAG`
+  — per-user `TrustedPublisher` accepts writes normally. Verified on Windows 11
+  26200 as administrator and as SYSTEM.
 - **Idempotency comes from `CERT_STORE_ADD_NEW`**, which returns `CRYPT_E_EXISTS`
   on a duplicate. That is the already-installed signal — there is deliberately no
   separate `CertFindCertificateInStore` lookup, which would only add a race.
@@ -153,6 +163,10 @@ Nothing in `internal/cert/store.go` or `internal/notify/console_user.go` is
 covered by `go test` — they are pure Windows API calls and CI has no admin
 rights. This checklist is their verification.
 
+0. Quickest check of the crypt32 path, no install needed — from an **elevated**
+   shell: `$env:EMLY_CERT_STORE_TEST=1; go test ./internal/cert/ -run Live -v`.
+   It exercises Ensure against the real stores with a throwaway certificate and
+   cleans up after itself. Skipped by default so CI never runs it.
 1. On a clean machine, run `emly-updater install` and confirm in `certmgr.msc`
    (Local Computer) that `CN=3G IT Innovation` is in both **Trusted Root
    Certification Authorities** and **Trusted Publishers**.

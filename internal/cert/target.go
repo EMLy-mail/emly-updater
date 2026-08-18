@@ -61,6 +61,20 @@ func MachineTargets() []Target {
 // UserTargets returns the two per-user stores belonging to sid. Reaching them
 // requires that user's registry hive to be loaded under HKU, which holds while
 // they are logged on.
+//
+// These are normally silent no-ops, and that is expected. A per-user system
+// store is a *collection* that includes the machine store of the same name, so
+// once LocalMachine\Root holds the certificate, <SID>\Root already reports it
+// as present and Ensure gets CRYPT_E_EXISTS rather than writing anything. They
+// earn their keep only in the reverse case - a machine store that could not be
+// written - and they cost two syscalls when they do nothing. Verified on
+// Windows 11 26200, both as an administrator and as SYSTEM.
+//
+// One consequence worth knowing before changing this: the per-user Root store
+// is a protected root, and adding to it is denied when the certificate is not
+// already inherited from the machine store, even with
+// CERT_SYSTEM_STORE_UNPROTECTED_FLAG set. Per-user TrustedPublisher accepts
+// writes normally.
 func UserTargets(sid string) []Target {
 	out := make([]Target, 0, len(storeNames))
 	for _, n := range storeNames {

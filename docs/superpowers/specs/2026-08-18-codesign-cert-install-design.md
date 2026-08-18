@@ -147,6 +147,18 @@ err = windows.CertAddCertificateContextToStore(
 `CERT_SYSTEM_STORE_USERS` target is the SID string, a backslash, and the store
 name: `S-1-5-21-…-1001\Root`.
 
+**Per-user targets must additionally set `CERT_SYSTEM_STORE_UNPROTECTED_FLAG`**
+(`0x40000000`). The user `Root` store is a *protected root*: adding to it
+through the ordinary path is designed to raise an interactive confirmation
+dialog, and session 0 — where this service lives — has no desktop to draw one
+on. The flag writes the underlying store directly and bypasses that machinery.
+The machine `Root` store is gated by administrator rights rather than by a
+prompt and needs no such flag. The location bits (`0x00060000`) and this flag
+occupy different parts of the flags word, so they simply OR together.
+
+*(This requirement was identified while writing the implementation plan, after
+the first draft of this document. The Task 0 probe tests the flagged path.)*
+
 ### 6.3 Idempotency via `CERT_STORE_ADD_NEW`
 
 No separate presence check is performed. `CERT_STORE_ADD_NEW` fails with
@@ -233,8 +245,7 @@ the update-complete toast:
 | Embedded certificate fails to parse | Log Warn once per cycle; skip entirely. Cannot happen if tests pass. |
 | `CertOpenStore` fails on a machine store | Log Warn (event 701); continue to the remaining targets. |
 | `CertAddCertificateContextToStore` returns `CRYPT_E_EXISTS` | Log Debug; not an error. |
-| No console user logged on | Log Debug; machine targets still processed. |
-| `WTSQueryUserToken` / SID resolution fails | Log Warn; machine targets still processed. |
+| No console user, or the user token cannot be queried | Log Debug; machine targets still processed. `ConsoleUserSID` returns the same `false` for both — the first is routine, the second rare, and neither changes the action — so the log line names both possibilities rather than claiming to know which occurred. |
 | `certificate.enabled = false` | Skip the whole step silently. |
 
 A failure on one target never short-circuits the others: partial success (for

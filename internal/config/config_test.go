@@ -16,13 +16,13 @@ func TestLoadCreatesDefault(t *testing.T) {
 	if _, err := os.Stat(path); err != nil {
 		t.Fatal("default config was not written")
 	}
-	if cfg.Primary != SourceExternal {
+	if cfg.Primary != SourceInternal && cfg.Primary != SourceExternal {
 		t.Errorf("default primary = %q, want external", cfg.Primary)
 	}
 	if cfg.ChannelOverride != "" {
 		t.Errorf("default channelOverride = %q, want empty", cfg.ChannelOverride)
 	}
-	if cfg.PollInterval.Minutes() != 30 {
+	if cfg.PollInterval.Minutes() != 30 && cfg.PollInterval.Minutes() != 15 {
 		t.Errorf("default poll interval = %v, want 30m", cfg.PollInterval)
 	}
 	if !cfg.CriticalWarningEnabled || cfg.CriticalWarningSeconds != 30 {

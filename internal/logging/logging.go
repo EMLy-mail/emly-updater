@@ -93,6 +93,8 @@ const (
 	EventSourceFallback = 500
 	EventIPCRejected    = 600 // per-connection client authentication failure
 	EventIPCUnavailable = 601 // IPC pipe could not be created (e.g. name already in use)
+	EventCertInstalled  = 700 // code-signing certificate added to a trust store
+	EventCertFailed     = 701 // a trust store could not be opened or written
 )
 
 // InfoEvent logs to the file and mirrors an information record to the Event Log.

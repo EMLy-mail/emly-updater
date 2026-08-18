@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
+	"slices"
 	"testing"
 	"time"
 )
@@ -50,10 +51,8 @@ func TestEmbeddedIsCodeSigning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Embedded() failed: %v", err)
 	}
-	for _, eku := range c.ExtKeyUsage {
-		if eku == x509.ExtKeyUsageCodeSigning {
-			return
-		}
+	if slices.Contains(c.ExtKeyUsage, x509.ExtKeyUsageCodeSigning) {
+		return
 	}
 	t.Errorf("embedded certificate has no Code Signing EKU, got %v", c.ExtKeyUsage)
 }

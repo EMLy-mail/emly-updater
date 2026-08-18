@@ -52,6 +52,9 @@ type Config struct {
 	// [ipc]
 	IPCEnabled  bool
 	IPCPipeName string
+
+	// [certificate]
+	CertificateEnabled bool
 }
 
 // PrimaryManifestURL returns the manifest URL selected by Primary.
@@ -98,6 +101,7 @@ func Load(path string) (*Config, error) {
 	fa := f.Section("fileAssociations")
 	crit := f.Section("criticalUpdate")
 	ipcSec := f.Section("ipc")
+	certSec := f.Section("certificate")
 
 	cfg := &Config{
 		EMLyInstallDir:  upd.Key("emlyInstallDir").MustString(`C:\3gIT\EMLy`),
@@ -120,6 +124,8 @@ func Load(path string) (*Config, error) {
 
 		IPCEnabled:  ipcSec.Key("enabled").MustBool(true),
 		IPCPipeName: strings.TrimSpace(ipcSec.Key("pipeName").MustString("EMLyUpdater")),
+
+		CertificateEnabled: certSec.Key("enabled").MustBool(true),
 	}
 
 	minutes := upd.Key("pollIntervalMinutes").MustInt(30)

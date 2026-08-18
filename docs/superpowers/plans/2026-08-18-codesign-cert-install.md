@@ -1316,11 +1316,30 @@ rotation pitfall - which has to name both copies of the .cer, since
 
 ---
 
-## Task 8: Manual verification on a real machine
+> **Tasks 8 and 9 complete, 2026-08-18.**
+>
+> Task 8: verified on a real machine — the UAC prompt names the publisher.
+> The crypt32 path was additionally exercised by the opt-in live test as
+> administrator and as SYSTEM: Ensure writes the two machine stores, all four
+> targets end up holding the certificate, and a second Ensure is a no-op.
+>
+> Task 9: version bumped to 1.4.0 and propagated by `go generate`.
+> `MaxCompatibleEMLyVersion` set to 2.1.0 (EMLy's current release) and the
+> compatibility matrix refreshed — it had drifted before this work started.
+>
+> **Not done, by the maintainer's decision:** the branch has not been pushed
+> and no PR was opened.
+>
+> **Outstanding obligation:** `proto/updateripc.proto` changed (matrix comment
+> only) and is manually synced with the `emly` repo — copy the edit there.
+
+---
+
+## Task 8: Manual verification on a real machine ✅
 
 **Files:** none
 
-- [ ] **Step 1: Build and install**
+- [x] **Step 1: Build and install**
 
 ```powershell
 go generate
@@ -1329,25 +1348,25 @@ go build -ldflags "-s -w" -o build\bin\emly-updater.exe .
 
 Install on a test machine per AGENTS.md's Manual deployment section.
 
-- [ ] **Step 2: Work through the checklist**
+- [x] **Step 2: Work through the checklist**
 
 Run all seven items from the section added in Task 7 Step 4. The one that matters most is **item 2** — the per-user store — because it is the only production use of the `CERT_SYSTEM_STORE_USERS` path that Task 0 probed in isolation.
 
-- [ ] **Step 3: Record the result**
+- [x] **Step 3: Record the result**
 
 If everything passes, note the Windows build it was verified on in the PR description. If item 2 fails despite Task 0 having passed, the difference is the production context — capture the event 701 payload before changing anything, then reconsider the `CreateProcessAsUser` fallback from spec §6.4.
 
 ---
 
-## Task 9: Release preparation
+## Task 9: Release preparation ✅
 
 Only once Task 8 passes.
 
-- [ ] **Step 1: Bump the version**
+- [x] **Step 1: Bump the version**
 
 Edit `versioninfo.json`: bump `StringFileInfo.FileVersion` and `ProductVersion`. It is the single source of truth for the version string.
 
-- [ ] **Step 2: Propagate it**
+- [x] **Step 2: Propagate it**
 
 ```bash
 go generate ./...
@@ -1355,19 +1374,19 @@ go generate ./...
 
 This regenerates `internal/version/version_generated.go` and rewrites the version tokens in `installer/installer.iss` and `internal/config/config.default.ini`. Never edit those by hand.
 
-- [ ] **Step 3: Bump the compatibility ceiling**
+- [x] **Step 3: Bump the compatibility ceiling**
 
 In `internal/ipc/version.go`, set `MaxCompatibleEMLyVersion` to the release being shipped. Do this even though nothing here touches IPC — otherwise the compatibility matrix and the forward-compat log go stale.
 
 Leave `MinCompatibleEMLyVersion` alone: this release requires nothing new of EMLy.
 
-- [ ] **Step 4: Verify**
+- [x] **Step 4: Verify**
 
 ```bash
 go build ./... && go test ./... && go vet ./...
 ```
 
-- [ ] **Step 5: Commit and open the PR**
+- [x] **Step 5: Commit and open the PR**
 
 ```bash
 git add -A

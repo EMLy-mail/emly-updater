@@ -43,9 +43,27 @@ Splitting `cert.go` / `target.go` / `store.go` is deliberate: it keeps every unt
 
 ---
 
-## Task 0: Probe `CERT_SYSTEM_STORE_USERS` — design gate
+## Task 0: Probe `CERT_SYSTEM_STORE_USERS` — design gate ✅ PASSED
 
-**This task gates the entire plan. Do not start Task 1 until it passes.**
+> **Result, 2026-08-18 — PASSED. Approach A is confirmed; no fallback needed.**
+>
+> Run as `NT AUTHORITY\SYSTEM` in session 0 via a scheduled task (`schtasks
+> /ru SYSTEM`), which is the production context exactly, on Windows 11 Pro
+> 10.0.26200. All three assumptions held:
+>
+> - A LocalSystem process opened the console user's store for writing through
+>   `CERT_SYSTEM_STORE_USERS` with the store name `<SID>\Root`.
+> - `CERT_SYSTEM_STORE_UNPROTECTED_FLAG` bypassed the protected-root
+>   confirmation dialog — no prompt, no block, from a desktop-less session.
+> - `CERT_STORE_ADD_NEW` returned `CRYPT_E_EXISTS` on the duplicate add, so
+>   the idempotency signal Task 3 depends on behaves as designed.
+> - The `LocalMachine\Root` control also passed, confirming the probe itself
+>   was sound.
+>
+> Probe artifacts were removed: binary, output file, and the scratch
+> `EMLyProbe` registry key (verified absent with `reg query`).
+
+**This task gated the plan. It has passed — Task 1 onwards may proceed as written.**
 
 The design rests on one unverified assumption: that a LocalSystem process can write into another user's certificate store by opening `CERT_SYSTEM_STORE_USERS` with the store name `"<SID>\Root"`. This is documented behaviour, but it has not been observed on a real machine. Thirty throwaway lines settle it before any production code is written.
 
@@ -58,7 +76,7 @@ The design rests on one unverified assumption: that a LocalSystem process can wr
 - Consumes: nothing
 - Produces: a yes/no answer. On "no", stop and revise §6.4 of the spec to the `CreateProcessAsUser` fallback before continuing.
 
-- [ ] **Step 1: Write the probe**
+- [x] **Step 1: Write the probe**
 
 Create `main.go` in a scratch directory (not in the repo):
 
@@ -132,7 +150,7 @@ func probeStore(storeName string) error {
 }
 ```
 
-- [ ] **Step 2: Build it**
+- [x] **Step 2: Build it**
 
 ```bash
 cd <scratchpad>/certprobe
@@ -140,7 +158,7 @@ go mod init certprobe && go get golang.org/x/sys/windows@v0.46.0
 go build -o certprobe.exe .
 ```
 
-- [ ] **Step 3: Run it as SYSTEM, with a user logged on at the console**
+- [x] **Step 3: Run it as SYSTEM, with a user logged on at the console**
 
 Requires [PsExec](https://learn.microsoft.com/sysinternals/downloads/psexec) and an elevated shell:
 
@@ -150,13 +168,13 @@ psexec -s -accepteula .\certprobe.exe
 
 Expected: `PASS: CERT_SYSTEM_STORE_USERS is writable from this context`.
 
-- [ ] **Step 4: Decide**
+- [x] **Step 4: Decide**
 
 - **PASS** → continue to Task 1. Note in the branch's commit message or a scratch note that the probe passed, and on which Windows build.
 - **FAIL on `WTSQueryUserToken`** → you are not running as SYSTEM, or no user is logged on. Fix the setup and re-run; this is not a design failure.
 - **FAIL on `CertOpenStore`** → the design assumption is wrong. **Stop.** Revise spec §6.4 to the documented fallback (a hidden `install-cert --user` subcommand relaunched into the user's session with `CreateProcessAsUser`, reusing the `notify.LaunchToast` pattern), then rewrite Tasks 2–4 and 6 against it.
 
-- [ ] **Step 5: Clean up**
+- [x] **Step 5: Clean up**
 
 Delete the scratch directory. Nothing from this task is committed. If the probe created `HKU\<SID>\Software\Microsoft\SystemCertificates\EMLyProbe`, remove that key.
 

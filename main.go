@@ -36,6 +36,7 @@ import (
 	"golang.org/x/sys/windows/svc/eventlog"
 	"golang.org/x/sys/windows/svc/mgr"
 
+	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/service"
@@ -188,6 +189,43 @@ func acquireSingleton() (func(), error) {
 // cmdInstall registers the auto-start LocalSystem service with restart-on-
 // failure recovery, registers the Event Log source, and seeds ProgramData
 // with the default config. Idempotent so the updater's installer can re-run it.
+// installCertificate puts the 3gIT code-signing certificate into the machine
+// trust stores during `install`, so the very first EMLy setup this updater
+// runs already elevates as a verified publisher instead of waiting for the
+// first poll cycle.
+//
+// Best-effort and non-fatal: it reports what it did and never blocks service
+// registration. Only the machine stores are touched here - `install` runs from
+// an installer, where there may be no console user, and the service re-checks
+// the per-user stores every cycle anyway.
+func installCertificate() {
+	cfg, err := config.Load(config.ConfigPath())
+	if err != nil {
+		fmt.Printf("note: certificate install skipped, config unreadable: %v\n", err)
+		return
+	}
+	if !cfg.CertificateEnabled {
+		return
+	}
+
+	_, der, err := cert.Embedded()
+	if err != nil {
+		fmt.Printf("note: certificate install skipped: %v\n", err)
+		return
+	}
+
+	installed, err := cert.Ensure(der, cert.MachineTargets(), func(format string, args ...any) {
+		fmt.Printf("  %s\n", fmt.Sprintf(format, args...))
+	})
+	if err != nil {
+		fmt.Printf("note: certificate install incomplete: %v\n", err)
+		return
+	}
+	if len(installed) == 0 {
+		fmt.Println("code-signing certificate already present in machine trust stores")
+	}
+}
+
 func cmdInstall() error {
 	if err := config.EnsureDirs(); err != nil {
 		return err
@@ -197,6 +235,8 @@ func cmdInstall() error {
 	} else if created {
 		fmt.Printf("wrote default config to %s\n", config.ConfigPath())
 	}
+
+	installCertificate()
 
 	exePath, err := os.Executable()
 	if err != nil {

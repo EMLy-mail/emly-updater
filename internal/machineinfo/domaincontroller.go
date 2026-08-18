@@ -19,6 +19,10 @@ var (
 // name (rather than its NetBIOS name) in DomainControllerName.
 const dsReturnDNSName = 0x40000000
 
+// dsInetAddress is DomainControllerAddressType's value for an IP address;
+// the other documented value is 2, a NetBIOS computer name.
+const dsInetAddress = 1
+
 // domainControllerInfo mirrors the Win32 DOMAIN_CONTROLLER_INFOW struct.
 // Field order and sizes must match the native layout exactly.
 type domainControllerInfo struct {
@@ -33,11 +37,19 @@ type domainControllerInfo struct {
 	ClientSiteName              *uint16
 }
 
-// DomainControllerInfo is the resolved domain controller: its DNS name and
-// the AD site it belongs to.
+// DomainControllerInfo is the resolved domain controller: its DNS name, the
+// AD site it belongs to, and the address it answered from.
 type DomainControllerInfo struct {
 	Name string
 	Site string
+
+	// Address is DomainControllerAddress with the UNC prefix stripped, and
+	// AddressIsIP reports whether it is actually an IP: DsGetDcName can hand
+	// back a NetBIOS computer name here instead (DS_NETBIOS_ADDRESS), which
+	// no amount of parsing turns into an address. Callers that match on the
+	// address must check AddressIsIP first.
+	Address     string
+	AddressIsIP bool
 }
 
 // NearestDomainController resolves the domain controller nearest to this
@@ -77,9 +89,19 @@ func NearestDomainController(domain string) (*DomainControllerInfo, error) {
 	}
 	defer procNetApiBufferFree.Call(uintptr(unsafe.Pointer(infoPtr)))
 
-	// DsGetDcName prefixes both names with "\\"; strip it for display/use.
 	return &DomainControllerInfo{
-		Name: strings.TrimPrefix(windows.UTF16PtrToString(infoPtr.DomainControllerName), `\`),
-		Site: windows.UTF16PtrToString(infoPtr.DCSiteName),
+		Name:        trimUNCPrefix(windows.UTF16PtrToString(infoPtr.DomainControllerName)),
+		Site:        windows.UTF16PtrToString(infoPtr.DCSiteName),
+		Address:     trimUNCPrefix(windows.UTF16PtrToString(infoPtr.DomainControllerAddress)),
+		AddressIsIP: infoPtr.DomainControllerAddressType == dsInetAddress,
 	}, nil
+}
+
+// trimUNCPrefix strips the UNC backslashes DsGetDcName puts on the DC
+// name (it returns "\\dc01.corp.example.com"). Split out of the caller purely
+// so it can be unit-tested without a reachable domain controller:
+// trimming only one of the two backslashes leaves a name that still looks
+// plausible in a log line but is wrong everywhere it is used.
+func trimUNCPrefix(name string) string {
+	return strings.TrimPrefix(name, `\\`)
 }

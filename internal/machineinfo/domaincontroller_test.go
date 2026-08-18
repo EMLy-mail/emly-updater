@@ -16,3 +16,27 @@ func TestNetapi32ProcsResolve(t *testing.T) {
 		t.Errorf("NetApiBufferFree not found in netapi32.dll: %v", err)
 	}
 }
+
+// TestTrimUNCPrefix pins down that BOTH leading backslashes go: DsGetDcName
+// returns "\\\\DC-RM2.tregcc.local", and stripping just one leaves a
+// name that fails silently wherever it is used.
+func TestTrimUNCPrefix(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"dns name", "\\\\DC-RM2.tregcc.local", "DC-RM2.tregcc.local"},
+		{"netbios name", "\\\\DC-RM2", "DC-RM2"},
+		{"already trimmed", "DC-RM2.tregcc.local", "DC-RM2.tregcc.local"},
+		{"single backslash", "\\DC-RM2", "\\DC-RM2"},
+		{"empty", "", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := trimUNCPrefix(c.in); got != c.want {
+				t.Errorf("trimUNCPrefix(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

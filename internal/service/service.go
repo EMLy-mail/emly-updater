@@ -48,6 +48,10 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 		Downloads: &download.Manager{Dir: config.DownloadsDir()},
 		Machine:   machine,
 	}
+	// Decide which manifest source this machine can actually reach before
+	// the first cycle runs: cfg.Primary may be rewritten here.
+	applySourcePolicy(cfg, log, config.ConfigPath(), machineinfo.NearestDomainController)
+
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
 	return u

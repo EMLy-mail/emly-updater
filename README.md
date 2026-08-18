@@ -110,6 +110,8 @@ Edits survive upgrades and uninstall. Changes take effect on the next poll cycle
 | `uncRoot` | `\\dc-rm2\logo\update` | UNC fallback share; `version.json` lives here |
 | `userAgent` | _(empty)_ | Optional `User-Agent` header sent on HTTP requests |
 | `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
+| `internalDCName` | `DC-RM2` | Domain controller that identifies the internal LAN; empty disables the startup source check |
+| `internalDCSubnets` | `172.16.96.0/24` | Comma-separated CIDR blocks the DC must answer from; empty disables the check |
 
 ### `[criticalUpdate]`
 

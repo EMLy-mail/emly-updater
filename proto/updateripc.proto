@@ -28,7 +28,7 @@ option go_package = "emlyipc/ipcpb;ipcpb";
 //
 //   protocol_version | EMLyUpdater min | EMLyUpdater max | EMLy min | EMLy max
 //   -----------------+------------------+------------------+----------+----------
-//   1                | 1.2.0b           | 1.4.0            | 2.0.0    | 2.0.1
+//   1                | 1.2.0b           | 1.4.0            | 2.0.0    | 2.1.0
 
 // Envelope is the single message written to and read from the pipe per
 // exchange: one request Envelope in, one response Envelope out, then the

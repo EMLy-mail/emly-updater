@@ -3,3 +3,8 @@ installer/Output/
 *.exe
 .idea/
 .vscode/
+
+# Code-signing material - the private key must never reach the public remote
+*.pfx
+*.key
+certs/*.pfx

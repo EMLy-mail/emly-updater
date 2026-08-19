@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"emlyupdater/internal/version"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -40,6 +41,14 @@ type Config struct {
 	UNCRoot             string
 	UserAgent           string // optional User-Agent header for HTTP requests
 	APIKey              string // optional X-Api-Key header for HTTP requests
+
+	// InternalDCName / InternalDCSubnets drive the startup source policy:
+	// when the nearest domain controller is InternalDCName *and* answers from
+	// one of InternalDCSubnets, the machine is on the internal LAN and Primary
+	// is forced to "internal"; anything else forces "external". Either one
+	// left empty disables the check entirely and Primary is used as written.
+	InternalDCName    string
+	InternalDCSubnets []*net.IPNet
 
 	// [fileAssociations]
 	ProgIDEml string
@@ -112,6 +121,8 @@ func Load(path string) (*Config, error) {
 		UserAgent:           BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
 		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
 
+		InternalDCName: strings.TrimSpace(src.Key("internalDCName").String()),
+
 		ProgIDEml: fa.Key("progIdEml").MustString("EMLy.EML"),
 		ProgIDMsg: fa.Key("progIdMsg").MustString("EMLy.MSG"),
 
@@ -127,6 +138,12 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("pollIntervalMinutes must be >= 1, got %d", minutes)
 	}
 	cfg.PollInterval = time.Duration(minutes) * time.Minute
+
+	subnets, err := ParseSubnets(src.Key("internalDCSubnets").String())
+	if err != nil {
+		return nil, err
+	}
+	cfg.InternalDCSubnets = subnets
 
 	if err := cfg.validate(); err != nil {
 		return nil, err

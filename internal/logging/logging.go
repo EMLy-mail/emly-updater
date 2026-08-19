@@ -93,6 +93,11 @@ const (
 	EventSourceFallback = 500
 	EventIPCRejected    = 600 // per-connection client authentication failure
 	EventIPCUnavailable = 601 // IPC pipe could not be created (e.g. name already in use)
+
+	// Startup source policy: which manifest source the detected domain
+	// controller selected, and why it could not be determined.
+	EventSourcePolicy       = 700
+	EventSourcePolicyFailed = 701
 )
 
 // InfoEvent logs to the file and mirrors an information record to the Event Log.

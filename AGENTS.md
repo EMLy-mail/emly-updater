@@ -35,7 +35,8 @@ internal/
   manifest/              JSON manifest parse/compare (go-version for semver)
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes
   installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
-  service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle
+  service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
+                         sourcepolicy.go picks the manifest source from the detected DC at startup
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
@@ -54,6 +55,17 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 - **Exe-dir log is preserved on uninstall** - `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
 - **SHA256 is mandatory** - a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
 - **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
+- **The update source is decided at startup, not just configured** - `applySourcePolicy`
+  (`internal/service/sourcepolicy.go`, called from `service.New`) resolves the nearest domain
+  controller and forces `primary` to `internal` only when the DC is `internalDCName` *and*
+  answers from `internalDCSubnets`; anything else (other DC, other subnet, machine off the
+  domain) forces `external`. Both `internalManifestURL` and `uncRoot` live in the office, so a
+  machine that cannot see the office DC cannot reach either. The decision is applied in memory
+  *and* written back to `config.ini` via `config.SetPrimary`, and is logged every start (event
+  700; 701 on failure) even when nothing changes. It never switches to a source whose manifest
+  URL is empty - that config would fail `Load` on the next start and take the service down.
+  Leaving either key empty disables the whole check. It runs **once at startup**: a laptop that
+  boots off-site stays `external` until the service restarts on the LAN.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
 
 ## Configuration Reference
@@ -72,6 +84,8 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 | `uncRoot` | `[source]` | `\\dc-rm2\logo\update` | UNC fallback share; `version.json` lives here |
 | `userAgent` | `[source]` | _(empty)_ | Sent as `User-Agent` on HTTP requests |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
+| `internalDCName` | `[source]` | `DC-RM2` | Startup source policy: DC that identifies the internal LAN (empty disables) |
+| `internalDCSubnets` | `[source]` | `172.16.96.0/24` | Startup source policy: CIDR blocks the DC must answer from (empty disables) |
 | `criticalWarningEnabled` | `[criticalUpdate]` | `true` | Show countdown WTS dialog before force-kill |
 | `criticalWarningSeconds` | `[criticalUpdate]` | `30` | |
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |
@@ -154,7 +168,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `<ExeDir>\updater.log` | Same events, kept next to exe for on-site access |
 | `%ProgramData%\EMLyUpdater\logs\emly-install-<ver>.log` | InnoSetup silent install log |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601) |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701) |
 
 ## Branching
 

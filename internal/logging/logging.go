@@ -98,6 +98,9 @@ const (
 	// controller selected, and why it could not be determined.
 	EventSourcePolicy       = 700
 	EventSourcePolicyFailed = 701
+
+	EventCertInstalled = 702 // code-signing certificate added to a trust store
+	EventCertFailed    = 703 // a trust store could not be opened or written
 )
 
 // InfoEvent logs to the file and mirrors an information record to the Event Log.

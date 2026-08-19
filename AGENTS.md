@@ -43,6 +43,7 @@ internal/
   toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
   assoc/                 HKLM file-association self-heal after install
+  cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus to the EMLy client (protobuf)
 ```
 
@@ -90,6 +91,7 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 | `criticalWarningSeconds` | `[criticalUpdate]` | `30` | |
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |
 | `pipeName` | `[ipc]` | `EMLyUpdater` | Exposed as `\\.\pipe\<pipeName>`; must not contain `\` or `/` |
+| `enabled` | `[certificate]` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher` (machine + console user) |
 
 ## IPC (EMLyUpdater ⇄ EMLy)
 
@@ -110,7 +112,7 @@ tampering with this channel is meant to require Administrator, not just a logged
   sides' `ipcpb` packages (`go generate ./internal/ipc/ipcpb`, requires `protoc`+`protoc-gen-go`,
   not required for `go build`/CI since generated code is committed).
 - **Versioning**: every `Envelope` also carries `sender_version` — the sending binary's own semver
-  (`internal/ipc/version_generated.go`'s `Version` const here, generated from `versioninfo.json` —
+  (`internal/version/version_generated.go`'s `Version` const here, generated from `versioninfo.json` —
   see below — EMLy's `GUI_SEMVER` on the other side), distinct
   from `protocol_version` which only tracks wire/schema compatibility. Each side enforces the *min*
   half of its own compatibility consts (`MinCompatibleEMLyVersion` here, `MinCompatibleUpdaterVersion`
@@ -132,6 +134,69 @@ tampering with this channel is meant to require Administrator, not just a logged
 5. `icacls`/AccessChk the live pipe to confirm the `0x120083` mask actually reaches Authenticated
    Users and nothing more — this is reasoned from documented access-right bit values, not
    otherwise verified.
+
+## Code-signing certificate
+
+`internal/cert` embeds the 3gIT code-signing certificate (`CN=3G IT Innovation`,
+self-signed, DER) and installs it into `Root` **and** `TrustedPublisher`, for the
+machine and for the console user, so EMLy's setup elevates as a verified
+publisher instead of "Unknown publisher".
+
+- **Both stores are required.** It is an end-entity certificate, not a CA, so its
+  chain is one element long and terminates at itself: `Root` lets that chain
+  validate, `TrustedPublisher` makes the publisher trusted. Neither alone works.
+- **Per-user stores are reached by SID**, not by a session hop: `CertOpenStore`
+  with `CERT_SYSTEM_STORE_USERS` and the store name `<SID>\Root`, the SID coming
+  from `notify.ConsoleUserSID`. Those targets must also set
+  `CERT_SYSTEM_STORE_UNPROTECTED_FLAG` — the user `Root` store is a *protected
+  root* whose ordinary add path raises an interactive confirmation dialog, and
+  session 0 has no desktop to draw one on.
+- **The per-user targets are normally silent no-ops**, and that is expected, not
+  a bug. A per-user system store is a *collection* that includes the machine
+  store of the same name: once `LocalMachine\Root` holds the certificate,
+  `<SID>\Root` already reports it and the add returns `CRYPT_E_EXISTS`. So a
+  healthy run writes 2 stores, not 4. They matter only when a machine store
+  could not be written. Related gotcha: the per-user `Root` store is a protected
+  root and *denies* the add outright when the certificate is not already
+  inherited from the machine store, even with `CERT_SYSTEM_STORE_UNPROTECTED_FLAG`
+  — per-user `TrustedPublisher` accepts writes normally. Verified on Windows 11
+  26200 as administrator and as SYSTEM.
+- **Idempotency comes from `CERT_STORE_ADD_NEW`**, which returns `CRYPT_E_EXISTS`
+  on a duplicate. That is the already-installed signal — there is deliberately no
+  separate `CertFindCertificateInStore` lookup, which would only add a race.
+- **It runs every cycle, not once at startup**, so a user who logs on after boot
+  is covered and manual removal self-heals. The already-present path logs at
+  Debug; only a real write logs Info + event 702.
+- **SmartScreen is explicitly not addressed** — it is a cloud reputation service
+  and does not consult local trust stores. Only a publicly-issued OV/EV
+  certificate changes its behaviour.
+
+### Certificate manual verification (admin required)
+
+Nothing in `internal/cert/store.go` or `internal/notify/console_user.go` is
+covered by `go test` — they are pure Windows API calls and CI has no admin
+rights. This checklist is their verification.
+
+0. Quickest check of the crypt32 path, no install needed — from an **elevated**
+   shell: `$env:EMLY_CERT_STORE_TEST=1; go test ./internal/cert/ -run Live -v`.
+   It exercises Ensure against the real stores with a throwaway certificate and
+   cleans up after itself. Skipped by default so CI never runs it.
+1. On a clean machine, run `emly-updater install` and confirm in `certmgr.msc`
+   (Local Computer) that `CN=3G IT Innovation` is in both **Trusted Root
+   Certification Authorities** and **Trusted Publishers**.
+2. Log on as a standard user, wait one poll cycle, and confirm in `certmgr.msc`
+   (Current User) that it is in the same two stores for that user.
+3. Run the EMLy setup and confirm the UAC prompt reads *"Verified publisher:
+   3G IT Innovation"*.
+4. Delete the certificate from `LocalMachine\Root`, wait one cycle, and confirm it
+   is restored and event 702 is logged.
+5. With nobody logged on at the console, confirm the machine stores are still
+   maintained and only a Debug line notes the skipped per-user half.
+6. Confirm a second cycle after a successful install logs nothing at Info — i.e.
+   the `CRYPT_E_EXISTS` path really is Debug-level and 96 cycles a day do not
+   flood the log.
+7. Set `enabled = false` under `[certificate]`, restart the service, and confirm
+   nothing is written and nothing is logged.
 
 ## Deployment
 
@@ -168,7 +233,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `<ExeDir>\updater.log` | Same events, kept next to exe for on-site access |
 | `%ProgramData%\EMLyUpdater\logs\emly-install-<ver>.log` | InnoSetup silent install log |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701) |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703) |
 
 ## Branching
 
@@ -183,7 +248,20 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs).
 - **Editing `proto/updateripc.proto`**: copy the change verbatim to `emly/proto/updateripc.proto` and regenerate both repos' `ipcpb` packages. The two repos share no Go module, so nothing enforces this automatically — a one-sided edit silently desyncs the wire protocol.
-- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/ipc/version_generated.go` and rewrites the version tokens in `installer/installer.iss` (`ApplicationVersion`) and `internal/config/config.default.ini` (`userAgent`) — no other file should ever hardcode the version string by hand again. Also bump `MaxCompatibleEMLyVersion` in `internal/ipc/version.go` to the release being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the compatibility matrix and the (informational) forward-compat log silently go stale. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
+- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/version/version_generated.go` and rewrites the version tokens in `installer/installer.iss` (`ApplicationVersion`) and `internal/config/config.default.ini` (`userAgent`) — no other file should ever hardcode the version string by hand again. Then update the **EMLyUpdater max** column of the compatibility matrix atop `proto/updateripc.proto` to the version being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the matrix silently goes stale. (That file is manually synced with the `emly` repo, so copy the edit there too.) Do **not** touch `MaxCompatibleEMLyVersion` here: despite living in this repo it tracks *EMLy's* releases, not this one's, and bumping it for an EMLyUpdater release would claim compatibility with an EMLy build that may not exist. Bump it — and the matrix's EMLy max column — when *EMLy* cuts a release. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
+- **Rotating the code-signing certificate**: replace **both**
+  `certs/3GITInnovation.cer` (the source of record) and
+  `internal/cert/3GITInnovation.cer` (the embedded copy — `//go:embed` cannot
+  reach above its own package), update `wantThumbprint` in
+  `internal/cert/cert_test.go` and section 4 of the design doc, then cut a
+  release. The old certificate stays installed on existing machines and keeps
+  validating signatures made with it. `internal/cert/cert_test.go` fails 60 days
+  before expiry, so this should never be a surprise. Two standing
+  recommendations for whoever issues the next one: give it a 10-year validity and
+  a SHA-256 signature (it is self-signed — the lifetime is a free choice, and an
+  annual one creates yearly release pressure for nothing), and timestamp the
+  signatures themselves (`signtool /tr <rfc3161-url> /td sha256`) so they survive
+  the certificate's expiry.
 - **HTTP headers**: set them in `HTTPSource` only - `UNCSource` and the `Resolver` are header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.

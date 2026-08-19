@@ -148,3 +148,34 @@ func TestResolveEMLyOverrideWins(t *testing.T) {
 		t.Fatalf("channelOverride did not win: %+v", info)
 	}
 }
+
+func TestLoadCertificateDefaultsEnabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.ini")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.CertificateEnabled {
+		t.Error("certificate install should default to enabled")
+	}
+}
+
+func TestLoadCertificateDisabled(t *testing.T) {
+	path := writeConfig(t, `
+[source]
+primary = internal
+internalManifestURL = http://example.invalid/v2/updates/manifest
+
+[certificate]
+enabled = false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.CertificateEnabled {
+		t.Error("certificate.enabled = false was not honoured")
+	}
+}

@@ -18,7 +18,7 @@ import (
 // when EMLy ships a build that requires a newer ProtocolVersion.
 const (
 	MinCompatibleEMLyVersion = "2.0.0"
-	MaxCompatibleEMLyVersion = "2.0.1"
+	MaxCompatibleEMLyVersion = "2.1.0"
 )
 
 // checkPeerVersion enforces MinCompatibleEMLyVersion against a connecting

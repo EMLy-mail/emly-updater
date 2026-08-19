@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"emlyupdater/internal/assoc"
+	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/download"
 	"emlyupdater/internal/installer"
@@ -83,6 +84,9 @@ func (u *Updater) RunLoop(ctx context.Context) {
 // Cycle performs one full pass: resume pending → fetch manifest → decide →
 // download → apply.
 func (u *Updater) Cycle(ctx context.Context) error {
+	// Trust-store self-heal, before anything that might run EMLy's setup.
+	u.ensureCertificate()
+
 	emly := u.Cfg.ResolveEMLy()
 	if emly.FreshInstall {
 		u.Log.Info("EMLy config.ini not found - fresh-install mode",
@@ -290,6 +294,62 @@ func (u *Updater) install(p *state.Pending) error {
 	}
 
 	return nil
+}
+
+// ensureCertificate installs the 3gIT code-signing certificate into the
+// machine trust stores and, when somebody is logged on at the console, into
+// that user's stores as well.
+//
+// Best-effort by design, like the file-association self-heal: a certificate
+// that cannot be installed costs a friendlier UAC prompt, never an update. No
+// failure here is ever returned to the caller.
+//
+// This runs on every cycle rather than once at service start. A user who logs
+// on after boot - the normal case, not the exception - would otherwise never
+// be covered, and manual removal of the certificate would never heal. When it
+// is already installed everywhere the cost is two syscalls per store and
+// nothing above Debug reaches the log.
+func (u *Updater) ensureCertificate() {
+	if !u.Cfg.CertificateEnabled {
+		return
+	}
+
+	c, der, err := cert.Embedded()
+	if err != nil {
+		u.Log.Warn("embedded code-signing certificate unusable, skipping install",
+			"error", err.Error())
+		return
+	}
+
+	targets := cert.MachineTargets()
+	if sid, ok := notify.ConsoleUserSID(); ok {
+		targets = append(targets, cert.UserTargets(sid)...)
+	} else {
+		// ConsoleUserSID collapses "nobody is logged on" and "the token could
+		// not be queried" into the same false - the first is routine and the
+		// second is rare, and neither changes what we do. Say both.
+		u.Log.Debug("no console user available (nobody logged on, or the user token " +
+			"could not be queried), installing certificate for the machine only")
+	}
+
+	installed, err := cert.Ensure(der, targets, func(format string, args ...any) {
+		u.Log.Debug(fmt.Sprintf(format, args...))
+	})
+	for _, store := range installed {
+		u.Log.InfoEvent(logging.EventCertInstalled, "code-signing certificate installed",
+			"store", store,
+			"subject", c.Subject.CommonName,
+			"notAfter", c.NotAfter.Format(time.RFC3339))
+	}
+	if err != nil {
+		u.Log.WarnEvent(logging.EventCertFailed, "code-signing certificate install incomplete",
+			"error", err.Error(), "storesWritten", len(installed), "storesTried", len(targets))
+		return
+	}
+	if len(installed) == 0 {
+		u.Log.Debug("code-signing certificate already present in all trust stores",
+			"stores", len(targets))
+	}
 }
 
 // showUpdateToast announces a completed update in the active console user's

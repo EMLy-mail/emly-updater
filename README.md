@@ -120,6 +120,12 @@ Edits survive upgrades and uninstall. Changes take effect on the next poll cycle
 | `criticalWarningEnabled` | `true` | Show a countdown dialog in the user's session before a forced close |
 | `criticalWarningSeconds` | `30` | Countdown duration; warning language follows EMLy's `LANGUAGE` key (fallback `en`) |
 
+### `[certificate]`
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher`, for the machine and for the console user. Makes EMLy's setup elevate as a verified publisher instead of "Unknown publisher". Re-checked every cycle; idempotent. |
+
 ### `[fileAssociations]`
 
 | Key | Default | Description |

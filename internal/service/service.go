@@ -247,6 +247,14 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 
 // install runs the setup and the post-install steps. The pending entry is
 // cleared only after the new version is confirmed in EMLy's config.ini.
+//
+// The Updater's own decision about the correct version always wins over
+// whatever is already on disk: if a normal run doesn't leave config.ini
+// reporting p.Version - whether the setup itself failed, or it exited clean
+// but the version still doesn't match (e.g. EMLy's installer treating a
+// stale/inconsistent prior install as already up to date) - the existing
+// install is wiped with EMLy's own uninstaller and Run is retried once
+// against a clean slate, ignoring whatever state was there before.
 func (u *Updater) install(p *state.Pending) error {
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
@@ -256,17 +264,23 @@ func (u *Updater) install(p *state.Pending) error {
 		return fmt.Errorf("refusing to install: %w", err)
 	}
 
-	u.Log.Info("running setup", "path", p.SetupPath, "version", p.Version)
-	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
-		u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy install failed",
+	if err := u.runSetupAndVerify(p, "running setup"); err != nil {
+		u.Log.WarnEvent(logging.EventInstallFailed,
+			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
 			"version", p.Version, "error", err.Error())
-		return err // pending kept → retried next cycle
-	}
 
-	if err := installer.VerifyInstalled(u.Cfg.EMLyConfigFile, p.Version); err != nil {
-		u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy install verification failed",
-			"version", p.Version, "error", err.Error())
-		return err // pending kept → retried next cycle
+		if uerr := installer.Uninstall(u.Cfg.EMLyInstallDir, config.LogsDir()); uerr != nil {
+			// Best-effort: a failed cleanup is not itself a reason to give up
+			// on the reinstall (e.g. no uninstaller present at all).
+			u.Log.Warn("clean-install uninstall step reported an error, reinstalling anyway",
+				"version", p.Version, "error", uerr.Error())
+		}
+
+		if err := u.runSetupAndVerify(p, "running setup (clean install)"); err != nil {
+			u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy clean install failed",
+				"version", p.Version, "error", err.Error())
+			return err // pending kept → retried next cycle
+		}
 	}
 
 	u.Log.InfoEvent(logging.EventInstallOK, "EMLy updated successfully", "version", p.Version)
@@ -294,6 +308,17 @@ func (u *Updater) install(p *state.Pending) error {
 	}
 
 	return nil
+}
+
+// runSetupAndVerify runs EMLy's setup for p and confirms config.ini now
+// reports p.Version. label distinguishes the first attempt from the
+// clean-install retry in the logs.
+func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
+	u.Log.Info(label, "path", p.SetupPath, "version", p.Version)
+	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
+		return err
+	}
+	return installer.VerifyInstalled(u.Cfg.EMLyConfigFile, p.Version)
 }
 
 // ensureCertificate installs the 3gIT code-signing certificate into the

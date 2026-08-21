@@ -15,9 +15,42 @@ import (
 	"emlyupdater/internal/manifest"
 )
 
-// installTimeout bounds a hung setup process; a normal silent install takes
-// seconds.
+// installTimeout bounds a hung setup/uninstaller process; a normal silent
+// run takes seconds.
 const installTimeout = 15 * time.Minute
+
+// runSilent starts exePath with args, waits for it to exit, and translates
+// the result into an error. Shared by Run and Uninstall - both are "launch an
+// InnoSetup-generated exe silently and wait" with the same failure modes
+// (non-zero exit, hang).
+func runSilent(exePath string, args []string, logPath string) error {
+	cmd := exec.Command(exePath, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("failed to start %s: %w", exePath, err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				// InnoSetup exit codes 1-8 indicate distinct failures; the log
+				// file written via /LOG holds the detail.
+				return fmt.Errorf("%s exited with code %d (see %s)", filepath.Base(exePath), exitErr.ExitCode(), logPath)
+			}
+			return fmt.Errorf("%s failed: %w", filepath.Base(exePath), err)
+		}
+		return nil
+	case <-time.After(installTimeout):
+		_ = cmd.Process.Kill()
+		<-done
+		return fmt.Errorf("%s did not finish within %s, killed (see %s)", filepath.Base(exePath), installTimeout, logPath)
+	}
+}
 
 // Run executes the setup silently as SYSTEM and waits for completion.
 //
@@ -34,33 +67,39 @@ func Run(setupPath, version, logsDir string) error {
 		"/FORCEUPGRADE",
 		"/LOG=" + logPath,
 	}
+	return runSilent(setupPath, args, logPath)
+}
 
-	cmd := exec.Command(setupPath, args...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("failed to start setup %s: %w", setupPath, err)
+// Uninstall runs EMLy's own InnoSetup-generated uninstaller silently, if one
+// is present in installDir, to wipe a stale or inconsistent prior install
+// before a clean reinstall.
+//
+// Called only as remediation when a normal Run + VerifyInstalled leaves
+// config.ini not reporting the target version - the Updater's own view of the
+// correct version always wins over whatever is already on disk, so instead of
+// trusting the existing install's state, the next Run happens against a
+// clean slate.
+//
+// A missing uninstaller (fresh machine, or EMLy was already removed by hand)
+// is not an error: there is nothing to clean up, and the subsequent Run
+// proceeds normally against an empty install dir.
+func Uninstall(installDir, logsDir string) error {
+	matches, err := filepath.Glob(filepath.Join(installDir, "unins*.exe"))
+	if err != nil {
+		return fmt.Errorf("failed to look for EMLy's uninstaller: %w", err)
 	}
-
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-
-	select {
-	case err := <-done:
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				// InnoSetup exit codes 1-8 indicate distinct failures; the log
-				// file written via /LOG holds the detail.
-				return fmt.Errorf("setup exited with code %d (see %s)", exitErr.ExitCode(), logPath)
-			}
-			return fmt.Errorf("setup failed: %w", err)
-		}
+	if len(matches) == 0 {
 		return nil
-	case <-time.After(installTimeout):
-		_ = cmd.Process.Kill()
-		<-done
-		return fmt.Errorf("setup did not finish within %s, killed (see %s)", installTimeout, logPath)
 	}
+
+	logPath := filepath.Join(logsDir, fmt.Sprintf("emly-uninstall-%d.log", time.Now().Unix()))
+	args := []string{
+		"/VERYSILENT",
+		"/SUPPRESSMSGBOXES",
+		"/NORESTART",
+		"/LOG=" + logPath,
+	}
+	return runSilent(matches[0], args, logPath)
 }
 
 // VerifyInstalled re-reads EMLy's config.ini and confirms GUI_SEMVER now

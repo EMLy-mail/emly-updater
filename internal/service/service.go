@@ -121,30 +121,7 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	}
 
 	// 2) Normal poll: manifest via primary source, UNC as fallback.
-	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
-	httpSrc.UserAgent = u.Cfg.UserAgent
-	httpSrc.APIKey = u.Cfg.APIKey
-	httpSrc.Hostname = u.Machine.Hostname
-	httpSrc.HWID = u.Machine.HWID
-	httpSrc.ADDomain = u.Machine.ADDomain
-	httpSrc.InternalIP = u.Machine.InternalIP
-	resolver := &source.Resolver{
-		Primary:  httpSrc,
-		Fallback: source.NewUNCSource(u.Cfg.UNCRoot),
-		Logf: func(format string, args ...any) {
-			u.Log.Info(fmt.Sprintf(format, args...))
-		},
-	}
-	src, m, err := resolver.Resolve(ctx)
-	if err != nil {
-		return err
-	}
-	if _, isUNC := src.(*source.UNCSource); isUNC {
-		u.Log.WarnEvent(logging.EventSourceFallback, "primary update source unavailable, using UNC fallback",
-			"unc", u.Cfg.UNCRoot)
-	}
-
-	target, err := src.ResolveTarget(m, emly.Channel)
+	src, m, target, err := u.resolveTarget(ctx, emly.Channel)
 	if err != nil {
 		return err
 	}
@@ -189,6 +166,40 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	}
 
 	return u.apply(ctx, p, emly)
+}
+
+// resolveTarget fetches the update manifest (primary source, UNC as
+// fallback) and resolves it to a channel target. Shared by the normal poll
+// in Cycle and by the forced re-download path in install.
+func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
+	httpSrc.UserAgent = u.Cfg.UserAgent
+	httpSrc.APIKey = u.Cfg.APIKey
+	httpSrc.Hostname = u.Machine.Hostname
+	httpSrc.HWID = u.Machine.HWID
+	httpSrc.ADDomain = u.Machine.ADDomain
+	httpSrc.InternalIP = u.Machine.InternalIP
+	resolver := &source.Resolver{
+		Primary:  httpSrc,
+		Fallback: source.NewUNCSource(u.Cfg.UNCRoot),
+		Logf: func(format string, args ...any) {
+			u.Log.Info(fmt.Sprintf(format, args...))
+		},
+	}
+	src, m, err := resolver.Resolve(ctx)
+	if err != nil {
+		return nil, nil, manifest.Target{}, err
+	}
+	if _, isUNC := src.(*source.UNCSource); isUNC {
+		u.Log.WarnEvent(logging.EventSourceFallback, "primary update source unavailable, using UNC fallback",
+			"unc", u.Cfg.UNCRoot)
+	}
+
+	target, err := src.ResolveTarget(m, channel)
+	if err != nil {
+		return nil, nil, manifest.Target{}, err
+	}
+	return src, m, target, nil
 }
 
 // apply installs a verified pending update according to EMLy's running state:
@@ -242,7 +253,7 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 		}
 	}
 
-	return u.install(p)
+	return u.install(ctx, p, emly)
 }
 
 // install runs the setup and the post-install steps. The pending entry is
@@ -255,7 +266,15 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 // stale/inconsistent prior install as already up to date) - the existing
 // install is wiped with EMLy's own uninstaller and Run is retried once
 // against a clean slate, ignoring whatever state was there before.
-func (u *Updater) install(p *state.Pending) error {
+//
+// A same-bits retry cannot fix anything a matching checksum already
+// verified: if the cached setup itself is the problem (a stale or corrupt
+// local copy, or the manifest having briefly pointed at a bad build), running
+// it again just reproduces the same failure. So before the clean-install
+// retry, the cache entry is dropped and re-fetched fresh from the source;
+// only if that re-fetch cannot happen at all (e.g. offline) does the retry
+// fall back to the original local copy.
+func (u *Updater) install(ctx context.Context, p *state.Pending, emly config.EMLyInfo) error {
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
@@ -268,6 +287,13 @@ func (u *Updater) install(p *state.Pending) error {
 		u.Log.WarnEvent(logging.EventInstallFailed,
 			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
 			"version", p.Version, "error", err.Error())
+
+		if fresh, ferr := u.forceRedownload(ctx, p, emly.Channel); ferr != nil {
+			u.Log.Warn("could not force a fresh download for the clean-install retry, retrying with the cached copy",
+				"version", p.Version, "error", ferr.Error())
+		} else {
+			p = fresh
+		}
 
 		if uerr := installer.Uninstall(u.Cfg.EMLyInstallDir, config.LogsDir()); uerr != nil {
 			// Best-effort: a failed cleanup is not itself a reason to give up
@@ -308,6 +334,46 @@ func (u *Updater) install(p *state.Pending) error {
 	}
 
 	return nil
+}
+
+// forceRedownload wipes the downloads cache and the persisted state file
+// entirely, then re-resolves the manifest for channel and fetches whatever
+// it currently offers from scratch. A same-checksum cache hit can't be
+// trusted after a verified install still didn't land (stale local copy, or
+// the manifest briefly having pointed at a bad build), so nothing short of a
+// full wipe + fresh pull from the API guarantees clean bits. Returns the new,
+// persisted pending entry.
+func (u *Updater) forceRedownload(ctx context.Context, p *state.Pending, channel string) (*state.Pending, error) {
+	if err := u.Downloads.CleanupExcept(""); err != nil {
+		u.Log.Warn("failed to fully clear the downloads cache before forcing a re-download",
+			"error", err.Error())
+	}
+	if err := u.Store.ClearPending(); err != nil {
+		u.Log.Warn("failed to clear state.json before forcing a re-download", "error", err.Error())
+	}
+
+	src, _, target, err := u.resolveTarget(ctx, channel)
+	if err != nil {
+		return nil, err
+	}
+
+	setupPath, err := u.Downloads.Ensure(ctx, src, target)
+	if err != nil {
+		return nil, fmt.Errorf("re-download failed: %w", err)
+	}
+
+	fresh := &state.Pending{
+		Version:      target.Version,
+		SetupPath:    setupPath,
+		SHA256:       target.SHA256,
+		Forced:       p.Forced,
+		DownloadedAt: time.Now().UTC(),
+	}
+	if err := u.Store.SetPending(fresh); err != nil {
+		u.Log.Warn("failed to persist re-downloaded pending update, continuing", "error", err.Error())
+	}
+	u.Log.Info("re-downloaded setup for clean-install retry", "version", fresh.Version, "path", fresh.SetupPath)
+	return fresh, nil
 }
 
 // runSetupAndVerify runs EMLy's setup for p and confirms config.ini now

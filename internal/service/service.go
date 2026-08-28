@@ -31,12 +31,16 @@ const Name = "EMLyUpdater"
 
 // Updater holds the wiring for one running instance of the update loop.
 type Updater struct {
-	Cfg       *config.Config
-	Log       *logging.Logger
-	Store     *state.Store
-	Downloads *download.Manager
-	Machine   machineinfo.Info
-	IPC       *ipc.Server
+	Cfg   *config.Config
+	Log   *logging.Logger
+	Store *state.Store
+	// Downloads caches EMLy's setups, SelfDownloads the updater's own
+	// installers. Two managers over two directories, so neither cleanup can
+	// reach the other's files.
+	Downloads     *download.Manager
+	SelfDownloads *download.Manager
+	Machine       machineinfo.Info
+	IPC           *ipc.Server
 
 	// sourcesUnreachableNotified marks that the console user has already
 	// been toasted for the outage currently in progress - Cycle runs
@@ -56,7 +60,11 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 		Log:       log,
 		Store:     &state.Store{Path: config.StatePath()},
 		Downloads: &download.Manager{Dir: config.DownloadsDir()},
-		Machine:   machine,
+		SelfDownloads: &download.Manager{
+			Dir:    config.SelfDownloadsDir(),
+			Prefix: "EMLyUpdater-",
+		},
+		Machine: machine,
 	}
 	// Decide which manifest source this machine can actually reach before
 	// the first cycle runs: cfg.Primary may be rewritten here.
@@ -93,8 +101,19 @@ func (u *Updater) RunLoop(ctx context.Context) {
 // Cycle performs one full pass: resume pending → fetch manifest → decide →
 // download → apply.
 func (u *Updater) Cycle(ctx context.Context) error {
-	// Trust-store self-heal, before anything that might run EMLy's setup.
+	// Trust-store self-heal, before anything that might run a setup - the
+	// self-update below verifies an Authenticode signature that chains to this
+	// very certificate.
 	u.ensureCertificate()
+
+	// The updater updates itself first, ahead of even a pending EMLy install.
+	// If this build has a bug in the way it handles EMLy, it has to be able to
+	// replace itself before exercising that bug again; the pending entry is
+	// persisted and resumes under the new binary. Returning here is not
+	// optional - the setup is already stopping this service.
+	if u.selfUpdate(ctx) {
+		return nil
+	}
 
 	emly := u.Cfg.ResolveEMLy()
 	if emly.FreshInstall {
@@ -192,9 +211,8 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	return httpSrc
 }
 
-// resolveTarget fetches the update manifest from the primary source (with
-// retries) and resolves it to a channel target. Shared by the normal poll in
-// Cycle and by the forced re-download path in install.
+// newResolver builds the source resolver this machine should use: the
+// configured primary, with retries, plus a fallback where one makes sense.
 //
 // When Primary is "internal", externalManifestURL (if configured) is wired
 // in as the resolver's fallback: the startup source policy already confirmed
@@ -202,7 +220,10 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 // internal manifest endpoint itself is reachable (down, misconfigured,
 // firewalled). Falling back to the public API keeps this cycle from failing
 // outright; it is not persisted, so the next cycle tries internal again.
-func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+//
+// EMLy's manifest and the updater's own both go through this, so a machine
+// that can only reach its site's mirror behaves the same way for both.
+func (u *Updater) newResolver() *source.Resolver {
 	resolver := &source.Resolver{
 		Primary: u.newHTTPSource(u.Cfg.PrimaryManifestURL()),
 		Logf: func(format string, args ...any) {
@@ -212,7 +233,14 @@ func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Sou
 	if u.Cfg.Primary == config.SourceInternal && u.Cfg.ExternalManifestURL != "" {
 		resolver.Fallback = u.newHTTPSource(u.Cfg.ExternalManifestURL)
 	}
-	src, m, err := resolver.Resolve(ctx)
+	return resolver
+}
+
+// resolveTarget fetches the update manifest from the primary source (with
+// retries) and resolves it to a channel target. Shared by the normal poll in
+// Cycle and by the forced re-download path in install.
+func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+	src, m, err := u.newResolver().Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
 	}

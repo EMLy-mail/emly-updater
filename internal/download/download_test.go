@@ -17,6 +17,53 @@ func sha(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
+// EMLy's setups and the updater's own installers are cached by two managers.
+// Neither cleanup may reach the other's files, or a self-update would delete
+// a queued EMLy setup - or, worse, the installer it is about to run.
+func TestPrefixIsolatesTwoManagers(t *testing.T) {
+	dir := t.TempDir()
+	emly := &Manager{Dir: dir}
+	updater := &Manager{Dir: dir, Prefix: "EMLyUpdater-"}
+
+	emlySetup := emly.SetupPath("1.7.5")
+	updaterSetup := updater.SetupPath("1.5.0")
+	if emlySetup == updaterSetup {
+		t.Fatal("the two managers cache to the same filename")
+	}
+	for _, p := range []string{emlySetup, updaterSetup} {
+		if err := os.WriteFile(p, []byte("setup"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Clearing EMLy's whole cache must leave the updater's installer alone -
+	// note "EMLyUpdater-..." does start with "EMLy-"'s letters but not with
+	// the prefix itself, which is what makes this worth asserting.
+	if err := emly.CleanupExcept(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(updaterSetup); err != nil {
+		t.Fatalf("clearing EMLy's cache deleted the updater installer: %v", err)
+	}
+	if _, err := os.Stat(emlySetup); !os.IsNotExist(err) {
+		t.Errorf("EMLy's own setup survived its cleanup: %v", err)
+	}
+
+	// ...and the other way round.
+	if err := os.WriteFile(emlySetup, []byte("setup"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := updater.CleanupExcept(""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(emlySetup); err != nil {
+		t.Fatalf("clearing the updater's cache deleted EMLy's setup: %v", err)
+	}
+	if _, err := os.Stat(updaterSetup); !os.IsNotExist(err) {
+		t.Errorf("the updater installer survived its cleanup: %v", err)
+	}
+}
+
 // fakeSource serves fixed payload bytes and counts fetches.
 type fakeSource struct {
 	payload []byte

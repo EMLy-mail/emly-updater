@@ -5,6 +5,7 @@ import (
 	"emlyupdater/internal/version"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -60,6 +61,13 @@ type Config struct {
 	CriticalWarningEnabled bool
 	CriticalWarningSeconds int
 
+	// [selfUpdate]
+	SelfUpdateEnabled bool
+	// SelfUpdateManifestURL overrides the updater manifest URL. Empty - the
+	// normal case - means "derive it from whichever manifest URL is in use",
+	// see UpdaterManifestURL.
+	SelfUpdateManifestURL string
+
 	// [ipc]
 	IPCEnabled  bool
 	IPCPipeName string
@@ -74,6 +82,32 @@ func (c *Config) PrimaryManifestURL() string {
 		return c.InternalManifestURL
 	}
 	return c.ExternalManifestURL
+}
+
+// UpdaterManifestURL returns the URL of the updater's own release manifest for
+// a given EMLy manifest URL, by appending the "updater" path segment:
+// ".../v2/updates/manifest" becomes ".../v2/updates/manifest/updater".
+//
+// Deriving it means every source keeps working without a second URL to
+// configure and keep in sync: a machine on a site's internal mirror asks that
+// mirror for the updater release too, and the external fallback derives its own
+// URL the same way. An explicit selfUpdate.manifestURL overrides the derivation
+// for every source - it names one specific host, so it cannot be re-pointed at
+// a fallback.
+func (c *Config) UpdaterManifestURL(manifestURL string) (string, error) {
+	if c.SelfUpdateManifestURL != "" {
+		return c.SelfUpdateManifestURL, nil
+	}
+	if manifestURL == "" {
+		return "", fmt.Errorf("cannot derive the updater manifest URL from an empty manifest URL")
+	}
+	u, err := url.Parse(manifestURL)
+	if err != nil {
+		return "", fmt.Errorf("cannot derive the updater manifest URL from %q: %w", manifestURL, err)
+	}
+	// JoinPath escapes the segment and normalises a trailing slash, and keeps
+	// any query string the manifest URL carries.
+	return u.JoinPath("updater").String(), nil
 }
 
 // WriteDefault writes the embedded default configuration to path if the file
@@ -119,6 +153,7 @@ func Load(path string) (*Config, error) {
 	crit := f.Section("criticalUpdate")
 	ipcSec := f.Section("ipc")
 	certSec := f.Section("certificate")
+	selfSec := f.Section("selfUpdate")
 
 	cfg := &Config{
 		EMLyInstallDir:  upd.Key("emlyInstallDir").MustString(`C:\3gIT\EMLy`),
@@ -142,6 +177,9 @@ func Load(path string) (*Config, error) {
 		IPCPipeName: strings.TrimSpace(ipcSec.Key("pipeName").MustString("EMLyUpdater")),
 
 		CertificateEnabled: certSec.Key("enabled").MustBool(true),
+
+		SelfUpdateEnabled:     selfSec.Key("enabled").MustBool(true),
+		SelfUpdateManifestURL: strings.TrimSpace(selfSec.Key("manifestURL").String()),
 	}
 
 	minutes := upd.Key("pollIntervalMinutes").MustInt(30)

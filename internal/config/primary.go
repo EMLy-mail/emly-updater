@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -109,31 +108,7 @@ func SetPrimary(path, value string) error {
 	if updated == string(raw) {
 		return nil
 	}
-
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "config-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.WriteString(updated); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-
-	// os.Rename maps to MoveFileEx(MOVEFILE_REPLACE_EXISTING), which replaces
-	// the destination atomically on NTFS - the same guarantee state.Store
-	// relies on, so a crash mid-write cannot leave a truncated config.
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return nil
+	return writeAtomic(path, updated)
 }
 
 // setPrimaryIn is the pure half of SetPrimary: it returns content with the

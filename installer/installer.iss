@@ -23,14 +23,12 @@ SignedUninstaller=yes
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
 Source: "..\build\{#ApplicationName}.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "appicon.ico"; DestDir: "{app}"; Flags: ignoreversion
-; Nessun config.ini viene distribuito: il subcommand `install` in [Run]
-; lo scrive sempre da zero dai default embedded nel binario (il vecchio
-; config viene rimosso in [InstallDelete] prima dell'esecuzione di [Run]).
-
-[InstallDelete]
-; Rimuove il config precedente prima di [Run], così il subcommand `install`
-; lo riscrive sempre dai default embedded nel nuovo binario.
-Type: files; Name: "{commonappdata}\EMLyUpdater\config.ini"
+; Nessun config.ini viene distribuito: il subcommand `install` in [Run] lo
+; riconcilia con i default embedded nel nuovo binario (config.Merge), tenendo
+; i valori già presenti sulla macchina e aggiungendo le chiavi nuove. Il
+; config precedente NON va cancellato qui: l'updater si aggiorna da solo
+; eseguendo questo stesso setup, e cancellarlo azzererebbe silenziosamente le
+; impostazioni di ogni macchina della flotta a ogni self-update.
 
 [Run]
 ; Register (or refresh, on upgrade) the auto-start LocalSystem service, the

@@ -30,13 +30,18 @@ main.go                  Subcommands: install | uninstall | start | stop | run (
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
-  config/                INI loader; paths.go owns all %ProgramData%\EMLyUpdater\* paths + ExeDir helpers
+  config/                INI loader; merge.go reconciles an existing config.ini with this build's
+                         defaults on upgrade; paths.go owns all %ProgramData%\EMLyUpdater\* paths + ExeDir helpers
   source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + Resolver (retry/backoff)
-  manifest/              JSON manifest parse/compare (go-version for semver)
-  download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes
+  manifest/              JSON manifest parse/compare (go-version for semver); updater.go is the updater's own release manifest
+  download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes. Prefix keeps
+                         EMLy's cache and the updater's own from sweeping each other away
+  authenticode/          WinVerifyTrust + signer-thumbprint pinning, for the updater's own setup
+  selfupdate/            The self-update rules (Reconcile/Decide, pure) + the detached setup launch
   installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
-                         sourcepolicy.go picks the manifest source from the detected DC at startup
+                         sourcepolicy.go picks the manifest source from the detected DC at startup;
+                         selfupdate.go orchestrates the updater updating itself
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
@@ -51,7 +56,7 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 
 ## Key Conventions
 
-- **Config is never shipped** - `config.default.ini` is embedded via `//go:embed` and written to `%ProgramData%\EMLyUpdater\config.ini` only when the file is absent. Per-machine edits survive upgrades.
+- **Config is never shipped** - `config.default.ini` is embedded via `//go:embed` and written to `%ProgramData%\EMLyUpdater\config.ini` only when the file is absent. Per-machine edits survive upgrades: `cmdInstall` calls `config.Merge`, which rebuilds the file from this build's embedded defaults and writes every value the existing file already had back over it (see the self-update section below).
 - **ProgramData survives uninstall** - `cmdUninstall` deletes the service but never removes `%ProgramData%\EMLyUpdater`. The InnoSetup `[UninstallRun]` block does the same.
 - **Exe-dir log is preserved on uninstall** - `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
 - **SHA256 is mandatory** - a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
@@ -95,6 +100,52 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   and the next cycle tries again - so a long outage nags once, but only once someone is actually
   there to read it.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
+- **`state.json` holds two independent lifecycles** - EMLy's pending update and the updater's own
+  self-update record. All four setters go through `Store.update` (read-modify-write); building a
+  fresh `State` and saving it, which is what `SetPending` used to do, would silently drop whichever
+  entry the other half of the cycle had just written.
+
+## Self-update
+
+The service updates itself by running its own InnoSetup installer, which already knows how to stop
+the service, replace the binary and start it again. `internal/selfupdate` holds the rules (pure,
+tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design notes worth keeping:
+
+- **It runs first in `Cycle`**, ahead of even a pending EMLy install: a build with a bug in the EMLy
+  path has to be able to replace itself before exercising that bug again. A pending entry is
+  persisted and resumes under the new binary. `Cycle` returns immediately when `selfUpdate` reports
+  a launch - the setup is already stopping the service.
+- **The launch must never be waited on.** `selfupdate.Launch` uses `DETACHED_PROCESS` and
+  `Process.Release()`, never `Wait`. The setup's first act is `EMLyUpdater.exe stop`; the stop
+  handler cancels the loop and waits for it to return, so a blocking launch would deadlock the two
+  until the 60-second stop timeout expired and the install failed. This is why `installer.Run`
+  (which does wait) is deliberately not reused here.
+- **The outcome is only knowable at the next start.** The launching process does not survive, so
+  `state.json`'s `selfUpdate` record is written *before* the launch and reconciled after the restart
+  by comparing `version.Version` against it. If the record cannot be persisted, the setup is not
+  launched at all - without it the attempt could not be counted.
+- **Attempts are bounded** (`selfupdate.MaxAttempts`, 3) with a 10-minute cooldown between launches.
+  A release that installs but never results in the new binary running would otherwise stop and
+  restart the service on every poll cycle, fleet-wide, forever. A *different* version in the
+  manifest resets the count - that is how an operator recovers a stuck fleet.
+- **Two checks gate execution: SHA256 and Authenticode.** The internal source is plain HTTP, so
+  whoever can serve a tampered setup can serve a matching checksum with it. `internal/authenticode`
+  verifies with `WinVerifyTrust` *and* pins the signer's SHA-1 thumbprint to the embedded 3gIT
+  certificate - `WinVerifyTrust` alone accepts anything chaining to any trusted root, which on a
+  domain PC is every public CA. `CERT_E_UNTRUSTEDROOT` is tolerated only when the pin matches, so
+  the check still works with `certificate.enabled = false`.
+- **`[InstallDelete]` must stay out of `installer.iss`.** It used to delete `config.ini` so `install`
+  could rewrite it from the defaults. With the updater running that installer on itself, that would
+  reset every machine in the fleet on the first self-update - which is what `config.Merge` exists to
+  prevent.
+- **The updater manifest URL is derived, not configured** (`config.UpdaterManifestURL`): the manifest
+  URL in use plus an `updater` path segment, so a site's mirror serves both documents and there is no
+  second URL to keep in sync. `selfUpdate.manifestURL` overrides it for every source.
+- **A 404 is an answer, not a failure.** `source.ErrNotFound` skips the retries (backing off and
+  asking again cannot change it) but still tries the fallback; when nothing serves the endpoint the
+  cycle logs at Debug and moves on, which is what lets a mirror that has not been updated yet
+  coexist. Nothing in the self-update path ever fails a cycle - keeping EMLy updated is the job,
+  updating itself is only how it stays good at it.
 
 ## Configuration Reference
 
@@ -109,7 +160,7 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 | `primary` | `[source]` | `external` | `external` or `internal` |
 | `externalManifestURL` | `[source]` | (API URL) | Required when `primary=external` |
 | `internalManifestURL` | `[source]` | _(empty)_ | Required when `primary=internal` |
-| `userAgent` | `[source]` | _(empty)_ | Sent as `User-Agent` on HTTP requests |
+| `userAgent` | `[source]` | `EMLy-Updater/{{VERSION}} (...)` | Sent as `User-Agent` on HTTP requests; `{{VERSION}}` is resolved at runtime by `config.BuildUserAgent` |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
 | `defaultMappingDCSubnets` | `[source]` | `DC-RM2:172.16.96.0/24` | Startup source policy: `dc:cidr[,cidr...][;dc:cidr[,cidr...]...]` map of DC name to that site's internal subnets (empty disables) |
 | `criticalWarningEnabled` | `[criticalUpdate]` | `true` | Show countdown WTS dialog before force-kill |
@@ -117,6 +168,8 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |
 | `pipeName` | `[ipc]` | `EMLyUpdater` | Exposed as `\\.\pipe\<pipeName>`; must not contain `\` or `/` |
 | `enabled` | `[certificate]` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher` (machine + console user) |
+| `enabled` | `[selfUpdate]` | `true` | Keep the updater itself up to date |
+| `manifestURL` | `[selfUpdate]` | _(empty)_ | Empty = derived from the manifest URL in use (`.../manifest` → `.../manifest/updater`); set only to point at a different host, in which case it applies to every source with no fallback |
 
 ## IPC (EMLyUpdater ⇄ EMLy)
 
@@ -257,8 +310,14 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `%ProgramData%\EMLyUpdater\logs\updater.log` | Rolling 5 MB × 5 - all events |
 | `<ExeDir>\updater.log` | Same events, kept next to exe for on-site access |
 | `%ProgramData%\EMLyUpdater\logs\emly-install-<ver>.log` | InnoSetup silent install log |
+| `%ProgramData%\EMLyUpdater\logs\updater-selfinstall-<ver>.log` | InnoSetup log of the updater installing itself |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703) |
+| `%ProgramData%\EMLyUpdater\config.prev.ini` | The config as it was before the last merge |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703), self-update started (800)/completed (801)/refused or abandoned (802) |
+
+Event 801 is written by the build that came up *after* the restart, so a self-update reads
+`800` → (service stops and restarts) → `801`. An `800` with no `801` after it is one that did not
+land; the `selfUpdate` record left in `state.json` says which version was attempted and how often.
 
 ## Branching
 
@@ -271,9 +330,10 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 
 ## Common Pitfalls
 
-- **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs).
+- **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs). Upgrades pick it up for free — `config.Merge` starts from the embedded defaults, so a new key arrives with its default and its comment. **Removing** one deletes it from every machine's config on the next upgrade, which is the intent, but means a key still read by anything must not be dropped from the default file.
+- **Rotating the code-signing certificate now also gates self-update**: `internal/authenticode` pins the signer to whatever `cert.Embedded()` holds, so a release signed with the *new* certificate cannot be self-installed by machines still running a build that embeds only the old one. Ship the new certificate in a release signed with the old one first, let the fleet take it, and only then start signing with the new one.
 - **Editing `proto/updateripc.proto`**: copy the change verbatim to `emly/proto/updateripc.proto` and regenerate both repos' `ipcpb` packages. The two repos share no Go module, so nothing enforces this automatically — a one-sided edit silently desyncs the wire protocol.
-- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/version/version_generated.go` and rewrites the version tokens in `installer/installer.iss` (`ApplicationVersion`) and `internal/config/config.default.ini` (`userAgent`) — no other file should ever hardcode the version string by hand again. Then update the **EMLyUpdater max** column of the compatibility matrix atop `proto/updateripc.proto` to the version being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the matrix silently goes stale. (That file is manually synced with the `emly` repo, so copy the edit there too.) Do **not** touch `MaxCompatibleEMLyVersion` here: despite living in this repo it tracks *EMLy's* releases, not this one's, and bumping it for an EMLyUpdater release would claim compatibility with an EMLy build that may not exist. Bump it — and the matrix's EMLy max column — when *EMLy* cuts a release. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
+- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/version/version_generated.go` and rewrites the version token in `installer/installer.iss` (`ApplicationVersion`) — no other file should ever hardcode the version string by hand again. (`config.default.ini` is deliberately *not* patched any more: its `userAgent` carries a `{{VERSION}}` placeholder resolved at runtime, because `config.Merge` preserves that file across upgrades and a stamped version would freeze a self-updated machine's reported version at the one it was first installed with.) Then publish the release to the updater manifest — the signed installer plus its SHA256 on `/v2/updates/manifest/updater`, on the public API **and** on every site's internal mirror — or no machine will pick it up by itself. Then update the **EMLyUpdater max** column of the compatibility matrix atop `proto/updateripc.proto` to the version being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the matrix silently goes stale. (That file is manually synced with the `emly` repo, so copy the edit there too.) Do **not** touch `MaxCompatibleEMLyVersion` here: despite living in this repo it tracks *EMLy's* releases, not this one's, and bumping it for an EMLyUpdater release would claim compatibility with an EMLy build that may not exist. Bump it — and the matrix's EMLy max column — when *EMLy* cuts a release. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
 - **Rotating the code-signing certificate**: replace **both**
   `certs/3GITInnovation.cer` (the source of record) and
   `internal/cert/3GITInnovation.cer` (the embedded copy — `//go:embed` cannot

@@ -104,6 +104,14 @@ const (
 
 	EventCertInstalled = 702 // code-signing certificate added to a trust store
 	EventCertFailed    = 703 // a trust store could not be opened or written
+
+	// The updater updating itself. 801 is logged by the build that came up
+	// after the restart, so a machine's Event Log reads 800 -> (service stops
+	// and restarts) -> 801; a 800 never followed by an 801 is a self-update
+	// that did not land.
+	EventSelfUpdateFound   = 800 // a newer updater release is being installed
+	EventSelfUpdateApplied = 801 // the new updater binary is running
+	EventSelfUpdateFailed  = 802 // the setup was refused, or the release was abandoned
 )
 
 // InfoEvent logs to the file and mirrors an information record to the Event Log.

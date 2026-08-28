@@ -18,14 +18,28 @@ import (
 	"emlyupdater/internal/source"
 )
 
-// Manager owns the downloads directory.
+// DefaultPrefix names the cached setups of EMLy itself.
+const DefaultPrefix = "EMLy-"
+
+// Manager owns a downloads directory.
 type Manager struct {
 	Dir string
+	// Prefix names the files this manager creates, and is the only thing
+	// CleanupExcept will delete - so two managers can share a tree without
+	// either sweeping away the other's cache. Empty means DefaultPrefix.
+	Prefix string
+}
+
+func (m *Manager) prefix() string {
+	if m.Prefix == "" {
+		return DefaultPrefix
+	}
+	return m.Prefix
 }
 
 // SetupPath returns the cache path for a given version.
 func (m *Manager) SetupPath(version string) string {
-	return filepath.Join(m.Dir, fmt.Sprintf("EMLy-%s-setup.exe", version))
+	return filepath.Join(m.Dir, fmt.Sprintf("%s%s-setup.exe", m.prefix(), version))
 }
 
 // Ensure returns a local setup path for the target whose SHA256 matches.
@@ -81,8 +95,8 @@ func (m *Manager) CleanupExcept(keepVersion string) error {
 		if e.IsDir() || name == keep {
 			continue
 		}
-		if !strings.HasPrefix(name, "EMLy-") {
-			continue // never touch files the updater did not create
+		if !strings.HasPrefix(name, m.prefix()) {
+			continue // never touch files this manager did not create
 		}
 		if err := os.Remove(filepath.Join(m.Dir, name)); err != nil && firstErr == nil {
 			firstErr = err

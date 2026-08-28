@@ -61,16 +61,20 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 	}
 }
 
-func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, error) {
-	// Bound the manifest request tighter than the shared client timeout:
-	// a manifest is a few KB and a hung endpoint should fail the attempt fast
-	// so the resolver's retry/backoff can kick in.
+// getJSON fetches a manifest document from url with this source's headers
+// applied.
+//
+// The request is bounded tighter than the shared client timeout: a manifest is
+// a few KB and a hung endpoint should fail the attempt fast so the resolver's
+// retry/backoff can kick in. The setup download uses the client's own generous
+// timeout instead.
+func (s *HTTPSource) getJSON(ctx context.Context, url string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.ManifestURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("invalid manifest URL: %w", err)
+		return nil, fmt.Errorf("invalid manifest URL %q: %w", url, err)
 	}
 	s.applyHeaders(req)
 
@@ -80,6 +84,9 @@ func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, err
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf("%s: %w", url, ErrNotFound)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("manifest endpoint returned HTTP %d", resp.StatusCode)
 	}
@@ -88,7 +95,30 @@ func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to read manifest body: %w", err)
 	}
+	return data, nil
+}
+
+func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, error) {
+	data, err := s.getJSON(ctx, s.ManifestURL)
+	if err != nil {
+		return nil, err
+	}
 	return manifest.Parse(data)
+}
+
+// FetchUpdaterManifest retrieves the updater's own release manifest from url
+// (derived from this source's manifest URL by config.UpdaterManifestURL, so it
+// is served by the same host that serves EMLy's).
+//
+// A 404 comes back wrapped in ErrNotFound so the caller can tell "this host
+// does not implement the endpoint" - the expected answer from an internal
+// mirror that has not been updated yet - from a real failure.
+func (s *HTTPSource) FetchUpdaterManifest(ctx context.Context, url string) (*manifest.UpdaterManifest, error) {
+	data, err := s.getJSON(ctx, url)
+	if err != nil {
+		return nil, err
+	}
+	return manifest.ParseUpdater(data)
 }
 
 func (s *HTTPSource) ResolveTarget(m *manifest.Manifest, channel string) (manifest.Target, error) {

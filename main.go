@@ -230,10 +230,13 @@ func cmdInstall() error {
 	if err := config.EnsureDirs(); err != nil {
 		return err
 	}
-	if created, err := config.WriteDefault(config.ConfigPath()); err != nil {
+	// Merge rather than write: on an upgrade (including a self-update, where
+	// nobody is watching) the machine's own settings must survive, while keys
+	// this release added still appear with their documented defaults.
+	if changed, err := config.Merge(config.ConfigPath()); err != nil {
 		return err
-	} else if created {
-		fmt.Printf("wrote default config to %s\n", config.ConfigPath())
+	} else if changed {
+		fmt.Printf("config at %s reconciled with this release's defaults\n", config.ConfigPath())
 	}
 
 	installCertificate()

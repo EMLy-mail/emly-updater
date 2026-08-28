@@ -7,9 +7,16 @@ package source
 
 import (
 	"context"
+	"errors"
 
 	"emlyupdater/internal/manifest"
 )
+
+// ErrNotFound reports that an endpoint answered HTTP 404 - a deterministic
+// "this host does not serve that document", as opposed to a transient failure.
+// Retrying the identical request cannot change it, so the resolver skips
+// straight to its fallback instead of backing off first.
+var ErrNotFound = errors.New("endpoint not found")
 
 // Source serves the update manifest and the setup executable.
 type Source interface {

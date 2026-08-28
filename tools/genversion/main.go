@@ -4,7 +4,13 @@
 //
 //   - internal/version/version_generated.go: the Version Go const
 //   - installer/installer.iss: the ApplicationVersion Inno Setup #define
-//   - internal/config/config.default.ini: the userAgent default's version tag
+//
+// internal/config/config.default.ini used to be patched here too, but its
+// userAgent now carries a {{VERSION}} placeholder that config.BuildUserAgent
+// resolves at runtime. Stamping the version into the shipped default would
+// freeze it into every machine's config.ini, which config.Merge preserves
+// across upgrades - so a self-updated machine would keep reporting the version
+// it was first installed with.
 //
 // Run via "go generate ./..." from the repo root after bumping
 // versioninfo.json.
@@ -18,11 +24,9 @@ import (
 )
 
 const (
-	versionInfoPath     = "versioninfo.json"
-	versionGoPath       = "internal/version/version_generated.go"
-	installerISSPath    = "installer/installer.iss"
-	configDefaultPath   = "internal/config/config.default.ini"
-	userAgentProductTag = "EMLy-Updater/"
+	versionInfoPath  = "versioninfo.json"
+	versionGoPath    = "internal/version/version_generated.go"
+	installerISSPath = "installer/installer.iss"
 )
 
 type versionInfo struct {
@@ -48,7 +52,6 @@ func main() {
 
 	writeGoConst(v)
 	patchInstallerISS(v)
-	patchConfigDefault(v)
 }
 
 func writeGoConst(v string) {
@@ -83,23 +86,6 @@ func patchInstallerISS(v string) {
 		fatal(err)
 	}
 	fmt.Printf("patched %s (ApplicationVersion = %q)\n", installerISSPath, v)
-}
-
-var userAgentRe = regexp.MustCompile(regexp.QuoteMeta(userAgentProductTag) + `\S+`)
-
-func patchConfigDefault(v string) {
-	data, err := os.ReadFile(configDefaultPath)
-	if err != nil {
-		fatal(err)
-	}
-	if !userAgentRe.Match(data) {
-		fatal(fmt.Errorf("%s: %s<version> userAgent token not found", configDefaultPath, userAgentProductTag))
-	}
-	patched := userAgentRe.ReplaceAll(data, []byte(userAgentProductTag+v))
-	if err := os.WriteFile(configDefaultPath, patched, 0644); err != nil {
-		fatal(err)
-	}
-	fmt.Printf("patched %s (userAgent version = %q)\n", configDefaultPath, v)
 }
 
 func fatal(err error) {

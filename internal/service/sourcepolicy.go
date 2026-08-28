@@ -16,10 +16,9 @@ type dcLookup func(domain string) (*machineinfo.DomainControllerInfo, error)
 // machine can currently see, and returns the reason for the choice (logged
 // verbatim, so it has to read as an explanation on its own).
 //
-// The DC is a proxy for "am I on the internal LAN?": internalManifestURL and
-// the UNC fallback both live in the office, so a machine that cannot see the
-// expected DC on the expected subnet cannot reach either and must go out to
-// the public API instead.
+// The DC is a proxy for "am I on the internal LAN?": internalManifestURL
+// lives in the office, so a machine that cannot see the expected DC on the
+// expected subnet cannot reach it and must go out to the public API instead.
 //
 // An empty want means "no opinion" - the configured Primary stands.
 func decideSource(cfg *config.Config, dc *machineinfo.DomainControllerInfo, err error) (want, reason string) {

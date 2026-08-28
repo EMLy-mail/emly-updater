@@ -17,7 +17,7 @@ never touched by EMLy's own installer.
 | **OS** | Windows 10 / Windows Server 2016 or later (64-bit) |
 | **Privileges** | `install` / `uninstall` / `start` / `stop` require administrator rights; the service itself runs as `LocalSystem` |
 | **EMLy** | `C:\3gIT\EMLy\config.ini` must exist and contain `GUI_SEMVER` for version detection (configurable via `emlyConfigFile`) |
-| **Network** | HTTPS access to the external manifest URL, **or** LAN access to an internal HTTP manifest, **or** access to a UNC share - at least one source must be reachable |
+| **Network** | HTTPS access to the external manifest URL, **or** LAN access to an internal HTTP manifest |
 | **Build-time** | Go 1.22+ and [Inno Setup 6](https://jrsoftware.org/isdl.php) (only to compile the installer; not needed for the service itself) |
 
 ## How an update is applied
@@ -44,14 +44,10 @@ match the manifest is **never** executed.
 
 ## Update sources
 
-The manifest source order is: configured primary (`external` HTTPS or
-`internal` LAN HTTP, 3 attempts with backoff) → UNC share fallback. The setup
-binary is always fetched from the same source that served the manifest.
-
-The UNC share keeps the conventions EMLy's in-app updater already uses:
-manifest at `<uncRoot>\version.json`, `stableDownload`/`betaDownload` are
-filenames relative to the share root, and `sha256Checksums` is keyed by
-filename. HTTP manifests key checksums by version and carry full download URLs.
+The manifest is fetched from the configured primary source (`external` HTTPS
+or `internal` LAN HTTP), retried up to 3 times with exponential backoff. The
+setup binary is always fetched from the same source that served the manifest.
+HTTP manifests key checksums by version and carry full download URLs.
 
 ## Installation
 
@@ -107,7 +103,6 @@ Edits survive upgrades and uninstall. Changes take effect on the next poll cycle
 | `primary` | `external` | `external` (public HTTPS) or `internal` (LAN HTTP) |
 | `externalManifestURL` | (API URL) | Required when `primary = external` |
 | `internalManifestURL` | _(empty)_ | Required when `primary = internal` |
-| `uncRoot` | `\\dc-rm2\logo\update` | UNC fallback share; `version.json` lives here |
 | `userAgent` | _(empty)_ | Optional `User-Agent` header sent on HTTP requests |
 | `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
 | `internalDCName` | `DC-RM2` | Domain controller that identifies the internal LAN; empty disables the startup source check |
@@ -168,12 +163,14 @@ EMLyUpdater.exe run         # foreground debug mode (console logging)
 - Rolling file: `C:\ProgramData\EMLyUpdater\logs\updater.log` (5 MB × 5)
 - InnoSetup install logs: `C:\ProgramData\EMLyUpdater\logs\emly-install-<version>.log`
 - Windows Event Log (source `EMLyUpdater`): update found (100), install ok
-  (200) / failed (201), forced kill (300), associations repaired (400), source
-  fallback (500)
+  (200) / failed (201), forced kill (300), associations repaired (400)
 
 ## Testing end-to-end without infrastructure
 
-Point `uncRoot` at a local folder containing a `version.json` and a setup, set
-an unreachable `externalManifestURL`, then `EMLyUpdater.exe run`. Tamper with
-the checksum in `version.json` to watch the refusal path; set
-`"isCritical": true` while EMLy is open to exercise the warn-and-kill path.
+Serve a `version.json` and a setup binary from a local HTTP server (e.g.
+`python -m http.server` in a folder containing both), with `version.json`'s
+`stableDownload`/`betaDownload` set to absolute URLs pointing back at that
+server and `sha256Checksums` keyed by version. Point `externalManifestURL` (or
+`internalManifestURL`) at it, then `EMLyUpdater.exe run`. Tamper with the
+checksum in `version.json` to watch the refusal path; set `"isCritical": true`
+while EMLy is open to exercise the warn-and-kill path.

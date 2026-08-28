@@ -59,11 +59,11 @@ func TestSetPrimaryInPreservesLFEndings(t *testing.T) {
 // A [source] section without the key at all is a legal config (Load defaults
 // it), so the key has to be created rather than silently dropped.
 func TestSetPrimaryInInsertsMissingKey(t *testing.T) {
-	got, err := setPrimaryIn("[source]\r\nuncRoot = x\r\n", SourceInternal)
+	got, err := setPrimaryIn("[source]\r\nuserAgent = x\r\n", SourceInternal)
 	if err != nil {
 		t.Fatalf("setPrimaryIn: %v", err)
 	}
-	want := "[source]\r\nprimary = internal\r\nuncRoot = x\r\n"
+	want := "[source]\r\nprimary = internal\r\nuserAgent = x\r\n"
 	if got != want {
 		t.Errorf("setPrimaryIn = %q, want %q", got, want)
 	}

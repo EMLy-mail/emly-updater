@@ -2,26 +2,22 @@ package source
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"emlyupdater/internal/manifest"
 )
 
-// Resolver tries the primary source with retries and exponential backoff, then
-// falls back to the UNC share. The winning source is returned alongside the
-// manifest so the setup is fetched from the same place.
+// Resolver fetches the manifest from Primary with retries and exponential
+// backoff.
 type Resolver struct {
-	Primary  Source
-	Fallback Source
+	Primary Source
 
 	// Attempts and BaseBackoff control primary retries; zero values get
 	// defaults (3 attempts, 5s base backoff: 5s, 10s between tries).
 	Attempts    int
 	BaseBackoff time.Duration
 
-	// Logf receives progress lines ("primary failed, retrying", "fell back to
-	// UNC", ...). Optional.
+	// Logf receives progress lines ("primary failed, retrying", ...). Optional.
 	Logf func(format string, args ...any)
 }
 
@@ -31,7 +27,8 @@ func (r *Resolver) logf(format string, args ...any) {
 	}
 }
 
-// Resolve fetches the manifest, preferring the primary source.
+// Resolve fetches the manifest from the primary source, retrying with
+// exponential backoff.
 func (r *Resolver) Resolve(ctx context.Context) (Source, *manifest.Manifest, error) {
 	attempts := r.Attempts
 	if attempts < 1 {
@@ -64,11 +61,5 @@ func (r *Resolver) Resolve(ctx context.Context) (Source, *manifest.Manifest, err
 		}
 	}
 
-	// Fallback is a file read on the share - a single attempt is enough.
-	m, err := r.Fallback.FetchManifest(ctx)
-	if err != nil {
-		return nil, nil, fmt.Errorf("primary source failed (%v) and UNC fallback failed: %w", lastErr, err)
-	}
-	r.logf("primary source exhausted (%v); manifest served by fallback %s", lastErr, r.Fallback.Name())
-	return r.Fallback, m, nil
+	return nil, nil, lastErr
 }

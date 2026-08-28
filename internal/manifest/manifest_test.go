@@ -132,7 +132,7 @@ func TestForced(t *testing.T) {
 		t.Fatal("at minRequiredVersion must not force")
 	}
 
-	// Legacy UNC manifests have no minRequiredVersion at all.
+	// Some manifests have no minRequiredVersion at all.
 	m = &Manifest{}
 	if forced, _ := m.Forced("0.0.1"); forced {
 		t.Fatal("empty minRequiredVersion must not force")

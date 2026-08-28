@@ -31,7 +31,7 @@ proto/                   updateripc.proto - IPC wire schema, manually synced wit
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
   config/                INI loader; paths.go owns all %ProgramData%\EMLyUpdater\* paths + ExeDir helpers
-  source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + UNCSource + Resolver
+  source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + Resolver (retry/backoff)
   manifest/              JSON manifest parse/compare (go-version for semver)
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes
   installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
@@ -47,7 +47,7 @@ internal/
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus to the EMLy client (protobuf)
 ```
 
-See [README.md](README.md) for the full update-state-machine table and source-fallback description.
+See [README.md](README.md) for the full update-state-machine table and update-sources description.
 
 ## Key Conventions
 
@@ -61,8 +61,8 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
   (`internal/service/sourcepolicy.go`, called from `service.New`) resolves the nearest domain
   controller and forces `primary` to `internal` only when the DC is `internalDCName` *and*
   answers from `internalDCSubnets`; anything else (other DC, other subnet, machine off the
-  domain) forces `external`. Both `internalManifestURL` and `uncRoot` live in the office, so a
-  machine that cannot see the office DC cannot reach either. The decision is applied in memory
+  domain) forces `external`. `internalManifestURL` lives in the office, so a
+  machine that cannot see the office DC cannot reach it. The decision is applied in memory
   *and* written back to `config.ini` via `config.SetPrimary`, and is logged every start (event
   700; 701 on failure) even when nothing changes. It never switches to a source whose manifest
   URL is empty - that config would fail `Load` on the next start and take the service down.
@@ -83,7 +83,6 @@ See [README.md](README.md) for the full update-state-machine table and source-fa
 | `primary` | `[source]` | `external` | `external` or `internal` |
 | `externalManifestURL` | `[source]` | (API URL) | Required when `primary=external` |
 | `internalManifestURL` | `[source]` | _(empty)_ | Required when `primary=internal` |
-| `uncRoot` | `[source]` | `\\dc-rm2\logo\update` | UNC fallback share; `version.json` lives here |
 | `userAgent` | `[source]` | _(empty)_ | Sent as `User-Agent` on HTTP requests |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
 | `internalDCName` | `[source]` | `DC-RM2` | Startup source policy: DC that identifies the internal LAN (empty disables) |
@@ -234,7 +233,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `<ExeDir>\updater.log` | Same events, kept next to exe for on-site access |
 | `%ProgramData%\EMLyUpdater\logs\emly-install-<ver>.log` | InnoSetup silent install log |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), source fallback (500), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703) |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703) |
 
 ## Branching
 
@@ -263,7 +262,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
   annual one creates yearly release pressure for nothing), and timestamp the
   signatures themselves (`signtool /tr <rfc3161-url> /td sha256`) so they survive
   the certificate's expiry.
-- **HTTP headers**: set them in `HTTPSource` only - `UNCSource` and the `Resolver` are header-agnostic.
+- **HTTP headers**: set them in `HTTPSource` only - the `Resolver` itself is header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.
 - **Update-complete toast**: shown via `internal/toast.Show`, which must run inside the console user's desktop session (session 0, where the SYSTEM service lives, has none). `internal/notify.LaunchToast` does the SYSTEM -> user-session hop with `WTSQueryUserToken` + `CreateProcessAsUser`, re-launching the updater's own exe with the hidden `show-toast` subcommand. The icon shown is extracted at runtime from the installed `EMLy.exe` (`ExtractIconEx`) - there is nothing to keep in sync when EMLy's icon changes. Toast failures (no console session, token/privilege errors, missing icon) are always best-effort/logged, never fail the (already-successful) update.

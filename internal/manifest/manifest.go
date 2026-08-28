@@ -1,5 +1,5 @@
-// Package manifest defines the update manifest structure shared by the HTTP
-// API and the UNC share, plus channel/target resolution and semver helpers.
+// Package manifest defines the update manifest structure served by the HTTP
+// API, plus channel/target resolution and semver helpers.
 package manifest
 
 import (
@@ -10,15 +10,11 @@ import (
 	goversion "github.com/hashicorp/go-version"
 )
 
-// Manifest mirrors the JSON served by /v2/updates/manifest and by version.json
-// on the UNC share. The two differ only in conventions:
-//   - API: StableDownload/BetaDownload are full URLs, SHA256Checksums is keyed
-//     by version string.
-//   - UNC: the download fields are filenames relative to the share root and
-//     SHA256Checksums is keyed by filename.
+// Manifest mirrors the JSON served by /v2/updates/manifest.
+// StableDownload/BetaDownload are full URLs, and SHA256Checksums is keyed by
+// version string.
 //
-// MinRequiredVersion may be absent in legacy UNC manifests (empty string =
-// no forced minimum).
+// MinRequiredVersion may be absent (empty string = no forced minimum).
 type Manifest struct {
 	StableVersion        string                  `json:"stableVersion"`
 	BetaVersion          string                  `json:"betaVersion"`
@@ -39,8 +35,8 @@ type DetailedNote struct {
 }
 
 // Target is a fully resolved update target for one channel. DownloadRef is a
-// full URL for HTTP sources or an absolute share path for the UNC source; the
-// resolving source fills SHA256 using its own checksum-key convention.
+// full URL; the resolving source fills SHA256 using its own checksum-key
+// convention.
 type Target struct {
 	Version     string
 	DownloadRef string
@@ -48,7 +44,7 @@ type Target struct {
 }
 
 // Parse decodes manifest JSON, tolerating a UTF-8 BOM (files saved by Windows
-// editors on the share may include one).
+// editors may include one).
 func Parse(data []byte) (*Manifest, error) {
 	data = bytes.TrimPrefix(data, []byte("\xEF\xBB\xBF"))
 
@@ -111,7 +107,7 @@ func Less(a, b string) (bool, error) {
 // Forced reports whether the update from installed must be applied even while
 // EMLy is running: either the manifest is flagged critical or the installed
 // version has fallen below the global minimum. An empty MinRequiredVersion
-// (legacy UNC manifests) imposes no minimum.
+// imposes no minimum.
 func (m *Manifest) Forced(installed string) (bool, error) {
 	if m.IsCritical {
 		return true, nil

@@ -63,7 +63,8 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 
 func (s *HTTPSource) FetchManifest(ctx context.Context) (*manifest.Manifest, error) {
 	// Bound the manifest request tighter than the shared client timeout:
-	// a manifest is a few KB and a hung endpoint should fail over to UNC fast.
+	// a manifest is a few KB and a hung endpoint should fail the attempt fast
+	// so the resolver's retry/backoff can kick in.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 

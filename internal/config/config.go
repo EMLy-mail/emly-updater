@@ -38,7 +38,6 @@ type Config struct {
 	Primary             string // "external" or "internal"
 	ExternalManifestURL string
 	InternalManifestURL string
-	UNCRoot             string
 	UserAgent           string // optional User-Agent header for HTTP requests
 	APIKey              string // optional X-Api-Key header for HTTP requests
 
@@ -121,7 +120,6 @@ func Load(path string) (*Config, error) {
 		Primary:             strings.ToLower(strings.TrimSpace(src.Key("primary").MustString(SourceExternal))),
 		ExternalManifestURL: strings.TrimSpace(src.Key("externalManifestURL").String()),
 		InternalManifestURL: strings.TrimSpace(src.Key("internalManifestURL").String()),
-		UNCRoot:             strings.TrimSpace(src.Key("uncRoot").String()),
 		UserAgent:           BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
 		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
 

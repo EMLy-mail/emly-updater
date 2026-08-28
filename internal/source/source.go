@@ -1,9 +1,8 @@
 // Package source abstracts where update information and setup binaries come
-// from: an HTTP(S) endpoint (external or internal) or the UNC fallback share.
+// from: an HTTP(S) endpoint (external or internal).
 //
 // The setup is always fetched from the same source that served the manifest,
-// and each source resolves the channel target itself because the checksum-key
-// convention differs (API keys by version, UNC share keys by filename).
+// and each source resolves the channel target itself.
 package source
 
 import (
@@ -14,7 +13,7 @@ import (
 
 // Source serves the update manifest and the setup executable.
 type Source interface {
-	// Name identifies the source in logs, e.g. "http(https://...)" or "unc(\\\\srv\\share)".
+	// Name identifies the source in logs, e.g. "http(https://...)".
 	Name() string
 	// FetchManifest retrieves and parses the manifest.
 	FetchManifest(ctx context.Context) (*manifest.Manifest, error)

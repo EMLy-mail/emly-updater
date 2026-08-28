@@ -1,8 +1,8 @@
 // EMLyUpdater is a standalone Windows service (LocalSystem, auto-start) that
 // keeps EMLy up to date on domain-joined machines: it polls an update
-// manifest (HTTP primary, UNC fallback), downloads and SHA256-verifies the
-// InnoSetup installer, and applies it silently - immediately when EMLy is
-// closed, on exit when it is open, or force-killing it for critical updates.
+// manifest over HTTP, downloads and SHA256-verifies the InnoSetup installer,
+// and applies it silently - immediately when EMLy is closed, on exit when it
+// is open, or force-killing it for critical updates.
 //
 // Subcommands:
 //

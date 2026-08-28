@@ -120,7 +120,7 @@ func (u *Updater) Cycle(ctx context.Context) error {
 		}
 	}
 
-	// 2) Normal poll: manifest via primary source, UNC as fallback.
+	// 2) Normal poll: manifest via the primary source.
 	src, m, target, err := u.resolveTarget(ctx, emly.Channel)
 	if err != nil {
 		return err
@@ -168,9 +168,9 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	return u.apply(ctx, p, emly)
 }
 
-// resolveTarget fetches the update manifest (primary source, UNC as
-// fallback) and resolves it to a channel target. Shared by the normal poll
-// in Cycle and by the forced re-download path in install.
+// resolveTarget fetches the update manifest from the primary source (with
+// retries) and resolves it to a channel target. Shared by the normal poll in
+// Cycle and by the forced re-download path in install.
 func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
 	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
 	httpSrc.UserAgent = u.Cfg.UserAgent
@@ -180,8 +180,7 @@ func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Sou
 	httpSrc.ADDomain = u.Machine.ADDomain
 	httpSrc.InternalIP = u.Machine.InternalIP
 	resolver := &source.Resolver{
-		Primary:  httpSrc,
-		Fallback: source.NewUNCSource(u.Cfg.UNCRoot),
+		Primary: httpSrc,
 		Logf: func(format string, args ...any) {
 			u.Log.Info(fmt.Sprintf(format, args...))
 		},
@@ -189,10 +188,6 @@ func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Sou
 	src, m, err := resolver.Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
-	}
-	if _, isUNC := src.(*source.UNCSource); isUNC {
-		u.Log.WarnEvent(logging.EventSourceFallback, "primary update source unavailable, using UNC fallback",
-			"unc", u.Cfg.UNCRoot)
 	}
 
 	target, err := src.ResolveTarget(m, channel)

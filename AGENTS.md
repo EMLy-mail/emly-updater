@@ -143,9 +143,17 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
   second URL to keep in sync. `selfUpdate.manifestURL` overrides it for every source.
 - **A 404 is an answer, not a failure.** `source.ErrNotFound` skips the retries (backing off and
   asking again cannot change it) but still tries the fallback; when nothing serves the endpoint the
-  cycle logs at Debug and moves on, which is what lets a mirror that has not been updated yet
-  coexist. Nothing in the self-update path ever fails a cycle - keeping EMLy updated is the job,
-  updating itself is only how it stays good at it.
+  cycle logs it and moves on, which is what lets a mirror that has not been updated yet coexist.
+  Nothing in the self-update path ever fails a cycle - keeping EMLy updated is the job, updating
+  itself is only how it stays good at it.
+- **Every cycle that does not self-update says why, at Info**, under the single message
+  `no updater self-update this cycle`, with `manifestURL` naming the endpoint that answered.
+  Debug is not enough: the installed service logs at Info and nobody is going to stop it and
+  re-run it in the foreground to find out whether it is even looking. `Resolver.Document`
+  distinguishes the two manifest fetches a cycle makes, which would otherwise produce two
+  identical `... served by primary source ...` lines. `ResolveUpdater` returns the URL that
+  actually answered because a `Source`'s `Name()` only carries the *EMLy* manifest URL it was
+  built from - never the `/updater` endpoint the fetch really went to.
 
 ## Configuration Reference
 

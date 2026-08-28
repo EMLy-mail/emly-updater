@@ -232,6 +232,20 @@ A self-update reads as `800` → *(service stops and restarts)* → `801`, the t
 records written by different builds. An `800` never followed by an `801` is a
 self-update that did not land.
 
+To confirm the service is actually looking, without stopping it: every cycle
+that does not self-update logs one line saying why, naming the endpoint it
+reached.
+
+```
+msg="no updater self-update this cycle" installed=1.5.0 manifestURL=http://172.16.33.72:8080/v2/updates/manifest/updater reason="already running 1.5.0, offered 1.5.0"
+msg="no updater self-update this cycle" installed=1.4.2 manifestURL=https://api.emly.ffois.it/v2/updates/manifest/updater reason="no updater release is published"
+```
+
+```powershell
+Get-Content C:\ProgramData\EMLyUpdater\logs\updater.log -Tail 50 |
+  Select-String "no updater self-update|updater update available|updater manifest served"
+```
+
 ## Testing end-to-end without infrastructure
 
 Serve a `version.json` and a setup binary from a local HTTP server (e.g.

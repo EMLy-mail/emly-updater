@@ -80,7 +80,7 @@ func TestResolveUpdaterSkipsRetriesOn404(t *testing.T) {
 		BaseBackoff: time.Millisecond,
 	}
 
-	src, m, err := ResolveUpdater(context.Background(), r, updaterURLOf)
+	src, m, servedBy, err := ResolveUpdater(context.Background(), r, updaterURLOf)
 	if err != nil {
 		t.Fatalf("ResolveUpdater failed: %v", err)
 	}
@@ -93,6 +93,13 @@ func TestResolveUpdaterSkipsRetriesOn404(t *testing.T) {
 	// The setup must be fetched from whichever source actually answered.
 	if src.Name() != r.Fallback.Name() {
 		t.Errorf("resolved source = %s, want the fallback", src.Name())
+	}
+	// ...and the reported URL must be the endpoint that actually answered, not
+	// the primary that 404'd nor the base manifest URL it was derived from.
+	// This is what an operator reads to check which host is serving updater
+	// releases to a machine.
+	if want := fallback.URL + "/manifest/updater"; servedBy != want {
+		t.Errorf("servedBy = %q, want %q", servedBy, want)
 	}
 }
 
@@ -111,7 +118,7 @@ func TestResolveUpdaterReportsNotFoundWhenNoSourceServesIt(t *testing.T) {
 		BaseBackoff: time.Millisecond,
 	}
 
-	if _, _, err := ResolveUpdater(context.Background(), r, updaterURLOf); !errors.Is(err, ErrNotFound) {
+	if _, _, _, err := ResolveUpdater(context.Background(), r, updaterURLOf); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("error = %v, want it to wrap ErrNotFound", err)
 	}
 }
@@ -131,7 +138,7 @@ func TestResolveUpdaterRetriesRealFailures(t *testing.T) {
 		BaseBackoff: time.Millisecond,
 	}
 
-	if _, _, err := ResolveUpdater(context.Background(), r, updaterURLOf); err == nil {
+	if _, _, _, err := ResolveUpdater(context.Background(), r, updaterURLOf); err == nil {
 		t.Fatal("expected an error when the endpoint keeps failing")
 	}
 	if calls != 3 {

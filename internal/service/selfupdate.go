@@ -34,19 +34,30 @@ import (
 // written to state.json beforehand is the only thing the next start has to go
 // on.
 func (u *Updater) selfUpdate(ctx context.Context) bool {
+	// Every cycle that does not act says why, at Info, under this one message:
+	// grepping the log for it answers "is it looking for updates, and what did
+	// it decide?" without stopping the service to re-run it in the foreground.
+	const skipped = "no updater self-update this cycle"
+	running := version.Version
+
 	if !u.Cfg.SelfUpdateEnabled {
+		u.Log.Info(skipped, "installed", running, "reason", "selfUpdate.enabled is false")
 		return false
 	}
 
 	rec := u.reconcileSelfUpdate()
 
-	src, m, err := u.resolveUpdaterManifest(ctx)
+	src, m, manifestURL, err := u.resolveUpdaterManifest(ctx)
 	if err != nil {
 		if errors.Is(err, source.ErrNotFound) {
 			// No source implements the endpoint. Expected on a site whose
 			// internal mirror has not been updated yet, and on any deployment
-			// that has not published an updater manifest at all.
-			u.Log.Debug("no update source serves an updater manifest, self-update skipped")
+			// that has not published an updater manifest at all. Name the
+			// address that was tried: on a 404 that is the one thing worth
+			// checking, and no source succeeded so none reported one.
+			tried, _ := u.Cfg.UpdaterManifestURL(u.Cfg.PrimaryManifestURL())
+			u.Log.Info(skipped, "installed", running, "manifestURL", tried,
+				"reason", "no update source serves an updater manifest")
 		} else {
 			u.Log.Warn("could not fetch the updater manifest, self-update skipped this cycle",
 				"error", err.Error())
@@ -54,7 +65,6 @@ func (u *Updater) selfUpdate(ctx context.Context) bool {
 		return false
 	}
 
-	running := version.Version
 	decision, err := selfupdate.Decide(running, m, rec, time.Now())
 	if err != nil {
 		u.Log.Warn("could not evaluate the updater manifest, self-update skipped this cycle",
@@ -63,7 +73,8 @@ func (u *Updater) selfUpdate(ctx context.Context) bool {
 	}
 	if decision.GiveUp {
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "giving up on an updater release",
-			"target", m.Version, "installed", running, "reason", decision.Reason)
+			"target", m.Version, "installed", running, "manifestURL", manifestURL,
+			"reason", decision.Reason)
 		// Decide only gives up on a target it has a record for, but read that
 		// from the record rather than assuming it: a nil here would take the
 		// whole service down over a self-update that had already failed.
@@ -76,13 +87,15 @@ func (u *Updater) selfUpdate(ctx context.Context) bool {
 		return false
 	}
 	if !decision.Install {
-		u.Log.Debug("no updater self-update this cycle", "reason", decision.Reason)
+		u.Log.Info(skipped, "installed", running, "manifestURL", manifestURL,
+			"reason", decision.Reason)
 		return false
 	}
 
 	u.Log.InfoEvent(logging.EventSelfUpdateFound, "updater update available",
 		"installed", running, "target", m.Version, "attempt", decision.Attempt,
-		"source", src.Name(), "notes", m.Notes(u.Cfg.ResolveEMLy().Language))
+		"manifestURL", manifestURL, "download", m.Download,
+		"notes", m.Notes(u.Cfg.ResolveEMLy().Language))
 
 	return u.applySelfUpdate(ctx, src, m, decision.Attempt)
 }
@@ -136,8 +149,14 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 // resolveUpdaterManifest fetches the updater's own release manifest, asking
 // each source for its own updater endpoint so a machine on a site's internal
 // mirror updates from that mirror.
-func (u *Updater) resolveUpdaterManifest(ctx context.Context) (source.Source, *manifest.UpdaterManifest, error) {
-	return source.ResolveUpdater(ctx, u.newResolver(), func(s source.Source) (string, error) {
+// It returns the URL that answered alongside the manifest, so the log can name
+// the exact endpoint this machine reached rather than the source it was
+// derived from.
+func (u *Updater) resolveUpdaterManifest(ctx context.Context) (source.Source, *manifest.UpdaterManifest, string, error) {
+	resolver := u.newResolver()
+	resolver.Document = "updater manifest"
+
+	return source.ResolveUpdater(ctx, resolver, func(s source.Source) (string, error) {
 		http, ok := s.(*source.HTTPSource)
 		if !ok {
 			return "", fmt.Errorf("source %s has no manifest URL to derive from", s.Name())

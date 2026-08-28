@@ -1,5 +1,5 @@
 #define ApplicationName 'EMLyUpdater'
-#define ApplicationVersion '1.5.0'
+#define ApplicationVersion '1.5.1'
 #define ServiceName 'EMLyUpdater'
 
 [Setup]
@@ -24,11 +24,9 @@ SignedUninstaller=yes
 Source: "..\build\{#ApplicationName}.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "appicon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; Nessun config.ini viene distribuito: il subcommand `install` in [Run] lo
-; riconcilia con i default embedded nel nuovo binario (config.Merge), tenendo
-; i valori già presenti sulla macchina e aggiungendo le chiavi nuove. Il
-; config precedente NON va cancellato qui: l'updater si aggiorna da solo
-; eseguendo questo stesso setup, e cancellarlo azzererebbe silenziosamente le
-; impostazioni di ogni macchina della flotta a ogni self-update.
+; riscrive dai default embedded nel nuovo binario (config.Reset), salvando
+; prima il file precedente come config.prev.ini. Le personalizzazioni locali
+; NON sopravvivono all'upgrade: ogni release riparte dal proprio default.
 
 [Run]
 ; Register (or refresh, on upgrade) the auto-start LocalSystem service, the

@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
+
+	"emlyupdater/internal/version"
 )
 
 func TestLoadCreatesDefault(t *testing.T) {
@@ -197,5 +200,88 @@ enabled = false
 	}
 	if cfg.CertificateEnabled {
 		t.Error("certificate.enabled = false was not honoured")
+	}
+}
+
+// apiUserAgentPattern is emly-go-api's updaterUAPattern verbatim
+// (internal/handlers/updates.route.go). The API parses the machine's installed
+// version out of the User-Agent to record update events and to stage rollouts,
+// so a User-Agent this does not match is telemetry silently lost fleet-wide.
+//
+// Worth pinning here because `{{VERSION}}` itself does *not* match `[\w.\-]+`:
+// if the placeholder ever stopped being resolved, every machine would report
+// an unknown version and nothing else would fail.
+var apiUserAgentPattern = regexp.MustCompile(`^EMLy-Updater/([\w.\-]+)\s*\(([^)]*)\)`)
+
+func TestDefaultUserAgentMatchesTheAPIContract(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	m := apiUserAgentPattern.FindStringSubmatch(cfg.UserAgent)
+	if m == nil {
+		t.Fatalf("User-Agent %q is not parseable by the API", cfg.UserAgent)
+	}
+	if m[1] != version.Version {
+		t.Errorf("User-Agent reports version %q, want %q", m[1], version.Version)
+	}
+	if m[2] == "" {
+		t.Error("User-Agent carries no contact")
+	}
+}
+
+// Every source has to be able to name its own updater endpoint, so a machine
+// on a site's internal mirror self-updates from that mirror rather than
+// reaching for the internet.
+func TestUpdaterManifestURL(t *testing.T) {
+	cfg := &Config{}
+	cases := map[string]string{
+		"https://api.emly.ffois.it/v2/updates/manifest":  "https://api.emly.ffois.it/v2/updates/manifest/updater",
+		"http://172.16.33.72:8080/v2/updates/manifest":   "http://172.16.33.72:8080/v2/updates/manifest/updater",
+		"https://api.example/v2/updates/manifest/":       "https://api.example/v2/updates/manifest/updater",
+		"https://api.example/v2/updates/manifest?ring=1": "https://api.example/v2/updates/manifest/updater?ring=1",
+	}
+	for in, want := range cases {
+		got, err := cfg.UpdaterManifestURL(in)
+		if err != nil {
+			t.Errorf("%s: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("UpdaterManifestURL(%s) = %s, want %s", in, got, want)
+		}
+	}
+
+	if _, err := cfg.UpdaterManifestURL(""); err == nil {
+		t.Error("expected an error when there is no manifest URL to derive from")
+	}
+}
+
+// An explicit override names one host, so it wins for every source rather
+// than being re-derived per source.
+func TestUpdaterManifestURLOverride(t *testing.T) {
+	cfg := &Config{SelfUpdateManifestURL: "http://localhost:8000/updater"}
+	for _, base := range []string{"https://api.emly.ffois.it/v2/updates/manifest", ""} {
+		got, err := cfg.UpdaterManifestURL(base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != "http://localhost:8000/updater" {
+			t.Errorf("override ignored for base %q: got %s", base, got)
+		}
+	}
+}
+
+func TestLoadSelfUpdateDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.ini"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.SelfUpdateEnabled {
+		t.Error("selfUpdate.enabled should default to true")
+	}
+	if cfg.SelfUpdateManifestURL != "" {
+		t.Errorf("selfUpdate.manifestURL = %q, want empty (derived)", cfg.SelfUpdateManifestURL)
 	}
 }

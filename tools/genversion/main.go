@@ -7,10 +7,7 @@
 //
 // internal/config/config.default.ini used to be patched here too, but its
 // userAgent now carries a {{VERSION}} placeholder that config.BuildUserAgent
-// resolves at runtime. Stamping the version into the shipped default would
-// freeze it into every machine's config.ini, which config.Merge preserves
-// across upgrades - so a self-updated machine would keep reporting the version
-// it was first installed with.
+// resolves at runtime, so the shipped default never needs a version stamp.
 //
 // Run via "go generate ./..." from the repo root after bumping
 // versioninfo.json.

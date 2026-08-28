@@ -83,10 +83,9 @@ The signature is what makes this safe over the internal LAN source, which is
 plain HTTP: whoever could serve a tampered setup there could serve a matching
 checksum with it, but not a signature.
 
-**Your `config.ini` survives.** The `install` step reconciles it with the new
-release's defaults rather than overwriting it: every value already on the
-machine wins, keys the release added appear with their documented defaults,
-keys it removed disappear, and the previous file is kept as `config.prev.ini`.
+**Your `config.ini` is reset.** The `install` step rewrites it from the new
+release's embedded defaults; the previous file is kept as `config.prev.ini`,
+so a setting you still need can be recovered and re-applied from there.
 
 A release that installs but does not result in the new binary running is
 retried at most 3 times and then abandoned (event 802) until a *different*
@@ -132,14 +131,13 @@ Copy-Item .\build\bin\emly-updater.exe "C:\Program Files\EMLyUpdater\" -Force
 the first `install` or service start (see [`internal/config/config.default.ini`](internal/config/config.default.ini)).
 Changes take effect on the next poll cycle.
 
-Edits survive upgrades and uninstall: on every `install` the file is merged
-with the new release's defaults — the values already on the machine win, keys
-the release added arrive with their defaults and their documentation, and the
-pre-merge file is kept as `config.prev.ini`. The one value not carried over is
-`userAgent` when it still looks like a shipped default (`EMLy-Updater/<x.y.z>
-...`): it is replaced with the current default, whose `{{VERSION}}` placeholder
-resolves at runtime, so a machine always reports the version it is actually
-running. A `userAgent` customised by hand is preserved like everything else.
+Edits do **not** survive upgrades: on every `install` (including a
+self-update) the file is rewritten from the new release's embedded defaults,
+and the previous file is kept as `config.prev.ini`. A setting that must
+persist across upgrades has to be re-applied after the upgrade (or pushed by
+GPO/script). The default `userAgent` carries a `{{VERSION}}` placeholder
+resolved at runtime, so a machine always reports the version it is actually
+running. The file does survive uninstall (`%ProgramData%` is kept).
 
 ### `[updater]`
 

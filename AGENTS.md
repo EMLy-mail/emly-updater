@@ -70,6 +70,13 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   take the service down. Leaving `defaultMappingDCSubnets` empty disables the whole check. It
   runs **once at startup**: a laptop that boots off-site stays `external` until the service
   restarts on a mapped LAN.
+- **`config.Load` reads the ini file with `IgnoreInlineComment: true`** - without it, ini.v1
+  treats a bare `;` anywhere in a value as the start of an inline comment and silently truncates
+  the rest of the line, no error. `defaultMappingDCSubnets` uses `;` as the separator between DC
+  entries, so this isn't hypothetical: a two-site value like `DC-RM2:...;DC-CB:...` would load as
+  just `DC-RM2:...`, and every site after the first would look "not configured" with nothing in
+  the log to explain why - `Load`'s comments live on their own line, never after a value on the
+  same line, so this is safe for the whole file, not just this one key.
 - **A dead internal manifest endpoint doesn't fail the cycle** - `source.Resolver`
   (`internal/source/resolver.go`) takes an optional `Fallback` source, tried once (no retries)
   after `Primary` exhausts its attempts. `Updater.resolveTarget` wires `externalManifestURL` in

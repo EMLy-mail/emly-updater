@@ -102,7 +102,13 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
-	f, err := ini.Load(path)
+	// IgnoreInlineComment: without it, ini.v1 treats a bare ';' anywhere in a
+	// value as the start of an inline comment and silently truncates
+	// everything after it - which is exactly the separator
+	// defaultMappingDCSubnets uses between DC entries. A config with two
+	// mapped sites would otherwise lose every site after the first with no
+	// error and no hint why the DC just isn't "found".
+	f, err := ini.LoadSources(ini.LoadOptions{IgnoreInlineComment: true}, path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse %s: %w", path, err)
 	}

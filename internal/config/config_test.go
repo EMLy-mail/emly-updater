@@ -161,6 +161,26 @@ func TestLoadCertificateDefaultsEnabled(t *testing.T) {
 	}
 }
 
+// The ';' separator between DC entries in defaultMappingDCSubnets must
+// survive ini.v1's own parsing, not just ParseDCSubnetMap: ini.v1 treats a
+// bare ';' in a value as an inline comment by default and would silently
+// truncate the line at "DC-RM2:...", dropping every site listed after it.
+func TestLoadPreservesEverySiteInDCSubnetMap(t *testing.T) {
+	path := writeConfig(t, "[source]\nprimary = external\nexternalManifestURL = https://x\n"+
+		"defaultMappingDCSubnets = DC-RM2:172.16.96.0/24;DC-CB:172.16.33.0/24,172.16.34.0/24\n")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if len(cfg.DCSubnetMap) != 2 {
+		t.Fatalf("DCSubnetMap = %v, want 2 DCs (ini.v1 likely truncated the value at ';')", cfg.DCSubnetMap)
+	}
+	if len(cfg.DCSubnetMap["DC-CB"]) != 2 {
+		t.Errorf("DC-CB subnets = %v, want 2 entries", cfg.DCSubnetMap["DC-CB"])
+	}
+}
+
 func TestLoadCertificateDisabled(t *testing.T) {
 	path := writeConfig(t, `
 [source]

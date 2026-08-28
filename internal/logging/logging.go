@@ -84,14 +84,18 @@ func (l *Logger) Error(msg string, kv ...any) { l.file.Error(msg, kv...) }
 
 // Event IDs grouped per area, so Event Viewer filtering stays meaningful.
 const (
-	EventGeneric        = 1
-	EventUpdateFound    = 100
-	EventInstallOK      = 200
-	EventInstallFailed  = 201
-	EventForcedKill     = 300
-	EventAssocRepaired  = 400
-	EventIPCRejected    = 600 // per-connection client authentication failure
-	EventIPCUnavailable = 601 // IPC pipe could not be created (e.g. name already in use)
+	EventGeneric     = 1
+	EventUpdateFound = 100
+	// EventSourcesUnreachable fires once per outage when a poll cycle cannot
+	// reach any configured update source (primary retries plus, when wired
+	// in, the fallback) - the console user is toasted at the same time.
+	EventSourcesUnreachable = 101
+	EventInstallOK          = 200
+	EventInstallFailed      = 201
+	EventForcedKill         = 300
+	EventAssocRepaired      = 400
+	EventIPCRejected        = 600 // per-connection client authentication failure
+	EventIPCUnavailable     = 601 // IPC pipe could not be created (e.g. name already in use)
 
 	// Startup source policy: which manifest source the detected domain
 	// controller selected, and why it could not be determined.

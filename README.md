@@ -45,9 +45,23 @@ match the manifest is **never** executed.
 ## Update sources
 
 The manifest is fetched from the configured primary source (`external` HTTPS
-or `internal` LAN HTTP), retried up to 3 times with exponential backoff. The
-setup binary is always fetched from the same source that served the manifest.
-HTTP manifests key checksums by version and carry full download URLs.
+or `internal` LAN HTTP), retried up to 3 times with exponential backoff. When
+`primary = internal`, a reachable `externalManifestURL` is wired in as a
+one-shot fallback: if the internal endpoint is still unreachable after every
+retry, the cycle falls back to the public API rather than failing outright.
+The fallback is only for that fetch - it is never written to `config.ini`, so
+the next cycle tries `internal` again first. The setup binary is always
+fetched from the same source that served the manifest. HTTP manifests key
+checksums by version and carry full download URLs.
+
+When a poll cycle still cannot reach any source (primary exhausted, fallback
+also failed or not configured), a Windows notification tells the active
+console user to contact their IT department ("EMLy Updater non riesce a
+contattare il server degli aggiornamenti. Contattare il proprio IT." / the
+English equivalent), carrying EMLy's own icon like every other toast this
+service shows. It fires at most once per outage - shown once, then suppressed
+until a cycle succeeds again - so a prolonged outage doesn't nag on every
+poll; if nobody was logged in to see it, the next cycle tries again.
 
 ## Installation
 

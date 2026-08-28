@@ -28,6 +28,22 @@ func UpdateCompleteMessage(lang, version, channel string) Message {
 	}
 }
 
+// SourcesUnreachableMessage builds the localized title/body warning shown
+// when a poll cycle could not reach any configured update source (primary
+// retries exhausted, and the fallback - when wired in - also failed).
+func SourcesUnreachableMessage(lang string) Message {
+	if lang == "it" {
+		return Message{
+			Title: "EMLy Updater - Errore di connessione",
+			Body:  "EMLy Updater non riesce a contattare il server degli aggiornamenti. Contattare il proprio IT.",
+		}
+	}
+	return Message{
+		Title: "EMLy Updater - Connection Error",
+		Body:  "EMLy Updater cannot reach the update server. Please contact your IT department.",
+	}
+}
+
 // LaunchToast shows the update-complete toast in the active console user's
 // session. Session 0, where this SYSTEM service lives, has no desktop to
 // draw a notification-area icon on - so this re-launches updaterExePath as

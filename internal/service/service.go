@@ -37,6 +37,15 @@ type Updater struct {
 	Downloads *download.Manager
 	Machine   machineinfo.Info
 	IPC       *ipc.Server
+
+	// sourcesUnreachableNotified marks that the console user has already
+	// been toasted for the outage currently in progress - Cycle runs
+	// sequentially in one goroutine, so this needs no locking. It is only
+	// set once LaunchToast actually shows the toast, and cleared the next
+	// time resolveTarget succeeds, so a server down for hours nags the user
+	// once per outage rather than once per poll - but a still-ongoing
+	// outage keeps trying every cycle until someone is there to see it.
+	sourcesUnreachableNotified bool
 }
 
 // New builds an Updater on the standard ProgramData paths.
@@ -123,8 +132,10 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	// 2) Normal poll: manifest via the primary source.
 	src, m, target, err := u.resolveTarget(ctx, emly.Channel)
 	if err != nil {
+		u.notifySourcesUnreachable()
 		return err
 	}
+	u.sourcesUnreachableNotified = false
 
 	needUpdate, err := manifest.Less(emly.InstalledVersion, target.Version)
 	if err != nil {
@@ -168,22 +179,38 @@ func (u *Updater) Cycle(ctx context.Context) error {
 	return u.apply(ctx, p, emly)
 }
 
-// resolveTarget fetches the update manifest from the primary source (with
-// retries) and resolves it to a channel target. Shared by the normal poll in
-// Cycle and by the forced re-download path in install.
-func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
-	httpSrc := source.NewHTTPSource(u.Cfg.PrimaryManifestURL())
+// newHTTPSource builds an HTTPSource for manifestURL with this machine's
+// identity headers attached.
+func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
+	httpSrc := source.NewHTTPSource(manifestURL)
 	httpSrc.UserAgent = u.Cfg.UserAgent
 	httpSrc.APIKey = u.Cfg.APIKey
 	httpSrc.Hostname = u.Machine.Hostname
 	httpSrc.HWID = u.Machine.HWID
 	httpSrc.ADDomain = u.Machine.ADDomain
 	httpSrc.InternalIP = u.Machine.InternalIP
+	return httpSrc
+}
+
+// resolveTarget fetches the update manifest from the primary source (with
+// retries) and resolves it to a channel target. Shared by the normal poll in
+// Cycle and by the forced re-download path in install.
+//
+// When Primary is "internal", externalManifestURL (if configured) is wired
+// in as the resolver's fallback: the startup source policy already confirmed
+// this machine is on a mapped internal LAN, but that doesn't guarantee the
+// internal manifest endpoint itself is reachable (down, misconfigured,
+// firewalled). Falling back to the public API keeps this cycle from failing
+// outright; it is not persisted, so the next cycle tries internal again.
+func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
 	resolver := &source.Resolver{
-		Primary: httpSrc,
+		Primary: u.newHTTPSource(u.Cfg.PrimaryManifestURL()),
 		Logf: func(format string, args ...any) {
 			u.Log.Info(fmt.Sprintf(format, args...))
 		},
+	}
+	if u.Cfg.Primary == config.SourceInternal && u.Cfg.ExternalManifestURL != "" {
+		resolver.Fallback = u.newHTTPSource(u.Cfg.ExternalManifestURL)
 	}
 	src, m, err := resolver.Resolve(ctx)
 	if err != nil {
@@ -459,6 +486,40 @@ func (u *Updater) showUpdateToast(version string) {
 		u.Log.Info("update-complete toast shown", "version", version)
 	} else {
 		u.Log.Info("update-complete toast skipped (no active console session)", "version", version)
+	}
+}
+
+// notifySourcesUnreachable warns the console user that this poll cycle could
+// not reach any update source (primary retries exhausted, and the fallback -
+// when wired in - failed too), pointing them at their IT department. It is
+// logged (event 101) every time regardless, but the toast itself is shown at
+// most once per outage: sourcesUnreachableNotified is only set once the toast
+// actually launches, and Cycle clears it as soon as resolveTarget next
+// succeeds. Never fatal - a missing console session just means nobody was
+// there to see it, and the next cycle tries again.
+func (u *Updater) notifySourcesUnreachable() {
+	u.Log.WarnEvent(logging.EventSourcesUnreachable,
+		"no update source reachable this cycle", "alreadyNotified", u.sourcesUnreachableNotified)
+
+	if u.sourcesUnreachableNotified {
+		return
+	}
+
+	lang := u.Cfg.ResolveEMLy().Language
+	msg := notify.SourcesUnreachableMessage(lang)
+
+	self, err := os.Executable()
+	if err != nil {
+		u.Log.Warn("failed to resolve own executable path, skipping unreachable-source toast", "error", err.Error())
+		return
+	}
+
+	emlyExe := assoc.ExePath(u.Cfg.EMLyInstallDir, u.Cfg.EMLyExeName)
+	if notify.LaunchToast(self, emlyExe, msg.Title, msg.Body) {
+		u.Log.Info("update-source-unreachable toast shown")
+		u.sourcesUnreachableNotified = true
+	} else {
+		u.Log.Info("update-source-unreachable toast skipped (no active console session)")
 	}
 }
 

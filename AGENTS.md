@@ -70,6 +70,23 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   take the service down. Leaving `defaultMappingDCSubnets` empty disables the whole check. It
   runs **once at startup**: a laptop that boots off-site stays `external` until the service
   restarts on a mapped LAN.
+- **A dead internal manifest endpoint doesn't fail the cycle** - `source.Resolver`
+  (`internal/source/resolver.go`) takes an optional `Fallback` source, tried once (no retries)
+  after `Primary` exhausts its attempts. `Updater.resolveTarget` wires `externalManifestURL` in
+  as that fallback whenever `primary = internal`: the startup DC/subnet check can be correct
+  while the internal manifest host itself is down, misconfigured, or firewalled. The fallback is
+  used for that fetch only - it is never persisted to `cfg.Primary` or `config.ini`, so the next
+  cycle still tries `internal` first.
+- **No update source reachable at all → toast + event, once per outage** - when `resolveTarget`
+  still fails (primary exhausted, fallback also failed or unconfigured), `Cycle`
+  (`internal/service/service.go`) logs event 101 (`EventSourcesUnreachable`, every cycle) and
+  calls `notifySourcesUnreachable`, which shows a localized "contact your IT" toast
+  (`notify.SourcesUnreachableMessage`) via the same `notify.LaunchToast` SYSTEM → user-session hop
+  as the update-complete toast. `Updater.sourcesUnreachableNotified` gates the *toast* (not the
+  log line) to once per outage: set only when `LaunchToast` actually shows it, cleared by `Cycle`
+  the next time `resolveTarget` succeeds. If nobody was logged in to see it, the flag stays false
+  and the next cycle tries again - so a long outage nags once, but only once someone is actually
+  there to read it.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
 
 ## Configuration Reference

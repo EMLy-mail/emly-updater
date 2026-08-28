@@ -156,9 +156,10 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 | `primary` | `external` | `external` (public HTTPS) or `internal` (LAN HTTP) |
 | `externalManifestURL` | (API URL) | Required when `primary = external` |
 | `internalManifestURL` | _(empty)_ | Required when `primary = internal` |
+| `bkInternManifestURL` | _(empty)_ | Backup internal manifest URL, tried when `primary = internal` and `internalManifestURL` is unreachable, before falling back to `externalManifestURL`; empty disables it |
 | `userAgent` | `EMLy-Updater/{{VERSION}} (...)` | Optional `User-Agent` header sent on HTTP requests; `{{VERSION}}` is replaced at runtime with the running version |
 | `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
-| `defaultMappingDCSubnets` | `DC-RM2:172.16.96.0/24` | Per-site map of domain controller name to its internal CIDR subnets: `dc:cidr[,cidr...][;dc:cidr[,cidr...]...]`; empty disables the startup source check |
+| `defaultMappingDCSubnets` | `DC-RM2:172.16.96.0/24` | Per-site map of domain controller name to its internal CIDR subnets: `dc:cidr[,cidr...][\|dc:cidr[,cidr...]...]` (legacy `;` delimiter still accepted); empty disables the startup source check |
 
 ### `[criticalUpdate]`
 

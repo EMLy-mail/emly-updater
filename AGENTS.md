@@ -77,11 +77,12 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   restarts on a mapped LAN.
 - **`config.Load` reads the ini file with `IgnoreInlineComment: true`** - without it, ini.v1
   treats a bare `;` anywhere in a value as the start of an inline comment and silently truncates
-  the rest of the line, no error. `defaultMappingDCSubnets` uses `;` as the separator between DC
-  entries, so this isn't hypothetical: a two-site value like `DC-RM2:...;DC-CB:...` would load as
-  just `DC-RM2:...`, and every site after the first would look "not configured" with nothing in
-  the log to explain why - `Load`'s comments live on their own line, never after a value on the
-  same line, so this is safe for the whole file, not just this one key.
+  the rest of the line, no error. `defaultMappingDCSubnets` now uses `|` between DC entries, but
+  the legacy `;` delimiter written by previous releases is still accepted, so this isn't
+  hypothetical: a carried-over two-site value like `DC-RM2:...;DC-CB:...` would load as just
+  `DC-RM2:...`, and every site after the first would look "not configured" with nothing in the
+  log to explain why - `Load`'s comments live on their own line, never after a value on the same
+  line, so this is safe for the whole file, not just this one key.
 - **A dead internal manifest endpoint doesn't fail the cycle** - `source.Resolver`
   (`internal/source/resolver.go`) takes an optional `Fallback` source, tried once (no retries)
   after `Primary` exhausts its attempts. `Updater.resolveTarget` wires `externalManifestURL` in
@@ -167,9 +168,10 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
 | `primary` | `[source]` | `external` | `external` or `internal` |
 | `externalManifestURL` | `[source]` | (API URL) | Required when `primary=external` |
 | `internalManifestURL` | `[source]` | _(empty)_ | Required when `primary=internal` |
+| `bkInternManifestURL` | `[source]` | _(empty)_ | Backup internal manifest URL: when `primary=internal` (DC and subnets matched) and `internalManifestURL` is unreachable, tried before falling back to `externalManifestURL` (empty disables) |
 | `userAgent` | `[source]` | `EMLy-Updater/{{VERSION}} (...)` | Sent as `User-Agent` on HTTP requests; `{{VERSION}}` is resolved at runtime by `config.BuildUserAgent` |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
-| `defaultMappingDCSubnets` | `[source]` | `DC-RM2:172.16.96.0/24` | Startup source policy: `dc:cidr[,cidr...][;dc:cidr[,cidr...]...]` map of DC name to that site's internal subnets (empty disables) |
+| `defaultMappingDCSubnets` | `[source]` | `DC-RM2:172.16.96.0/24` | Startup source policy: `dc:cidr[,cidr...][\|dc:cidr[,cidr...]...]` map of DC name to that site's internal subnets (legacy `;` delimiter still accepted; empty disables) |
 | `criticalWarningEnabled` | `[criticalUpdate]` | `true` | Show countdown WTS dialog before force-kill |
 | `criticalWarningSeconds` | `[criticalUpdate]` | `30` | |
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |

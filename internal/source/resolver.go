@@ -14,14 +14,16 @@ import (
 type Resolver struct {
 	Primary Source
 
-	// Fallback, when set, is tried once (no retries) after Primary exhausts
-	// its attempts. It exists for the case where the startup source policy
-	// correctly placed the machine on a mapped internal LAN but the internal
-	// manifest endpoint itself is unreachable (down, misconfigured, blocked
-	// by a firewall): falling back keeps updates flowing for this cycle
-	// instead of failing it outright. The fallback is never persisted to
-	// cfg.Primary - the next cycle tries Primary again first.
-	Fallback Source
+	// Fallbacks, when set, are tried in order, once each (no retries), after
+	// Primary exhausts its attempts. They exist for the case where the
+	// startup source policy correctly placed the machine on a mapped internal
+	// LAN but the internal manifest endpoint itself is unreachable (down,
+	// misconfigured, blocked by a firewall): a site can name a backup
+	// internal endpoint to try before going out to the public API, and
+	// either way the cycle keeps flowing instead of failing outright. A
+	// fallback is never persisted to cfg.Primary - the next cycle tries
+	// Primary again first.
+	Fallbacks []Source
 
 	// Attempts and BaseBackoff control primary retries; zero values get
 	// defaults (3 attempts, 5s base backoff: 5s, 10s between tries).
@@ -143,12 +145,15 @@ func resolveWith[T any](ctx context.Context, r *Resolver, fetch func(context.Con
 		}
 	}
 
-	if r.Fallback != nil {
+	for _, fb := range r.Fallbacks {
+		if ctx.Err() != nil {
+			return nil, zero, ctx.Err()
+		}
 		r.logf("primary source %s did not serve the %s, trying fallback source %s",
-			r.Primary.Name(), r.document(), r.Fallback.Name())
-		doc, err := fetch(ctx, r.Fallback)
+			r.Primary.Name(), r.document(), fb.Name())
+		doc, err := fetch(ctx, fb)
 		if err != nil {
-			r.logf("fallback source %s failed: %v", r.Fallback.Name(), err)
+			r.logf("fallback source %s failed: %v", fb.Name(), err)
 			// Surface the fallback's 404 so a caller that treats "nobody
 			// serves this" as a no-op still sees it when the primary failed
 			// for some other reason.
@@ -156,8 +161,8 @@ func resolveWith[T any](ctx context.Context, r *Resolver, fetch func(context.Con
 				lastErr = err
 			}
 		} else {
-			r.logf("%s served by fallback source %s", r.document(), r.Fallback.Name())
-			return r.Fallback, doc, nil
+			r.logf("%s served by fallback source %s", r.document(), fb.Name())
+			return fb, doc, nil
 		}
 	}
 

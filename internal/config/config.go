@@ -39,8 +39,14 @@ type Config struct {
 	Primary             string // "external" or "internal"
 	ExternalManifestURL string
 	InternalManifestURL string
-	UserAgent           string // optional User-Agent header for HTTP requests
-	APIKey              string // optional X-Api-Key header for HTTP requests
+	// BackupInternalManifestURL (ini key bkInternManifestURL) is an optional
+	// second internal endpoint. When the source policy placed the machine on
+	// a mapped internal LAN (DC and subnets matched) but InternalManifestURL
+	// does not answer, this URL is tried before falling back to
+	// ExternalManifestURL. Empty disables it.
+	BackupInternalManifestURL string
+	UserAgent                 string // optional User-Agent header for HTTP requests
+	APIKey                    string // optional X-Api-Key header for HTTP requests
 
 	// DCSubnetMap drives the startup source policy: keyed by domain
 	// controller name, each entry lists the CIDR subnets that count as "in
@@ -164,8 +170,10 @@ func Load(path string) (*Config, error) {
 		Primary:             strings.ToLower(strings.TrimSpace(src.Key("primary").MustString(SourceExternal))),
 		ExternalManifestURL: strings.TrimSpace(src.Key("externalManifestURL").String()),
 		InternalManifestURL: strings.TrimSpace(src.Key("internalManifestURL").String()),
-		UserAgent:           BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
-		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
+
+		BackupInternalManifestURL: strings.TrimSpace(src.Key("bkInternManifestURL").String()),
+		UserAgent:                 BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
+		APIKey:                    strings.TrimSpace(src.Key("xApiKey").String()),
 
 		ProgIDEml: fa.Key("progIdEml").MustString("EMLy.EML"),
 		ProgIDMsg: fa.Key("progIdMsg").MustString("EMLy.MSG"),

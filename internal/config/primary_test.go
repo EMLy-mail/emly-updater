@@ -172,7 +172,7 @@ func TestParseDCSubnetMap(t *testing.T) {
 		t.Errorf("ParseDCSubnetMap(blank) = %v, %v; want nil, nil", got, err)
 	}
 
-	got, err := ParseDCSubnetMap("DC-RM2:172.16.96.0/24,10.12.8.0/24;DC-CB:172.16.33.0/24")
+	got, err := ParseDCSubnetMap("DC-RM2:172.16.96.0/24,10.12.8.0/24|DC-CB:172.16.33.0/24")
 	if err != nil {
 		t.Fatalf("ParseDCSubnetMap: %v", err)
 	}
@@ -186,13 +186,24 @@ func TestParseDCSubnetMap(t *testing.T) {
 		t.Errorf("DC-CB subnets = %v, want 1 entry", got["DC-CB"])
 	}
 
+	// The ';' delimiter written by previous releases must keep parsing, or a
+	// config carried over from an old install would fail Load and take the
+	// service down.
+	legacy, err := ParseDCSubnetMap("DC-RM2:172.16.96.0/24;DC-CB:172.16.33.0/24")
+	if err != nil {
+		t.Fatalf("ParseDCSubnetMap(legacy ';'): %v", err)
+	}
+	if len(legacy) != 2 {
+		t.Errorf("legacy ';' delimiter parsed %d DCs, want 2", len(legacy))
+	}
+
 	if _, err := ParseDCSubnetMap("DC-RM2 172.16.96.0/24"); err == nil {
 		t.Error("expected an error for an entry missing the ':' separator")
 	}
 	if _, err := ParseDCSubnetMap("DC-RM2:nonsense"); err == nil {
 		t.Error("expected an error for a malformed CIDR block")
 	}
-	if _, err := ParseDCSubnetMap("DC-RM2:172.16.96.0/24;dc-rm2:172.16.97.0/24"); err == nil {
+	if _, err := ParseDCSubnetMap("DC-RM2:172.16.96.0/24|dc-rm2:172.16.97.0/24"); err == nil {
 		t.Error("expected an error for a DC name repeated (case-insensitively)")
 	}
 }

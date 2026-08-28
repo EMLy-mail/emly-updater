@@ -86,7 +86,7 @@ func TestResolverFallsBackWhenPrimaryExhausted(t *testing.T) {
 	fallback := &succeedingSource{m: &manifest.Manifest{StableVersion: "1.0.0"}}
 	r := &Resolver{
 		Primary:     primary,
-		Fallback:    fallback,
+		Fallbacks:   []Source{fallback},
 		Attempts:    2,
 		BaseBackoff: time.Millisecond,
 	}
@@ -109,6 +109,37 @@ func TestResolverFallsBackWhenPrimaryExhausted(t *testing.T) {
 	}
 }
 
+// Fallbacks are tried in the order they were wired: the backup internal
+// endpoint must get its chance before the request goes out to the public API.
+func TestResolverTriesFallbacksInOrder(t *testing.T) {
+	primary := &failingSource{}
+	backup := &failingSource{}
+	external := &succeedingSource{m: &manifest.Manifest{StableVersion: "2.0.0"}}
+	r := &Resolver{
+		Primary:     primary,
+		Fallbacks:   []Source{backup, external},
+		Attempts:    1,
+		BaseBackoff: time.Millisecond,
+	}
+
+	src, m, err := r.Resolve(context.Background())
+	if err != nil {
+		t.Fatalf("Resolve() error = %v, want nil", err)
+	}
+	if src != Source(external) {
+		t.Errorf("Resolve() source = %v, want the second fallback", src)
+	}
+	if m.StableVersion != "2.0.0" {
+		t.Errorf("Resolve() manifest = %+v, want the second fallback's", m)
+	}
+	if backup.calls != 1 {
+		t.Errorf("expected the first fallback to be tried once, got %d", backup.calls)
+	}
+	if external.calls != 1 {
+		t.Errorf("expected the second fallback to be tried once, got %d", external.calls)
+	}
+}
+
 // When both primary and fallback fail, the original primary error is what
 // callers see - it is the one that actually explains why updates stopped.
 func TestResolverReturnsPrimaryErrorWhenFallbackAlsoFails(t *testing.T) {
@@ -116,7 +147,7 @@ func TestResolverReturnsPrimaryErrorWhenFallbackAlsoFails(t *testing.T) {
 	fallback := &failingSource{}
 	r := &Resolver{
 		Primary:     primary,
-		Fallback:    fallback,
+		Fallbacks:   []Source{fallback},
 		Attempts:    1,
 		BaseBackoff: time.Millisecond,
 	}

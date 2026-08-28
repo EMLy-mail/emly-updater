@@ -212,14 +212,16 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 }
 
 // newResolver builds the source resolver this machine should use: the
-// configured primary, with retries, plus a fallback where one makes sense.
+// configured primary, with retries, plus fallbacks where they make sense.
 //
-// When Primary is "internal", externalManifestURL (if configured) is wired
-// in as the resolver's fallback: the startup source policy already confirmed
-// this machine is on a mapped internal LAN, but that doesn't guarantee the
-// internal manifest endpoint itself is reachable (down, misconfigured,
-// firewalled). Falling back to the public API keeps this cycle from failing
-// outright; it is not persisted, so the next cycle tries internal again.
+// When Primary is "internal", the startup source policy already confirmed
+// this machine is on a mapped internal LAN (its DC and subnets matched), but
+// that doesn't guarantee the internal manifest endpoint itself is reachable
+// (down, misconfigured, firewalled). In that case bkInternManifestURL (if
+// configured) is tried first - the machine is provably in the office, so a
+// backup internal endpoint is the closest substitute - and only then
+// externalManifestURL. Neither is persisted, so the next cycle tries the
+// internal primary again.
 //
 // EMLy's manifest and the updater's own both go through this, so a machine
 // that can only reach its site's mirror behaves the same way for both.
@@ -230,8 +232,13 @@ func (u *Updater) newResolver() *source.Resolver {
 			u.Log.Info(fmt.Sprintf(format, args...))
 		},
 	}
-	if u.Cfg.Primary == config.SourceInternal && u.Cfg.ExternalManifestURL != "" {
-		resolver.Fallback = u.newHTTPSource(u.Cfg.ExternalManifestURL)
+	if u.Cfg.Primary == config.SourceInternal {
+		if u.Cfg.BackupInternalManifestURL != "" {
+			resolver.Fallbacks = append(resolver.Fallbacks, u.newHTTPSource(u.Cfg.BackupInternalManifestURL))
+		}
+		if u.Cfg.ExternalManifestURL != "" {
+			resolver.Fallbacks = append(resolver.Fallbacks, u.newHTTPSource(u.Cfg.ExternalManifestURL))
+		}
 	}
 	return resolver
 }

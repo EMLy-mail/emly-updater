@@ -28,9 +28,12 @@ func ParseSubnets(raw string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-// ParseDCSubnetMap parses the defaultMappingDCSubnets key: a ';'-separated
+// ParseDCSubnetMap parses the defaultMappingDCSubnets key: a '|'-separated
 // list of "<dcName>:<cidr>[,<cidr>...]" entries, one per site's domain
-// controller (e.g. "DC-RM2:172.16.96.0/24,10.12.8.0/24;DC-CB:172.16.33.0/24").
+// controller (e.g. "DC-RM2:172.16.96.0/24,10.12.8.0/24|DC-CB:172.16.33.0/24").
+// The old ';' delimiter is still accepted so a config written by a previous
+// release keeps parsing: rejecting it would take the service down on the
+// first start after an update.
 // An empty or blank string yields a nil map, which disables the startup
 // source policy rather than being an error. A malformed entry - a missing
 // "dc:cidrs" separator, an invalid CIDR, or a DC name listed more than once -
@@ -44,7 +47,7 @@ func ParseDCSubnetMap(raw string) (map[string][]*net.IPNet, error) {
 
 	out := make(map[string][]*net.IPNet)
 	seen := make(map[string]bool)
-	for entry := range strings.SplitSeq(raw, ";") {
+	for entry := range strings.SplitSeq(strings.ReplaceAll(raw, ";", "|"), "|") {
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue

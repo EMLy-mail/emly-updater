@@ -75,7 +75,7 @@ func TestResolveUpdaterSkipsRetriesOn404(t *testing.T) {
 
 	r := &Resolver{
 		Primary:     NewHTTPSource(primary.URL + "/manifest"),
-		Fallback:    NewHTTPSource(fallback.URL + "/manifest"),
+		Fallbacks:   []Source{NewHTTPSource(fallback.URL + "/manifest")},
 		Attempts:    3,
 		BaseBackoff: time.Millisecond,
 	}
@@ -91,7 +91,7 @@ func TestResolveUpdaterSkipsRetriesOn404(t *testing.T) {
 		t.Errorf("unexpected manifest: %+v", m)
 	}
 	// The setup must be fetched from whichever source actually answered.
-	if src.Name() != r.Fallback.Name() {
+	if src.Name() != r.Fallbacks[0].Name() {
 		t.Errorf("resolved source = %s, want the fallback", src.Name())
 	}
 	// ...and the reported URL must be the endpoint that actually answered, not
@@ -113,7 +113,7 @@ func TestResolveUpdaterReportsNotFoundWhenNoSourceServesIt(t *testing.T) {
 
 	r := &Resolver{
 		Primary:     NewHTTPSource(srv.URL + "/manifest"),
-		Fallback:    NewHTTPSource(srv.URL + "/manifest"),
+		Fallbacks:   []Source{NewHTTPSource(srv.URL + "/manifest")},
 		Attempts:    2,
 		BaseBackoff: time.Millisecond,
 	}

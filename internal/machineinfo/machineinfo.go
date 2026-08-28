@@ -117,10 +117,27 @@ func osVersion() (string, error) {
 // internalIP returns the first non-loopback IPv4 address found on an up
 // interface, matching the selection logic in emly-app's machine-identifier.go.
 func internalIP() (string, error) {
-	ifaces, err := net.Interfaces()
+	ips, err := LocalIPv4Addresses()
 	if err != nil {
 		return "", err
 	}
+	if len(ips) == 0 {
+		return "", nil
+	}
+	return ips[0], nil
+}
+
+// LocalIPv4Addresses returns every non-loopback IPv4 address bound to an up
+// interface on this machine, in the order net.Interfaces() reports them. A
+// machine can present more than one (VPN adapter, wired + wireless, ...); the
+// startup source policy checks all of them against the subnets configured
+// for the resolved domain controller, rather than picking just one.
+func LocalIPv4Addresses() ([]string, error) {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
 			continue
@@ -138,9 +155,9 @@ func internalIP() (string, error) {
 				ip = v.IP
 			}
 			if ip4 := ip.To4(); ip4 != nil && !ip4.IsLoopback() {
-				return ip4.String(), nil
+				out = append(out, ip4.String())
 			}
 		}
 	}
-	return "", nil
+	return out, nil
 }

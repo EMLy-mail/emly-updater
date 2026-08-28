@@ -1,6 +1,7 @@
 package service
 
 import (
+	"net"
 	"strings"
 
 	"emlyupdater/internal/config"
@@ -12,32 +13,58 @@ import (
 // parameter so the policy can be exercised without a reachable domain.
 type dcLookup func(domain string) (*machineinfo.DomainControllerInfo, error)
 
+// localIPsLookup is machineinfo.LocalIPv4Addresses's signature, taken as a
+// parameter for the same reason.
+type localIPsLookup func() ([]string, error)
+
 // decideSource picks the manifest source implied by the domain controller the
 // machine can currently see, and returns the reason for the choice (logged
 // verbatim, so it has to read as an explanation on its own).
 //
-// The DC is a proxy for "am I on the internal LAN?": internalManifestURL
-// lives in the office, so a machine that cannot see the expected DC on the
-// expected subnet cannot reach it and must go out to the public API instead.
+// The DC identifies which site the machine is at; cfg.DCSubnetMap maps each
+// site's DC name to the CIDR subnets its office uses. internalManifestURL
+// lives in an office, so a machine whose own IP is not on one of those
+// subnets cannot reach it and must go out to the public API instead.
 //
-// An empty want means "no opinion" - the configured Primary stands.
-func decideSource(cfg *config.Config, dc *machineinfo.DomainControllerInfo, err error) (want, reason string) {
-	switch {
-	case cfg.InternalDCName == "" || len(cfg.InternalDCSubnets) == 0:
-		return "", "source policy disabled (internalDCName or internalDCSubnets empty)"
-	case err != nil:
-		return config.SourceExternal, "domain controller lookup failed: " + err.Error()
-	case !sameDCName(dc.Name, cfg.InternalDCName):
-		return config.SourceExternal, "domain controller is " + quote(dc.Name) + ", expected " + quote(cfg.InternalDCName)
-	case !dc.AddressIsIP:
-		return config.SourceExternal, "domain controller " + quote(dc.Name) + " answered from a NetBIOS address, not an IP"
-	case !config.SubnetsContain(cfg.InternalDCSubnets, dc.Address):
-		return config.SourceExternal, "domain controller " + quote(dc.Name) + " is at " + dc.Address + ", outside the internal subnets"
+// A nil/empty DCSubnetMap means "no opinion" - the configured Primary stands.
+func decideSource(cfg *config.Config, dc *machineinfo.DomainControllerInfo, dcErr error, localIPs []string, ipsErr error) (want, reason string) {
+	if len(cfg.DCSubnetMap) == 0 {
+		return "", "source policy disabled (defaultMappingDCSubnets empty)"
 	}
-	return config.SourceInternal, "domain controller " + quote(dc.Name) + " at " + dc.Address + " is on an internal subnet"
+	if dcErr != nil {
+		return config.SourceExternal, "domain controller lookup failed: " + dcErr.Error()
+	}
+
+	subnets, dcName, found := lookupSubnetsForDC(cfg.DCSubnetMap, dc.Name)
+	if !found {
+		return config.SourceExternal, "domain controller " + quote(dc.Name) + " has no configured subnet mapping"
+	}
+
+	if ipsErr != nil {
+		return config.SourceExternal, "could not enumerate local IP addresses: " + ipsErr.Error()
+	}
+
+	for _, ip := range localIPs {
+		if config.SubnetsContain(subnets, ip) {
+			return config.SourceInternal, "domain controller " + quote(dcName) + " matched, local IP " + ip + " is on one of its mapped subnets"
+		}
+	}
+	return config.SourceExternal, "domain controller " + quote(dcName) + " matched, but no local IP is on its mapped subnets"
 }
 
-// sameDCName compares a resolved DC name against the configured one, ignoring
+// lookupSubnetsForDC finds the subnet list configured for a resolved DC name,
+// matching the way sameDCName does: case-insensitively and ignoring any DNS
+// suffix DsGetDcName may have appended to the resolved name.
+func lookupSubnetsForDC(dcSubnets map[string][]*net.IPNet, resolved string) (subnets []*net.IPNet, key string, found bool) {
+	for k, v := range dcSubnets {
+		if sameDCName(resolved, k) {
+			return v, k, true
+		}
+	}
+	return nil, "", false
+}
+
+// sameDCName compares a resolved DC name against a configured one, ignoring
 // case and DNS suffix: DsGetDcName returns "DC-RM2.tregcc.local" with
 // DS_RETURN_DNS_NAME and plain "DC-RM2" without it, and both have to match a
 // config that names the host either way.
@@ -47,11 +74,8 @@ func sameDCName(resolved, want string) bool {
 
 // hostLabel keeps the leading label of a host name, dropping any DNS suffix.
 func hostLabel(name string) string {
-	name = strings.TrimSpace(name)
-	if i := strings.Index(name, "."); i >= 0 {
-		return name[:i]
-	}
-	return name
+	label, _, _ := strings.Cut(strings.TrimSpace(name), ".")
+	return label
 }
 
 func quote(s string) string { return `"` + s + `"` }
@@ -65,29 +89,38 @@ func quote(s string) string { return `"` + s + `"` }
 // The outcome is always logged - to the file log and to the Event Log - even
 // when nothing changes, so "which source did this machine pick, and why" is
 // answerable from Event Viewer alone.
-func applySourcePolicy(cfg *config.Config, log *logging.Logger, path string, lookup dcLookup) {
-	dc, lookupErr := lookup("")
-	want, reason := decideSource(cfg, dc, lookupErr)
+func applySourcePolicy(cfg *config.Config, log *logging.Logger, path string, dcFn dcLookup, ipsFn localIPsLookup) {
+	dc, dcErr := dcFn("")
+	localIPs, ipsErr := ipsFn()
+	want, reason := decideSource(cfg, dc, dcErr, localIPs, ipsErr)
 
-	// Common fields for every outcome below. dcFields returns a fresh slice
+	// Common fields for every outcome below. logFields returns a fresh slice
 	// each time so the appends cannot share a backing array.
-	dcFields := func() []any {
+	logFields := func() []any {
 		f := []any{"reason", reason}
 		if dc != nil {
 			f = append(f, "dc", dc.Name, "dcIP", dc.Address, "site", dc.Site)
 		}
+		if len(localIPs) > 0 {
+			f = append(f, "localIPs", strings.Join(localIPs, ","))
+		}
 		return f
 	}
 
-	if lookupErr != nil && want != "" {
+	switch {
+	case dcErr != nil && want != "":
 		log.ErrorEvent(logging.EventSourcePolicyFailed,
 			"domain controller lookup failed, selecting the external update source",
-			append([]any{"error", lookupErr.Error()}, dcFields()...)...)
+			append([]any{"error", dcErr.Error()}, logFields()...)...)
+	case ipsErr != nil && want != "":
+		log.ErrorEvent(logging.EventSourcePolicyFailed,
+			"could not enumerate local IP addresses, selecting the external update source",
+			append([]any{"error", ipsErr.Error()}, logFields()...)...)
 	}
 
 	if want == "" || want == cfg.Primary {
 		log.InfoEvent(logging.EventSourcePolicy, "update source unchanged",
-			append([]any{"source", cfg.Primary}, dcFields()...)...)
+			append([]any{"source", cfg.Primary}, logFields()...)...)
 		return
 	}
 
@@ -97,14 +130,14 @@ func applySourcePolicy(cfg *config.Config, log *logging.Logger, path string, loo
 	if manifestURLFor(cfg, want) == "" {
 		log.ErrorEvent(logging.EventSourcePolicyFailed,
 			"cannot switch update source: the target source has no manifest URL configured",
-			append([]any{"wanted", want, "keeping", cfg.Primary}, dcFields()...)...)
+			append([]any{"wanted", want, "keeping", cfg.Primary}, logFields()...)...)
 		return
 	}
 
 	previous := cfg.Primary
 	cfg.Primary = want
 	log.WarnEvent(logging.EventSourcePolicy, "update source switched",
-		append([]any{"from", previous, "to", want}, dcFields()...)...)
+		append([]any{"from", previous, "to", want}, logFields()...)...)
 
 	// The in-memory override above is what this run uses; persisting is for
 	// the next start and for anyone reading the config by hand, so a write

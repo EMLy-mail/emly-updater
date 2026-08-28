@@ -59,15 +59,17 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 - **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
 - **The update source is decided at startup, not just configured** - `applySourcePolicy`
   (`internal/service/sourcepolicy.go`, called from `service.New`) resolves the nearest domain
-  controller and forces `primary` to `internal` only when the DC is `internalDCName` *and*
-  answers from `internalDCSubnets`; anything else (other DC, other subnet, machine off the
-  domain) forces `external`. `internalManifestURL` lives in the office, so a
-  machine that cannot see the office DC cannot reach it. The decision is applied in memory
-  *and* written back to `config.ini` via `config.SetPrimary`, and is logged every start (event
-  700; 701 on failure) even when nothing changes. It never switches to a source whose manifest
-  URL is empty - that config would fail `Load` on the next start and take the service down.
-  Leaving either key empty disables the whole check. It runs **once at startup**: a laptop that
-  boots off-site stays `external` until the service restarts on the LAN.
+  controller and forces `primary` to `internal` only when that DC's name is a key in
+  `defaultMappingDCSubnets` *and* at least one of this machine's own local IPs falls inside one
+  of that key's CIDR subnets; anything else (DC not in the map, no local IP in its subnets,
+  machine off the domain) forces `external`. Each site's `internalManifestURL` lives in that
+  site's office, so a machine whose own IP is not on that site's subnet cannot reach it. The
+  decision is applied in memory *and* written back to `config.ini` via `config.SetPrimary`, and
+  is logged every start (event 700; 701 on failure) even when nothing changes. It never switches
+  to a source whose manifest URL is empty - that config would fail `Load` on the next start and
+  take the service down. Leaving `defaultMappingDCSubnets` empty disables the whole check. It
+  runs **once at startup**: a laptop that boots off-site stays `external` until the service
+  restarts on a mapped LAN.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
 
 ## Configuration Reference
@@ -85,8 +87,7 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 | `internalManifestURL` | `[source]` | _(empty)_ | Required when `primary=internal` |
 | `userAgent` | `[source]` | _(empty)_ | Sent as `User-Agent` on HTTP requests |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
-| `internalDCName` | `[source]` | `DC-RM2` | Startup source policy: DC that identifies the internal LAN (empty disables) |
-| `internalDCSubnets` | `[source]` | `172.16.96.0/24` | Startup source policy: CIDR blocks the DC must answer from (empty disables) |
+| `defaultMappingDCSubnets` | `[source]` | `DC-RM2:172.16.96.0/24` | Startup source policy: `dc:cidr[,cidr...][;dc:cidr[,cidr...]...]` map of DC name to that site's internal subnets (empty disables) |
 | `criticalWarningEnabled` | `[criticalUpdate]` | `true` | Show countdown WTS dialog before force-kill |
 | `criticalWarningSeconds` | `[criticalUpdate]` | `30` | |
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |

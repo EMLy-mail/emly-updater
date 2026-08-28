@@ -41,13 +41,16 @@ type Config struct {
 	UserAgent           string // optional User-Agent header for HTTP requests
 	APIKey              string // optional X-Api-Key header for HTTP requests
 
-	// InternalDCName / InternalDCSubnets drive the startup source policy:
-	// when the nearest domain controller is InternalDCName *and* answers from
-	// one of InternalDCSubnets, the machine is on the internal LAN and Primary
-	// is forced to "internal"; anything else forces "external". Either one
-	// left empty disables the check entirely and Primary is used as written.
-	InternalDCName    string
-	InternalDCSubnets []*net.IPNet
+	// DCSubnetMap drives the startup source policy: keyed by domain
+	// controller name, each entry lists the CIDR subnets that count as "in
+	// that site's office" for it. When the nearest domain controller matches
+	// a key here *and* one of this machine's own local IPs falls inside one
+	// of that key's subnets, the machine is on that site's internal LAN and
+	// Primary is forced to "internal"; anything else (DC not in the map, no
+	// local IP in its subnets, machine off the domain) forces "external". A
+	// nil/empty map disables the check entirely and Primary is used as
+	// written.
+	DCSubnetMap map[string][]*net.IPNet
 
 	// [fileAssociations]
 	ProgIDEml string
@@ -123,8 +126,6 @@ func Load(path string) (*Config, error) {
 		UserAgent:           BuildUserAgent(strings.TrimSpace(src.Key("userAgent").String()), version.Version),
 		APIKey:              strings.TrimSpace(src.Key("xApiKey").String()),
 
-		InternalDCName: strings.TrimSpace(src.Key("internalDCName").String()),
-
 		ProgIDEml: fa.Key("progIdEml").MustString("EMLy.EML"),
 		ProgIDMsg: fa.Key("progIdMsg").MustString("EMLy.MSG"),
 
@@ -143,11 +144,11 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.PollInterval = time.Duration(minutes) * time.Minute
 
-	subnets, err := ParseSubnets(src.Key("internalDCSubnets").String())
+	dcSubnets, err := ParseDCSubnetMap(src.Key("defaultMappingDCSubnets").String())
 	if err != nil {
 		return nil, err
 	}
-	cfg.InternalDCSubnets = subnets
+	cfg.DCSubnetMap = dcSubnets
 
 	if err := cfg.validate(); err != nil {
 		return nil, err

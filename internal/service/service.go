@@ -51,7 +51,7 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 	}
 	// Decide which manifest source this machine can actually reach before
 	// the first cycle runs: cfg.Primary may be rewritten here.
-	applySourcePolicy(cfg, log, config.ConfigPath(), machineinfo.NearestDomainController)
+	applySourcePolicy(cfg, log, config.ConfigPath(), machineinfo.NearestDomainController, machineinfo.LocalIPv4Addresses)
 
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))

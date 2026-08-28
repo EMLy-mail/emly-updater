@@ -105,8 +105,7 @@ Edits survive upgrades and uninstall. Changes take effect on the next poll cycle
 | `internalManifestURL` | _(empty)_ | Required when `primary = internal` |
 | `userAgent` | _(empty)_ | Optional `User-Agent` header sent on HTTP requests |
 | `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
-| `internalDCName` | `DC-RM2` | Domain controller that identifies the internal LAN; empty disables the startup source check |
-| `internalDCSubnets` | `172.16.96.0/24` | Comma-separated CIDR blocks the DC must answer from; empty disables the check |
+| `defaultMappingDCSubnets` | `DC-RM2:172.16.96.0/24` | Per-site map of domain controller name to its internal CIDR subnets: `dc:cidr[,cidr...][;dc:cidr[,cidr...]...]`; empty disables the startup source check |
 
 ### `[criticalUpdate]`
 

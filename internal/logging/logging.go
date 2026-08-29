@@ -26,23 +26,26 @@ type Logger struct {
 	ev   *eventlog.Log // nil when the event source is unavailable (run mode without install)
 }
 
-// New creates the file logger (5 MB × 5 rotated files). When exeLogPath is
-// non-empty a second plain log is also written next to the executable (useful
-// for on-site diagnostics without accessing ProgramData). With console=true
-// (foreground `run` mode) lines are mirrored to stdout at debug level.
+// New creates the file logger (2 MB × 5 rotated files, gzip-compressed once
+// rotated). When exeLogPath is non-empty a second plain log is also written
+// next to the executable (useful for on-site diagnostics without accessing
+// ProgramData). With console=true (foreground `run` mode) lines are mirrored
+// to stdout at debug level.
 func New(logDir string, exeLogPath string, console bool) *Logger {
 	rolling := &lumberjack.Logger{
 		Filename:   filepath.Join(logDir, "updater.log"),
-		MaxSize:    5, // megabytes
+		MaxSize:    2, // megabytes
 		MaxBackups: 5,
+		Compress:   true, // rotated backups become updater-<timestamp>.log.gz
 	}
 
 	var w io.Writer = rolling
 	if exeLogPath != "" {
 		exeLog := &lumberjack.Logger{
 			Filename:   exeLogPath,
-			MaxSize:    5,
+			MaxSize:    2,
 			MaxBackups: 3,
+			Compress:   true,
 		}
 		w = io.MultiWriter(rolling, exeLog)
 	}

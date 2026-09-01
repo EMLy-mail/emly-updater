@@ -1,10 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"testing"
+	"time"
 
 	"emlyupdater/internal/version"
 )
@@ -75,6 +77,51 @@ func TestValidationRejectsBadPollInterval(t *testing.T) {
 	path := writeConfig(t, "[updater]\npollIntervalMinutes = 0\n[source]\nprimary = external\nexternalManifestURL = https://x\n")
 	if _, err := Load(path); err == nil {
 		t.Fatal("expected error for pollIntervalMinutes=0")
+	}
+}
+
+func TestLoadDCLookupRetryDefaults(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.ini"))
+	if err != nil {
+		t.Fatalf("Load with missing file failed: %v", err)
+	}
+	if cfg.DCLookupRetryAttempts != 6 {
+		t.Errorf("default dcLookupRetryAttempts = %d, want 6", cfg.DCLookupRetryAttempts)
+	}
+	if cfg.DCLookupRetryDelay != 5*time.Second {
+		t.Errorf("default dcLookupRetryDelaySeconds = %v, want 5s", cfg.DCLookupRetryDelay)
+	}
+}
+
+// Zero is the documented way to switch the boot-time retry off, so it has to
+// load rather than be rejected as out of range.
+func TestLoadDCLookupRetryDisabled(t *testing.T) {
+	path := writeConfig(t, `[source]
+primary = external
+externalManifestURL = https://x
+dcLookupRetryAttempts = 0
+dcLookupRetryDelaySeconds = 0
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DCLookupRetryAttempts != 0 || cfg.DCLookupRetryDelay != 0 {
+		t.Errorf("attempts = %d, delay = %v, want both zero", cfg.DCLookupRetryAttempts, cfg.DCLookupRetryDelay)
+	}
+}
+
+func TestValidationRejectsOutOfRangeDCLookupRetry(t *testing.T) {
+	const tmpl = `[source]
+primary = external
+externalManifestURL = https://x
+%s
+`
+
+	for _, key := range []string{"dcLookupRetryAttempts = 61", "dcLookupRetryDelaySeconds = 301", "dcLookupRetryDelaySeconds = -1"} {
+		if _, err := Load(writeConfig(t, fmt.Sprintf(tmpl, key))); err == nil {
+			t.Errorf("expected error for %q", key)
+		}
 	}
 }
 

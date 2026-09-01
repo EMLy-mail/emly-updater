@@ -54,6 +54,19 @@ the next cycle tries `internal` again first. The setup binary is always
 fetched from the same source that served the manifest. HTTP manifests key
 checksums by version and carry full download URLs.
 
+Which source is primary is decided at every start, not just configured: the
+service resolves the nearest domain controller and keeps `internal` only when
+that DC is mapped in `defaultMappingDCSubnets` and one of the machine’s own IPs
+is on one of its subnets. At boot that lookup can run before the network, DNS
+and netlogon are ready, and Windows then answers *"the specified domain either
+does not exist or could not be contacted"* - indistinguishable from a machine
+that is genuinely off-site, which would pin it to the public API until the next
+restart. Two things guard against it: the service is registered as **delayed**
+auto-start with a dependency on `Dnscache` and `LanmanWorkstation`, and a failed
+lookup is retried (`dcLookupRetryAttempts` × `dcLookupRetryDelaySeconds`, 6 × 5s
+by default) before the decision is taken. A machine that is not domain-joined
+skips the retry - there the failure is the answer.
+
 When a poll cycle still cannot reach any source (primary exhausted, fallback
 also failed or not configured), a Windows notification tells the active
 console user to contact their IT department ("EMLy Updater non riesce a
@@ -107,7 +120,10 @@ Set `enabled = false` under `[selfUpdate]` to opt a machine out entirely.
 
 The installer:
 - Places the binary in `C:\Program Files\EMLyUpdater\`
-- Calls `install` (seeds `config.ini`, registers the Windows service and Event Log source)
+- Calls `install` (seeds `config.ini`, registers the Windows service and Event Log source).
+  The service is registered as **delayed auto-start**, depending on `Dnscache` and
+  `LanmanWorkstation`, so it does not run its domain controller lookup before the
+  network is usable
 - Starts the service immediately
 - On upgrade: gracefully stops the running service first, replaces the binary, restarts
 
@@ -160,6 +176,8 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 | `userAgent` | `EMLy-Updater/{{VERSION}} (...)` | Optional `User-Agent` header sent on HTTP requests; `{{VERSION}}` is replaced at runtime with the running version |
 | `xApiKey` | _(empty)_ | Optional `X-Api-Key` header sent on HTTP requests |
 | `defaultMappingDCSubnets` | `DC-RM2:172.16.96.0/24` | Per-site map of domain controller name to its internal CIDR subnets: `dc:cidr[,cidr...][\|dc:cidr[,cidr...]...]` (legacy `;` delimiter still accepted); empty disables the startup source check |
+| `dcLookupRetryAttempts` | `6` | Extra domain controller lookups attempted when the first one fails at startup; `0` disables retrying. Skipped on a machine that is not domain-joined |
+| `dcLookupRetryDelaySeconds` | `5` | Wait between those attempts (`0` also disables retrying). Defaults give the domain up to 30s to answer before the source is decided |
 
 ### `[criticalUpdate]`
 
@@ -212,7 +230,7 @@ uninstall removes the service but keeps ProgramData.
 ## CLI
 
 ```
-EMLyUpdater.exe install     # register auto-start service + Event Log source (admin)
+EMLyUpdater.exe install     # register delayed auto-start service + Event Log source (admin)
 EMLyUpdater.exe uninstall   # stop + remove the service, keep ProgramData
 EMLyUpdater.exe start|stop  # control the service
 EMLyUpdater.exe run         # foreground debug mode (console logging)

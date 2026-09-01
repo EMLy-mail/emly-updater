@@ -59,6 +59,17 @@ type Config struct {
 	// written.
 	DCSubnetMap map[string][]*net.IPNet
 
+	// DCLookupRetryAttempts and DCLookupRetryDelay bound the retry the source
+	// policy performs when the domain controller lookup fails at startup. At
+	// boot the service can win the race against netlogon/DNS by a second or
+	// two, and DsGetDcName then reports the domain as non-existent - which
+	// the policy would otherwise read as "this machine is off-site" and pin
+	// it to the external source for the rest of the run. Either value at zero
+	// disables retrying (a single attempt), and the retry is skipped entirely
+	// on a machine that is not domain-joined, where the failure is the truth.
+	DCLookupRetryAttempts int
+	DCLookupRetryDelay    time.Duration
+
 	// [fileAssociations]
 	ProgIDEml string
 	ProgIDMsg string
@@ -189,6 +200,18 @@ func Load(path string) (*Config, error) {
 		SelfUpdateEnabled:     selfSec.Key("enabled").MustBool(true),
 		SelfUpdateManifestURL: strings.TrimSpace(selfSec.Key("manifestURL").String()),
 	}
+
+	retryAttempts := src.Key("dcLookupRetryAttempts").MustInt(6)
+	if retryAttempts < 0 || retryAttempts > 60 {
+		return nil, fmt.Errorf("dcLookupRetryAttempts must be between 0 and 60, got %d", retryAttempts)
+	}
+	cfg.DCLookupRetryAttempts = retryAttempts
+
+	retrySeconds := src.Key("dcLookupRetryDelaySeconds").MustInt(5)
+	if retrySeconds < 0 || retrySeconds > 300 {
+		return nil, fmt.Errorf("dcLookupRetryDelaySeconds must be between 0 and 300, got %d", retrySeconds)
+	}
+	cfg.DCLookupRetryDelay = time.Duration(retrySeconds) * time.Second
 
 	minutes := upd.Key("pollIntervalMinutes").MustInt(30)
 	if minutes < 1 {

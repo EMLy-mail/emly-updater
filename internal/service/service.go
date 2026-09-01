@@ -66,10 +66,6 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 		},
 		Machine: machine,
 	}
-	// Decide which manifest source this machine can actually reach before
-	// the first cycle runs: cfg.Primary may be rewritten here.
-	applySourcePolicy(cfg, log, config.ConfigPath(), machineinfo.NearestDomainController, machineinfo.LocalIPv4Addresses)
-
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
 	return u
@@ -79,6 +75,16 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 // starts immediately (it also resumes any pending update persisted before a
 // restart/reboot); afterwards the loop polls on the configured interval.
 func (u *Updater) RunLoop(ctx context.Context) {
+	// Decide which manifest source this machine can actually reach before the
+	// first cycle runs: cfg.Primary may be rewritten here. This runs here and
+	// not in New because the domain controller lookup retries a boot-time
+	// failure for up to the configured window, and New is called before
+	// svc.Run has reported the service started - blocking there is what the
+	// SCM's start timeout counts against.
+	applySourcePolicy(ctx, u.Cfg, u.Log, config.ConfigPath(),
+		machineinfo.DomainJoined(u.Machine.ADDomain, u.Machine.Hostname),
+		machineinfo.NearestDomainController, machineinfo.LocalIPv4Addresses)
+
 	u.Log.Info("update loop started",
 		"pollInterval", u.Cfg.PollInterval.String(),
 		"primary", u.Cfg.Primary,

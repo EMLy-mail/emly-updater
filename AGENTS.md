@@ -63,7 +63,7 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 - **The Updater's target version always wins over what's already installed** - `Updater.install` (`internal/service/service.go`) trusts `installer.VerifyInstalled` (config.ini's `GUI_SEMVER`), not the setup's own exit code. If a run doesn't leave config.ini reporting the target version - setup failure or a clean exit that still doesn't match (e.g. EMLy's installer treating a stale/inconsistent prior install as already current) - `installer.Uninstall` wipes the existing install via EMLy's own `unins*.exe` (best-effort; a missing uninstaller is not an error) and the setup is retried once against a clean slate. Still mismatched after that → the pending entry stays and the whole thing (including the uninstall/reinstall) is retried on the next poll cycle.
 - **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
 - **The update source is decided at startup, not just configured** - `applySourcePolicy`
-  (`internal/service/sourcepolicy.go`, called from `service.New`) resolves the nearest domain
+  (`internal/service/sourcepolicy.go`, called from `Updater.RunLoop`) resolves the nearest domain
   controller and forces `primary` to `internal` only when that DC's name is a key in
   `defaultMappingDCSubnets` *and* at least one of this machine's own local IPs falls inside one
   of that key's CIDR subnets; anything else (DC not in the map, no local IP in its subnets,
@@ -75,6 +75,20 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   take the service down. Leaving `defaultMappingDCSubnets` empty disables the whole check. It
   runs **once at startup**: a laptop that boots off-site stays `external` until the service
   restarts on a mapped LAN.
+- **A failed DC lookup at boot is retried before it is believed** - `resolveDC`
+  (`internal/service/sourcepolicy.go`) retries `DsGetDcName` `dcLookupRetryAttempts` times,
+  `dcLookupRetryDelaySeconds` apart (6 × 5s by default), because at boot the service can start
+  before the network/DNS/netlogon are ready and the API then reports the domain as
+  non-existent - which `decideSource` cannot tell apart from "this machine is off the domain"
+  and would pin the machine to `external` for the whole run. The retry is gated on
+  `machineinfo.DomainJoined` (cached `Win32_ComputerSystem.Domain`, no network needed), so a
+  workgroup machine does not sit out the window, and on `ctx` so a stop request during it is
+  honoured. This is why the policy call lives in `RunLoop` and not in `service.New`: `New` runs
+  before `svc.Run` reports the service started, and blocking there is what the SCM start
+  timeout counts against. `cmdInstall` also registers the service as **delayed auto-start**
+  with `Dnscache` + `LanmanWorkstation` dependencies for the same reason; `Netlogon` is
+  deliberately not a dependency, as it is Manual on non-domain machines and would block the
+  service from starting there at all.
 - **`config.Load` reads the ini file with `IgnoreInlineComment: true`** - without it, ini.v1
   treats a bare `;` anywhere in a value as the start of an inline comment and silently truncates
   the rest of the line, no error. `defaultMappingDCSubnets` now uses `|` between DC entries, but
@@ -172,6 +186,8 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
 | `userAgent` | `[source]` | `EMLy-Updater/{{VERSION}} (...)` | Sent as `User-Agent` on HTTP requests; `{{VERSION}}` is resolved at runtime by `config.BuildUserAgent` |
 | `xApiKey` | `[source]` | _(empty)_ | Sent as `X-Api-Key` on HTTP requests |
 | `defaultMappingDCSubnets` | `[source]` | `DC-RM2:172.16.96.0/24` | Startup source policy: `dc:cidr[,cidr...][\|dc:cidr[,cidr...]...]` map of DC name to that site's internal subnets (legacy `;` delimiter still accepted; empty disables) |
+| `dcLookupRetryAttempts` | `[source]` | `6` | Retries of a failed startup DC lookup (0 disables; skipped when not domain-joined) |
+| `dcLookupRetryDelaySeconds` | `[source]` | `5` | Wait between those retries (0 also disables) |
 | `criticalWarningEnabled` | `[criticalUpdate]` | `true` | Show countdown WTS dialog before force-kill |
 | `criticalWarningSeconds` | `[criticalUpdate]` | `30` | |
 | `enabled` | `[ipc]` | `true` | Enable the named-pipe IPC server (see IPC below) |

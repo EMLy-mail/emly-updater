@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"net"
 	"strings"
+	"time"
 
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
@@ -80,6 +82,54 @@ func hostLabel(name string) string {
 
 func quote(s string) string { return `"` + s + `"` }
 
+// resolveDC runs the domain controller lookup, retrying a failure on the
+// cadence configured in [source] (dcLookupRetryAttempts/dcLookupRetryDelay).
+//
+// The retry exists for one specific failure: at boot the service can start
+// before the network stack, DNS and netlogon are ready, and DsGetDcName then
+// reports the domain as non-existent. decideSource cannot tell that apart from
+// "this machine really is off the domain", so without a retry a machine that
+// booted a second too early is pinned to the external source until the service
+// restarts. domainJoined comes from the locally cached
+// Win32_ComputerSystem.Domain, which answers with no network at all, so a
+// genuine workgroup machine skips the wait entirely.
+//
+// ctx cuts the wait short when the service is asked to stop mid-retry.
+func resolveDC(ctx context.Context, cfg *config.Config, log *logging.Logger, dcFn dcLookup, domainJoined bool) (*machineinfo.DomainControllerInfo, error) {
+	dc, err := dcFn("")
+	if err == nil {
+		return dc, nil
+	}
+
+	attempts, delay := cfg.DCLookupRetryAttempts, cfg.DCLookupRetryDelay
+	if attempts <= 0 || delay <= 0 {
+		return dc, err
+	}
+	if !domainJoined {
+		log.Info("domain controller lookup failed on a machine that is not domain-joined, not retrying",
+			"error", err.Error())
+		return dc, err
+	}
+
+	for attempt := 1; attempt <= attempts; attempt++ {
+		log.Warn("domain controller lookup failed, retrying",
+			"attempt", attempt, "attempts", attempts, "delay", delay.String(), "error", err.Error())
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return dc, err
+		}
+
+		dc, err = dcFn("")
+		if err == nil {
+			log.Info("domain controller lookup succeeded after retrying",
+				"attempt", attempt, "dc", dc.Name)
+			return dc, nil
+		}
+	}
+	return dc, err
+}
+
 // applySourcePolicy runs the decision once at startup, applies it to cfg, then
 // persists it to the config file at path so the choice is visible to whoever
 // inspects the machine later.
@@ -89,8 +139,13 @@ func quote(s string) string { return `"` + s + `"` }
 // The outcome is always logged - to the file log and to the Event Log - even
 // when nothing changes, so "which source did this machine pick, and why" is
 // answerable from Event Viewer alone.
-func applySourcePolicy(cfg *config.Config, log *logging.Logger, path string, dcFn dcLookup, ipsFn localIPsLookup) {
-	dc, dcErr := dcFn("")
+//
+// It can block for the whole configured retry window (see resolveDC), so it is
+// called from RunLoop rather than from service.New: New runs before svc.Run
+// has reported the service started, where blocking would risk the SCM's
+// start timeout.
+func applySourcePolicy(ctx context.Context, cfg *config.Config, log *logging.Logger, path string, domainJoined bool, dcFn dcLookup, ipsFn localIPsLookup) {
+	dc, dcErr := resolveDC(ctx, cfg, log, dcFn, domainJoined)
 	localIPs, ipsErr := ipsFn()
 	want, reason := decideSource(cfg, dc, dcErr, localIPs, ipsErr)
 

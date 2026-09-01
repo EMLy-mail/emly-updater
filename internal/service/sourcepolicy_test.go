@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
@@ -148,7 +150,7 @@ func TestApplySourcePolicyKeepsPrimaryWhenTargetURLMissing(t *testing.T) {
 	}
 	ips := func() ([]string, error) { return []string{"10.12.8.253"}, nil }
 	// An empty path would fail the write; the URL guard must return first.
-	applySourcePolicy(cfg, testLogger(t), "", lookup, ips)
+	applySourcePolicy(context.Background(), cfg, testLogger(t), "", true, lookup, ips)
 
 	if cfg.Primary != config.SourceInternal {
 		t.Errorf("Primary = %q, want it kept at %q", cfg.Primary, config.SourceInternal)
@@ -195,7 +197,7 @@ func TestApplySourcePolicySwitchesAndPersists(t *testing.T) {
 	}
 	ips := func() ([]string, error) { return []string{"10.12.8.253"}, nil }
 
-	applySourcePolicy(cfg, testLogger(t), path, lookup, ips)
+	applySourcePolicy(context.Background(), cfg, testLogger(t), path, true, lookup, ips)
 
 	if cfg.Primary != config.SourceExternal {
 		t.Errorf("in-memory Primary = %q, want %q", cfg.Primary, config.SourceExternal)
@@ -230,7 +232,7 @@ func TestApplySourcePolicySwitchesBackToInternal(t *testing.T) {
 	}
 	ips := func() ([]string, error) { return []string{"172.16.96.50"}, nil }
 
-	applySourcePolicy(cfg, testLogger(t), path, lookup, ips)
+	applySourcePolicy(context.Background(), cfg, testLogger(t), path, true, lookup, ips)
 
 	if cfg.Primary != config.SourceInternal {
 		t.Errorf("in-memory Primary = %q, want %q", cfg.Primary, config.SourceInternal)
@@ -253,9 +255,148 @@ func TestApplySourcePolicyKeepsOverrideWhenWriteFails(t *testing.T) {
 	}
 	ips := func() ([]string, error) { return []string{"10.12.8.253"}, nil }
 
-	applySourcePolicy(cfg, testLogger(t), filepath.Join(t.TempDir(), "missing", "config.ini"), lookup, ips)
+	applySourcePolicy(context.Background(), cfg, testLogger(t), filepath.Join(t.TempDir(), "missing", "config.ini"), true, lookup, ips)
 
 	if cfg.Primary != config.SourceExternal {
 		t.Errorf("in-memory Primary = %q, want %q despite the failed write", cfg.Primary, config.SourceExternal)
+	}
+}
+
+// retryCfg is internalCfg with the boot-time DC retry wound down to something
+// a test can wait for; the shipped default is 6 attempts 5 seconds apart.
+func retryCfg(t *testing.T, primary string, attempts int) *config.Config {
+	t.Helper()
+	cfg := internalCfg(t, primary)
+	cfg.DCLookupRetryAttempts = attempts
+	cfg.DCLookupRetryDelay = time.Millisecond
+	return cfg
+}
+
+// bootRaceError is what DsGetDcName reports when the service starts before the
+// network, DNS and netlogon are ready - the same error a machine that is
+// genuinely off the domain gets, which is why the retry is gated on
+// domain membership rather than on the error.
+var bootRaceError = errors.New("DsGetDcName failed: the specified domain either does not exist or could not be contacted")
+
+// The failure this whole retry exists for: the first lookups fail at boot,
+// then the domain answers and the machine is correctly seen as on-site.
+func TestResolveDCRetriesUntilTheDomainAnswers(t *testing.T) {
+	calls := 0
+	lookup := func(string) (*machineinfo.DomainControllerInfo, error) {
+		calls++
+		if calls < 3 {
+			return nil, bootRaceError
+		}
+		return &machineinfo.DomainControllerInfo{Name: "DC-RM2.tregcc.local"}, nil
+	}
+
+	dc, err := resolveDC(context.Background(), retryCfg(t, config.SourceInternal, 6), testLogger(t), lookup, true)
+	if err != nil {
+		t.Fatalf("resolveDC after retrying: %v", err)
+	}
+	if calls != 3 {
+		t.Errorf("lookup called %d times, want 3", calls)
+	}
+	if dc.Name != "DC-RM2.tregcc.local" {
+		t.Errorf("dc.Name = %q, want DC-RM2.tregcc.local", dc.Name)
+	}
+}
+
+// On a machine that is not domain-joined the error is the truth, so retrying
+// only delays the first update cycle by the whole retry window.
+func TestResolveDCDoesNotRetryOffDomain(t *testing.T) {
+	calls := 0
+	lookup := func(string) (*machineinfo.DomainControllerInfo, error) {
+		calls++
+		return nil, bootRaceError
+	}
+
+	if _, err := resolveDC(context.Background(), retryCfg(t, config.SourceInternal, 6), testLogger(t), lookup, false); err == nil {
+		t.Fatal("expected the lookup error to be returned")
+	}
+	if calls != 1 {
+		t.Errorf("lookup called %d times, want 1 (no retry off the domain)", calls)
+	}
+}
+
+// Attempts or delay at zero is the documented way to switch retrying off.
+func TestResolveDCDoesNotRetryWhenDisabled(t *testing.T) {
+	calls := 0
+	lookup := func(string) (*machineinfo.DomainControllerInfo, error) {
+		calls++
+		return nil, bootRaceError
+	}
+
+	if _, err := resolveDC(context.Background(), retryCfg(t, config.SourceInternal, 0), testLogger(t), lookup, true); err == nil {
+		t.Fatal("expected the lookup error to be returned")
+	}
+	if calls != 1 {
+		t.Errorf("lookup called %d times, want 1 (retry disabled)", calls)
+	}
+}
+
+// A stop request arriving inside the retry window must not be sat out: the SCM
+// gives the service 30 seconds to stop, less than a generously configured
+// retry window.
+func TestResolveDCStopsRetryingWhenTheContextIsCancelled(t *testing.T) {
+	cfg := internalCfg(t, config.SourceInternal)
+	cfg.DCLookupRetryAttempts = 6
+	cfg.DCLookupRetryDelay = time.Hour
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	calls := 0
+	lookup := func(string) (*machineinfo.DomainControllerInfo, error) {
+		calls++
+		return nil, bootRaceError
+	}
+
+	start := time.Now()
+	if _, err := resolveDC(ctx, cfg, testLogger(t), lookup, true); err == nil {
+		t.Fatal("expected the lookup error to be returned")
+	}
+	if calls != 1 {
+		t.Errorf("lookup called %d times, want 1 (cancelled before the second attempt)", calls)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("resolveDC took %v, want it to return as soon as the context was done", elapsed)
+	}
+}
+
+// End to end: a machine whose config was left on external by a boot-time
+// lookup failure is put back on internal once the retry resolves its own
+// office DC - in memory and in the config file.
+func TestApplySourcePolicyRecoversFromABootTimeLookupFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.ini")
+	seed := strings.Replace(testConfigINI,
+		"primary              = internal",
+		"primary              = external", 1)
+	if err := os.WriteFile(path, []byte(seed), 0644); err != nil {
+		t.Fatalf("seeding config: %v", err)
+	}
+
+	calls := 0
+	lookup := func(string) (*machineinfo.DomainControllerInfo, error) {
+		calls++
+		if calls == 1 {
+			return nil, bootRaceError
+		}
+		return &machineinfo.DomainControllerInfo{Name: "DC-RM2.tregcc.local", Site: "RM2"}, nil
+	}
+	ips := func() ([]string, error) { return []string{"172.16.96.50"}, nil }
+
+	cfg := retryCfg(t, config.SourceExternal, 6)
+	applySourcePolicy(context.Background(), cfg, testLogger(t), path, true, lookup, ips)
+
+	if cfg.Primary != config.SourceInternal {
+		t.Errorf("in-memory Primary = %q, want %q", cfg.Primary, config.SourceInternal)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading config back: %v", err)
+	}
+	if string(got) != testConfigINI {
+		t.Errorf("config file after the retry = %q, want %q", got, testConfigINI)
 	}
 }

@@ -254,10 +254,25 @@ func cmdInstall() error {
 	defer m.Disconnect()
 
 	svcCfg := mgr.Config{
-		StartType:    mgr.StartAutomatic,
-		DisplayName:  displayName,
-		Description:  description,
-		ErrorControl: mgr.ErrorNormal,
+		StartType: mgr.StartAutomatic,
+		// Delayed auto-start plus these two dependencies keep the service out
+		// of the earliest part of boot, where it used to start seconds before
+		// the network was usable and have its DsGetDcName call fail with "the
+		// specified domain either does not exist or could not be contacted" -
+		// which the startup source policy reads as "off-site" and pins the
+		// machine to the external manifest for the rest of the run.
+		//
+		// Netlogon is deliberately *not* a dependency: it is Manual on a
+		// machine that is not domain-joined, and a dependency the SCM cannot
+		// start would stop the updater from starting at all there. Dnscache
+		// and LanmanWorkstation are Automatic on every Windows install, and
+		// the retry in internal/service/sourcepolicy.go covers whatever slack
+		// is left (netlogon, DHCP, Wi-Fi associating after logon).
+		DelayedAutoStart: true,
+		Dependencies:     []string{"Dnscache", "LanmanWorkstation"},
+		DisplayName:      displayName,
+		Description:      description,
+		ErrorControl:     mgr.ErrorNormal,
 		// ServiceStartName left empty = LocalSystem
 	}
 
@@ -272,6 +287,8 @@ func cmdInstall() error {
 			return err
 		}
 		cur.StartType = svcCfg.StartType
+		cur.DelayedAutoStart = svcCfg.DelayedAutoStart
+		cur.Dependencies = svcCfg.Dependencies
 		cur.DisplayName = svcCfg.DisplayName
 		cur.Description = svcCfg.Description
 		cur.BinaryPathName = exePath

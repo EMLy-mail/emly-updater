@@ -40,8 +40,9 @@ type Server struct {
 
 // New builds a Server. machine supplies the SystemInfo/ADStatus payload for
 // every request — pass a function returning an already-collected snapshot
-// (machineinfo.Collect() shells out to PowerShell for the AD domain; it must
-// run once at service startup, not per IPC request). exePath is the
+// (machineinfo.Collect() shells out to PowerShell for the AD domain and,
+// where WMIC is unavailable, for the HWID; it must run once at service
+// startup, not per IPC request). exePath is the
 // canonical expected EMLy.exe path (assoc.ExePath(cfg.EMLyInstallDir,
 // cfg.EMLyExeName)) that a connecting client's own image path must match.
 func New(cfg *config.Config, log *logging.Logger, machine func() machineinfo.Info, exePath string) *Server {

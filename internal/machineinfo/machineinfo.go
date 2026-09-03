@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 
+	"github.com/denisbrodbeck/machineid"
 	"golang.org/x/sys/windows/registry"
 )
 
@@ -32,7 +34,7 @@ func Collect() Info {
 		info.Hostname = h
 	}
 
-	if hwid, err := machineGUID(); err == nil {
+	if hwid, err := hardwareID(); err == nil {
 		info.HWID = hwid
 	}
 
@@ -63,23 +65,96 @@ func DomainJoined(adDomain, hostname string) bool {
 	return !strings.EqualFold(d, hostname)
 }
 
-// machineGUID reads the persistent machine GUID from the Windows registry.
-// This is the same source used by the machineid library as its Windows backend.
-func machineGUID() (string, error) {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Cryptography`, registry.QUERY_VALUE)
-	if err != nil {
-		return "", err
+// hwidAppID keys the machineid.ProtectedID fallback. It must stay identical
+// to the app ID emly-app passes, or the two agents would report different
+// HWIDs for the same machine.
+const hwidAppID = "emly-machine-id"
+
+// hardwareID returns this machine's hardware identifier, mirroring
+// emly-app's utils.getHWID so both agents report the same X-EMLy-HWID for a
+// given machine.
+//
+// The preferred source is the SMBIOS UUID, which comes from firmware: unlike
+// MachineGuid it survives an OS reinstall and, more importantly, differs
+// between machines deployed from the same image when that image was not
+// sysprepped.
+//
+// When no usable SMBIOS UUID is available we fall back to what emly-app falls
+// back to: machineid.ProtectedID, i.e. HMAC-SHA256 of hwidAppID keyed by
+// HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid. That value is per
+// OS-install, so clones of a non-sysprepped image do share it.
+func hardwareID() (string, error) {
+	if uuid := smbiosUUID(); uuid != "" {
+		return uuid, nil
 	}
-	defer k.Close()
-	guid, _, err := k.GetStringValue("MachineGuid")
-	return guid, err
+	return machineid.ProtectedID(hwidAppID)
+}
+
+// smbiosUUID reads Win32_ComputerSystemProduct.UUID, returning "" when it is
+// unavailable or not a usable identifier.
+//
+// emly-app reads it with `wmic csproduct get uuid`. WMIC is deprecated and no
+// longer present on current Windows 11 builds, so we try it first (it is the
+// cheaper of the two when installed) and fall back to the same WMI class via
+// PowerShell, which yields a byte-identical value.
+func smbiosUUID() string {
+	if out, err := hiddenCommand("wmic", "csproduct", "get", "uuid").Output(); err == nil {
+		if u := parseWMICUUID(string(out)); u != "" {
+			return u
+		}
+	}
+
+	out, err := hiddenCommand(
+		"powershell", "-NoProfile", "-NonInteractive", "-Command",
+		"(Get-CimInstance -ClassName Win32_ComputerSystemProduct).UUID",
+	).Output()
+	if err != nil {
+		return ""
+	}
+	return normalizeUUID(string(out))
+}
+
+// parseWMICUUID pulls the UUID out of `wmic csproduct get uuid` output, which
+// looks like "UUID \r\r\n<uuid>   \r\r\n\r\r\n": a column header, then the
+// value padded with trailing spaces.
+func parseWMICUUID(out string) string {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.EqualFold(line, "UUID") {
+			continue
+		}
+		return normalizeUUID(line)
+	}
+	return ""
+}
+
+// normalizeUUID upper-cases and trims an SMBIOS UUID, rejecting the
+// placeholder values some firmware reports. An all-zero or all-F UUID is not
+// an identifier: every affected machine would report the same one, which is
+// the collision this whole code path exists to avoid. WMIC already returns
+// upper-case, so normalizing does not move us off emly-app's value.
+func normalizeUUID(s string) string {
+	u := strings.ToUpper(strings.TrimSpace(s))
+	switch u {
+	case "", "00000000-0000-0000-0000-000000000000", "FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF":
+		return ""
+	}
+	return u
+}
+
+// hiddenCommand builds an exec.Cmd that spawns no console window. The updater
+// normally runs as a service in session 0 where this is moot, but the same
+// code runs from the interactive CLI.
+func hiddenCommand(name string, args ...string) *exec.Cmd {
+	cmd := exec.Command(name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
+	return cmd
 }
 
 // adDomain queries the Active Directory domain via WMI, mirroring the
 // approach used by emly-app's machine-identifier.go.
 func adDomain() (string, error) {
-	out, err := exec.Command(
+	out, err := hiddenCommand(
 		"powershell", "-NoProfile", "-NonInteractive", "-Command",
 		"(Get-WmiObject -Class Win32_ComputerSystem).Domain",
 	).Output()

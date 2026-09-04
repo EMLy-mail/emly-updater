@@ -5,4 +5,4 @@ package version
 
 // Version is this build's own semver. versioninfo.json is the single
 // source of truth; this file is regenerated from it.
-const Version = "1.5.6"
+const Version = "1.6.0"

@@ -1,0 +1,64 @@
+{
+  "refresh": {
+    "intervalMinutes": 15,
+    "staleAfterDays": 7
+  },
+  "control": {
+    "updater": {
+      "enabled": true,
+      "reason": null,
+      "until": null
+    },
+    "app": {
+      "enabled": true,
+      "mode": "normal",
+      "reason": null,
+      "until": null
+    }
+  },
+  "updater": {
+    "pollIntervalMinutes": 15,
+    "channelOverride": null,
+    "criticalWarning": {
+      "enabled": true,
+      "seconds": 30
+    },
+    "dcLookupRetry": {
+      "attempts": 6,
+      "delaySeconds": 5
+    },
+    "resolver": {
+      "attempts": 3,
+      "baseBackoffSeconds": 5
+    },
+    "selfUpdate": {
+      "enabled": true
+    },
+    "installCertificate": {
+      "enabled": true
+    }
+  },
+  "logging": {
+    "level": "info",
+    "maxSizeMB": 2,
+    "backups": 5,
+    "compress": true,
+    "eventLog": true
+  },
+  "ipcProtocol": {
+    "versions": {
+      "1": {
+        "updater": {
+          "min": null,
+          "max": null
+        },
+        "emly": {
+          "min": "2.0.0",
+          "max": "2.1.0"
+        },
+        "enabled": true
+      }
+    },
+    "defaultVersion": 1
+  }
+}

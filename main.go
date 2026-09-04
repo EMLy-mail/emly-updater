@@ -127,7 +127,7 @@ func runService() {
 	}
 
 	log.Info("EMLyUpdater service starting")
-	handler := &service.Handler{Updater: service.New(cfg, log)}
+	handler := &service.Handler{Updater: service.New(cfg, log, false)}
 	if err := svc.Run(service.Name, handler); err != nil {
 		log.ErrorEvent(logging.EventGeneric, "service run failed", "error", err.Error())
 		os.Exit(1)
@@ -161,7 +161,7 @@ func cmdRun() error {
 	defer stop()
 
 	fmt.Println("EMLyUpdater running in foreground, Ctrl+C to stop")
-	service.New(cfg, log).RunLoop(ctx)
+	service.New(cfg, log, true).RunLoop(ctx)
 	return nil
 }
 
@@ -204,6 +204,10 @@ func installCertificate() {
 		fmt.Printf("note: certificate install skipped, config unreadable: %v\n", err)
 		return
 	}
+	// The bootstrap value, not the remote policy: this runs from the
+	// installer, before any service start, so there may be no cached
+	// document yet - and the service re-checks the stores every cycle
+	// against the effective policy anyway.
 	if !cfg.CertificateEnabled {
 		return
 	}

@@ -17,8 +17,24 @@ import (
 	"emlyupdater/internal/ipc/ipcpb"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/policy"
 	"emlyupdater/internal/version"
 )
+
+// PolicyView is what the IPC server needs from the remote configuration: the
+// effective document for this host, ready to serialise, plus the
+// compatibility section it enforces on connecting clients. The service
+// rebuilds it once per poll cycle; the server only reads it.
+type PolicyView struct {
+	DocumentJSON    []byte
+	Revision        int64
+	GeneratedAt     string
+	FetchedAt       time.Time
+	Source          ipcpb.ConfigResponse_Source
+	Stale           bool
+	HostWhitelisted bool
+	IPC             policy.IPCProtocol
+}
 
 // ProtocolVersion is bumped on any wire-incompatible change to
 // proto/updateripc.proto. Requests carrying a different version are
@@ -30,12 +46,17 @@ const ProtocolVersion = 1
 // hostile client cannot tie up a server goroutine indefinitely.
 const connDeadline = 5 * time.Second
 
-// Server serves SystemInfo/ADStatus over a named pipe to the EMLy client.
+// Server serves SystemInfo/ADStatus/Config over a named pipe to the EMLy client.
 type Server struct {
 	cfg     *config.Config
 	log     *logging.Logger
 	machine func() machineinfo.Info
 	exePath string
+	// policy supplies the current PolicyView; nil (or a nil result) means
+	// "no remote configuration wired in" and the compiled-in behaviour
+	// applies. It is called on the connection goroutine, so it must be
+	// cheap and safe for concurrent use.
+	policy func() *PolicyView
 }
 
 // New builds a Server. machine supplies the SystemInfo/ADStatus payload for
@@ -48,6 +69,10 @@ type Server struct {
 func New(cfg *config.Config, log *logging.Logger, machine func() machineinfo.Info, exePath string) *Server {
 	return &Server{cfg: cfg, log: log, machine: machine, exePath: exePath}
 }
+
+// SetPolicyProvider wires in the remote configuration. Must be called
+// before Serve.
+func (s *Server) SetPolicyProvider(p func() *PolicyView) { s.policy = p }
 
 // Serve accepts connections until ctx is cancelled or the listener fails
 // fatally. It returns immediately as a no-op if IPC is disabled.
@@ -158,6 +183,33 @@ func (s *Server) dispatch(req *ipcpb.Envelope) *ipcpb.Envelope {
 				AdStatusResponse: &ipcpb.ADStatusResponse{
 					AdDomain:     m.ADDomain,
 					DomainJoined: machineinfo.DomainJoined(m.ADDomain, m.Hostname),
+				},
+			},
+		}
+	case *ipcpb.Envelope_ConfigRequest:
+		if s.policy == nil {
+			return errorEnvelope(ipcpb.ErrorCode_ERROR_CODE_INTERNAL, "remote configuration not available")
+		}
+		view := s.policy()
+		if view == nil {
+			return errorEnvelope(ipcpb.ErrorCode_ERROR_CODE_INTERNAL, "remote configuration not available")
+		}
+		fetched := ""
+		if !view.FetchedAt.IsZero() {
+			fetched = view.FetchedAt.Format(time.RFC3339)
+		}
+		return &ipcpb.Envelope{
+			ProtocolVersion: ProtocolVersion,
+			SenderVersion:   version.Version,
+			Body: &ipcpb.Envelope_ConfigResponse{
+				ConfigResponse: &ipcpb.ConfigResponse{
+					DocumentJson:    view.DocumentJSON,
+					Revision:        view.Revision,
+					GeneratedAt:     view.GeneratedAt,
+					FetchedAt:       fetched,
+					Source:          view.Source,
+					Stale:           view.Stale,
+					HostWhitelisted: view.HostWhitelisted,
 				},
 			},
 		}

@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "generatedAt": "yesterday",
+  "servers": {
+    "srv-cloud": "https://api.emly.ffois.it"
+  },
+  "defaultServer": "srv-cloud"
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "revision": 3,
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "servers": {
+    "srv-cloud": "https://api.emly.ffois.it"
+  },
+  "defaultServer": "srv-cloud",
+  "updater": {
+    "pollIntervalMinutes": null,
+    "channelOverride": null,
+    "selfUpdate": null
+  },
+  "logging": null,
+  "control": {
+    "updater": {
+      "enabled": true,
+      "until": null
+    }
+  }
+}

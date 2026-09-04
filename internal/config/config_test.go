@@ -332,3 +332,81 @@ func TestLoadSelfUpdateDefaults(t *testing.T) {
 		t.Errorf("selfUpdate.manifestURL = %q, want empty (derived)", cfg.SelfUpdateManifestURL)
 	}
 }
+
+func TestLoadRemoteConfigDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.ini")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load with missing file failed: %v", err)
+	}
+	if !cfg.RemoteConfigEnabled {
+		t.Error("default remoteConfig.enabled = false, want true")
+	}
+	if len(cfg.RemoteConfigEndpoints) != 1 || cfg.RemoteConfigEndpoints[0] != "https://api.emly.ffois.it" {
+		t.Errorf("default endpoints = %v", cfg.RemoteConfigEndpoints)
+	}
+	if cfg.RemoteConfigRoute != "/v2/config" {
+		t.Errorf("default configPath = %q, want /v2/config (the same prefix as the manifest)", cfg.RemoteConfigRoute)
+	}
+	if cfg.RemoteConfigTimeout != 10*time.Second {
+		t.Errorf("default timeout = %v, want 10s", cfg.RemoteConfigTimeout)
+	}
+}
+
+// Several endpoints are '|'-separated, like defaultMappingDCSubnets, and a
+// trailing slash is trimmed so the route can be appended without producing
+// a double slash.
+func TestLoadRemoteConfigEndpointList(t *testing.T) {
+	path := writeConfig(t, `[source]
+externalManifestURL = https://api.emly.ffois.it/v2/updates/manifest
+
+[remoteConfig]
+endpoints = http://172.16.96.73:8080/ | https://api.emly.ffois.it
+configPath = /v2/config
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"http://172.16.96.73:8080", "https://api.emly.ffois.it"}
+	if len(cfg.RemoteConfigEndpoints) != len(want) {
+		t.Fatalf("endpoints = %v, want %v", cfg.RemoteConfigEndpoints, want)
+	}
+	for i, w := range want {
+		if cfg.RemoteConfigEndpoints[i] != w {
+			t.Errorf("endpoint %d = %q, want %q", i, cfg.RemoteConfigEndpoints[i], w)
+		}
+	}
+}
+
+// An enabled remote configuration with nowhere to fetch from, or a route
+// that is not a path, is a config error rather than a silent no-op.
+func TestValidationRejectsUnusableRemoteConfig(t *testing.T) {
+	cases := map[string]string{
+		"no endpoints":   "[remoteConfig]\nenabled = true\nendpoints =\n",
+		"not a URL":      "[remoteConfig]\nenabled = true\nendpoints = api.emly.ffois.it\n",
+		"relative route": "[remoteConfig]\nenabled = true\nconfigPath = v2/config\n",
+		"absurd timeout": "[remoteConfig]\nenabled = true\ntimeoutSeconds = 0\n",
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(writeConfig(t, content)); err == nil {
+				t.Error("expected Load to reject this configuration")
+			}
+		})
+	}
+}
+
+// Switching it off must not require the other keys to make sense.
+func TestRemoteConfigDisabledSkipsValidation(t *testing.T) {
+	path := writeConfig(t, "[source]\nexternalManifestURL = https://api.emly.ffois.it/v2/updates/manifest\n\n"+
+		"[remoteConfig]\nenabled = false\nendpoints =\n")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RemoteConfigEnabled {
+		t.Error("remoteConfig.enabled = true, want false")
+	}
+}

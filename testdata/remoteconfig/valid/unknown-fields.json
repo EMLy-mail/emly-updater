@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "revision": 2,
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "servers": {
+    "srv-cloud": "https://api.emly.ffois.it"
+  },
+  "defaultServer": "srv-cloud",
+  "futureSection": {
+    "x": 1
+  },
+  "updater": {
+    "pollIntervalMinutes": 30,
+    "unknownKnob": true
+  },
+  "ipcProtocol": {
+    "versions": {
+      "1": {
+        "emly": {
+          "min": "2.0.0",
+          "max": null
+        },
+        "enabled": true
+      },
+      "7": {
+        "emly": {
+          "min": "9.0.0",
+          "max": null
+        },
+        "enabled": true,
+        "newField": 1
+      }
+    },
+    "defaultVersion": 1
+  }
+}

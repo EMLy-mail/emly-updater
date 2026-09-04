@@ -47,6 +47,12 @@ message Envelope {
     SystemInfoResponse system_info_response = 11;
     ADStatusRequest ad_status_request = 12;
     ADStatusResponse ad_status_response = 13;
+    // Added in EMLyUpdater 1.6.0: the remote configuration document
+    // (GET /v2/config) as the updater resolved it for this host. Additive,
+    // so protocol_version stays 1 - an updater that predates it answers
+    // ERROR_CODE_BAD_REQUEST and an EMLy that predates it never asks.
+    ConfigRequest config_request = 14;
+    ConfigResponse config_response = 15;
     ErrorResponse error = 99;
   }
 }
@@ -65,6 +71,29 @@ message ADStatusRequest {}
 message ADStatusResponse {
   string ad_domain = 1;
   bool domain_joined = 2;
+}
+
+message ConfigRequest {}
+
+// ConfigResponse hands EMLy the remote configuration document
+// (GET /v2/config) as the updater sees it for this host: the global
+// document with the matching overrides applied and expired `until`s
+// resolved. Same JSON schema as the endpoint, so EMLy parses one format
+// whether it comes from the pipe or, in a future fallback, from the API.
+message ConfigResponse {
+  bytes document_json = 1;
+  int64 revision = 2;
+  string generated_at = 3;   // from the document; "" for the default policy
+  string fetched_at = 4;     // local clock, RFC 3339; "" for the default policy
+  enum Source {
+    SOURCE_UNSPECIFIED = 0;
+    REMOTE = 1;              // fetched (or revalidated) during this run
+    CACHE = 2;               // last-known-good read from disk at startup
+    DEFAULT = 3;             // derived from config.ini, no document ever accepted
+  }
+  Source source = 5;
+  bool stale = 6;            // fetched_at older than refresh.staleAfterDays
+  bool host_whitelisted = 7; // hostIntegrity.whitelist matched this host
 }
 
 enum ErrorCode {

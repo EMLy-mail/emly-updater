@@ -48,8 +48,9 @@ func Reset(path string) (bool, error) {
 // MoveFileEx(MOVEFILE_REPLACE_EXISTING), which replaces the destination
 // atomically on NTFS - the same guarantee state.Store relies on, so a crash
 // mid-write cannot leave a truncated config behind for the next service start
-// to fail on. Shared by Reset and SetPrimary, the only two writers of
-// config.ini.
+// to fail on. Reset is the only writer of config.ini: the file is bootstrap
+// state, never touched at runtime (the remote configuration lives in its own
+// cache file, see internal/policy).
 func writeAtomic(path, content string) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, "config-*.tmp")

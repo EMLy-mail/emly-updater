@@ -28,6 +28,15 @@ func ConfigPath() string { return filepath.Join(DataDir(), "config.ini") }
 // StatePath returns the path of the pending-update state file.
 func StatePath() string { return filepath.Join(DataDir(), "state.json") }
 
+// RemoteConfigPath returns the path of the last-known-good remote
+// configuration document (see internal/policy).
+func RemoteConfigPath() string { return filepath.Join(DataDir(), "remote-config.json") }
+
+// RemoteConfigBadPath is where a cache that failed to load or validate is
+// moved aside (one copy, overwritten) so the next start does not trip over
+// it again and the file is still there to look at.
+func RemoteConfigBadPath() string { return filepath.Join(DataDir(), "remote-config.bad.json") }
+
 // DownloadsDir returns the directory where EMLy's setup executables are cached.
 func DownloadsDir() string { return filepath.Join(DataDir(), "downloads") }
 

@@ -76,6 +76,58 @@ func (ErrorCode) EnumDescriptor() ([]byte, []int) {
 	return file_updateripc_proto_rawDescGZIP(), []int{0}
 }
 
+type ConfigResponse_Source int32
+
+const (
+	ConfigResponse_SOURCE_UNSPECIFIED ConfigResponse_Source = 0
+	ConfigResponse_REMOTE             ConfigResponse_Source = 1 // fetched (or revalidated) during this run
+	ConfigResponse_CACHE              ConfigResponse_Source = 2 // last-known-good read from disk at startup
+	ConfigResponse_DEFAULT            ConfigResponse_Source = 3 // derived from config.ini, no document ever accepted
+)
+
+// Enum value maps for ConfigResponse_Source.
+var (
+	ConfigResponse_Source_name = map[int32]string{
+		0: "SOURCE_UNSPECIFIED",
+		1: "REMOTE",
+		2: "CACHE",
+		3: "DEFAULT",
+	}
+	ConfigResponse_Source_value = map[string]int32{
+		"SOURCE_UNSPECIFIED": 0,
+		"REMOTE":             1,
+		"CACHE":              2,
+		"DEFAULT":            3,
+	}
+)
+
+func (x ConfigResponse_Source) Enum() *ConfigResponse_Source {
+	p := new(ConfigResponse_Source)
+	*p = x
+	return p
+}
+
+func (x ConfigResponse_Source) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConfigResponse_Source) Descriptor() protoreflect.EnumDescriptor {
+	return file_updateripc_proto_enumTypes[1].Descriptor()
+}
+
+func (ConfigResponse_Source) Type() protoreflect.EnumType {
+	return &file_updateripc_proto_enumTypes[1]
+}
+
+func (x ConfigResponse_Source) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConfigResponse_Source.Descriptor instead.
+func (ConfigResponse_Source) EnumDescriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{6, 0}
+}
+
 // Envelope is the single message written to and read from the pipe per
 // exchange: one request Envelope in, one response Envelope out, then the
 // connection closes.
@@ -93,6 +145,8 @@ type Envelope struct {
 	//	*Envelope_SystemInfoResponse
 	//	*Envelope_AdStatusRequest
 	//	*Envelope_AdStatusResponse
+	//	*Envelope_ConfigRequest
+	//	*Envelope_ConfigResponse
 	//	*Envelope_Error
 	Body          isEnvelope_Body `protobuf_oneof:"body"`
 	unknownFields protoimpl.UnknownFields
@@ -186,6 +240,24 @@ func (x *Envelope) GetAdStatusResponse() *ADStatusResponse {
 	return nil
 }
 
+func (x *Envelope) GetConfigRequest() *ConfigRequest {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ConfigRequest); ok {
+			return x.ConfigRequest
+		}
+	}
+	return nil
+}
+
+func (x *Envelope) GetConfigResponse() *ConfigResponse {
+	if x != nil {
+		if x, ok := x.Body.(*Envelope_ConfigResponse); ok {
+			return x.ConfigResponse
+		}
+	}
+	return nil
+}
+
 func (x *Envelope) GetError() *ErrorResponse {
 	if x != nil {
 		if x, ok := x.Body.(*Envelope_Error); ok {
@@ -215,6 +287,18 @@ type Envelope_AdStatusResponse struct {
 	AdStatusResponse *ADStatusResponse `protobuf:"bytes,13,opt,name=ad_status_response,json=adStatusResponse,proto3,oneof"`
 }
 
+type Envelope_ConfigRequest struct {
+	// Added in EMLyUpdater 1.6.0: the remote configuration document
+	// (GET /v2/config) as the updater resolved it for this host. Additive,
+	// so protocol_version stays 1 - an updater that predates it answers
+	// ERROR_CODE_BAD_REQUEST and an EMLy that predates it never asks.
+	ConfigRequest *ConfigRequest `protobuf:"bytes,14,opt,name=config_request,json=configRequest,proto3,oneof"`
+}
+
+type Envelope_ConfigResponse struct {
+	ConfigResponse *ConfigResponse `protobuf:"bytes,15,opt,name=config_response,json=configResponse,proto3,oneof"`
+}
+
 type Envelope_Error struct {
 	Error *ErrorResponse `protobuf:"bytes,99,opt,name=error,proto3,oneof"`
 }
@@ -226,6 +310,10 @@ func (*Envelope_SystemInfoResponse) isEnvelope_Body() {}
 func (*Envelope_AdStatusRequest) isEnvelope_Body() {}
 
 func (*Envelope_AdStatusResponse) isEnvelope_Body() {}
+
+func (*Envelope_ConfigRequest) isEnvelope_Body() {}
+
+func (*Envelope_ConfigResponse) isEnvelope_Body() {}
 
 func (*Envelope_Error) isEnvelope_Body() {}
 
@@ -421,6 +509,139 @@ func (x *ADStatusResponse) GetDomainJoined() bool {
 	return false
 }
 
+type ConfigRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ConfigRequest) Reset() {
+	*x = ConfigRequest{}
+	mi := &file_updateripc_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigRequest) ProtoMessage() {}
+
+func (x *ConfigRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigRequest.ProtoReflect.Descriptor instead.
+func (*ConfigRequest) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{5}
+}
+
+// ConfigResponse hands EMLy the remote configuration document
+// (GET /v2/config) as the updater sees it for this host: the global
+// document with the matching overrides applied and expired `until`s
+// resolved. Same JSON schema as the endpoint, so EMLy parses one format
+// whether it comes from the pipe or, in a future fallback, from the API.
+type ConfigResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	DocumentJson    []byte                 `protobuf:"bytes,1,opt,name=document_json,json=documentJson,proto3" json:"document_json,omitempty"`
+	Revision        int64                  `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
+	GeneratedAt     string                 `protobuf:"bytes,3,opt,name=generated_at,json=generatedAt,proto3" json:"generated_at,omitempty"` // from the document; "" for the default policy
+	FetchedAt       string                 `protobuf:"bytes,4,opt,name=fetched_at,json=fetchedAt,proto3" json:"fetched_at,omitempty"`       // local clock, RFC 3339; "" for the default policy
+	Source          ConfigResponse_Source  `protobuf:"varint,5,opt,name=source,proto3,enum=emly.updateripc.v1.ConfigResponse_Source" json:"source,omitempty"`
+	Stale           bool                   `protobuf:"varint,6,opt,name=stale,proto3" json:"stale,omitempty"`                                            // fetched_at older than refresh.staleAfterDays
+	HostWhitelisted bool                   `protobuf:"varint,7,opt,name=host_whitelisted,json=hostWhitelisted,proto3" json:"host_whitelisted,omitempty"` // hostIntegrity.whitelist matched this host
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ConfigResponse) Reset() {
+	*x = ConfigResponse{}
+	mi := &file_updateripc_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ConfigResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ConfigResponse) ProtoMessage() {}
+
+func (x *ConfigResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_updateripc_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ConfigResponse.ProtoReflect.Descriptor instead.
+func (*ConfigResponse) Descriptor() ([]byte, []int) {
+	return file_updateripc_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ConfigResponse) GetDocumentJson() []byte {
+	if x != nil {
+		return x.DocumentJson
+	}
+	return nil
+}
+
+func (x *ConfigResponse) GetRevision() int64 {
+	if x != nil {
+		return x.Revision
+	}
+	return 0
+}
+
+func (x *ConfigResponse) GetGeneratedAt() string {
+	if x != nil {
+		return x.GeneratedAt
+	}
+	return ""
+}
+
+func (x *ConfigResponse) GetFetchedAt() string {
+	if x != nil {
+		return x.FetchedAt
+	}
+	return ""
+}
+
+func (x *ConfigResponse) GetSource() ConfigResponse_Source {
+	if x != nil {
+		return x.Source
+	}
+	return ConfigResponse_SOURCE_UNSPECIFIED
+}
+
+func (x *ConfigResponse) GetStale() bool {
+	if x != nil {
+		return x.Stale
+	}
+	return false
+}
+
+func (x *ConfigResponse) GetHostWhitelisted() bool {
+	if x != nil {
+		return x.HostWhitelisted
+	}
+	return false
+}
+
 type ErrorResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	Code  ErrorCode              `protobuf:"varint,1,opt,name=code,proto3,enum=emly.updateripc.v1.ErrorCode" json:"code,omitempty"`
@@ -432,7 +653,7 @@ type ErrorResponse struct {
 
 func (x *ErrorResponse) Reset() {
 	*x = ErrorResponse{}
-	mi := &file_updateripc_proto_msgTypes[5]
+	mi := &file_updateripc_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -444,7 +665,7 @@ func (x *ErrorResponse) String() string {
 func (*ErrorResponse) ProtoMessage() {}
 
 func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_updateripc_proto_msgTypes[5]
+	mi := &file_updateripc_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -457,7 +678,7 @@ func (x *ErrorResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorResponse.ProtoReflect.Descriptor instead.
 func (*ErrorResponse) Descriptor() ([]byte, []int) {
-	return file_updateripc_proto_rawDescGZIP(), []int{5}
+	return file_updateripc_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ErrorResponse) GetCode() ErrorCode {
@@ -478,7 +699,7 @@ var File_updateripc_proto protoreflect.FileDescriptor
 
 const file_updateripc_proto_rawDesc = "" +
 	"\n" +
-	"\x10updateripc.proto\x12\x12emly.updateripc.v1\"\xfd\x03\n" +
+	"\x10updateripc.proto\x12\x12emly.updateripc.v1\"\x98\x05\n" +
 	"\bEnvelope\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12%\n" +
 	"\x0esender_version\x18\x02 \x01(\tR\rsenderVersion\x12W\n" +
@@ -486,7 +707,9 @@ const file_updateripc_proto_rawDesc = "" +
 	" \x01(\v2%.emly.updateripc.v1.SystemInfoRequestH\x00R\x11systemInfoRequest\x12Z\n" +
 	"\x14system_info_response\x18\v \x01(\v2&.emly.updateripc.v1.SystemInfoResponseH\x00R\x12systemInfoResponse\x12Q\n" +
 	"\x11ad_status_request\x18\f \x01(\v2#.emly.updateripc.v1.ADStatusRequestH\x00R\x0fadStatusRequest\x12T\n" +
-	"\x12ad_status_response\x18\r \x01(\v2$.emly.updateripc.v1.ADStatusResponseH\x00R\x10adStatusResponse\x129\n" +
+	"\x12ad_status_response\x18\r \x01(\v2$.emly.updateripc.v1.ADStatusResponseH\x00R\x10adStatusResponse\x12J\n" +
+	"\x0econfig_request\x18\x0e \x01(\v2!.emly.updateripc.v1.ConfigRequestH\x00R\rconfigRequest\x12M\n" +
+	"\x0fconfig_response\x18\x0f \x01(\v2\".emly.updateripc.v1.ConfigResponseH\x00R\x0econfigResponse\x129\n" +
 	"\x05error\x18c \x01(\v2!.emly.updateripc.v1.ErrorResponseH\x00R\x05errorB\x06\n" +
 	"\x04body\"\x13\n" +
 	"\x11SystemInfoRequest\"\x84\x01\n" +
@@ -500,7 +723,23 @@ const file_updateripc_proto_rawDesc = "" +
 	"\x0fADStatusRequest\"T\n" +
 	"\x10ADStatusResponse\x12\x1b\n" +
 	"\tad_domain\x18\x01 \x01(\tR\badDomain\x12#\n" +
-	"\rdomain_joined\x18\x02 \x01(\bR\fdomainJoined\"\\\n" +
+	"\rdomain_joined\x18\x02 \x01(\bR\fdomainJoined\"\x0f\n" +
+	"\rConfigRequest\"\xdd\x02\n" +
+	"\x0eConfigResponse\x12#\n" +
+	"\rdocument_json\x18\x01 \x01(\fR\fdocumentJson\x12\x1a\n" +
+	"\brevision\x18\x02 \x01(\x03R\brevision\x12!\n" +
+	"\fgenerated_at\x18\x03 \x01(\tR\vgeneratedAt\x12\x1d\n" +
+	"\n" +
+	"fetched_at\x18\x04 \x01(\tR\tfetchedAt\x12A\n" +
+	"\x06source\x18\x05 \x01(\x0e2).emly.updateripc.v1.ConfigResponse.SourceR\x06source\x12\x14\n" +
+	"\x05stale\x18\x06 \x01(\bR\x05stale\x12)\n" +
+	"\x10host_whitelisted\x18\a \x01(\bR\x0fhostWhitelisted\"D\n" +
+	"\x06Source\x12\x16\n" +
+	"\x12SOURCE_UNSPECIFIED\x10\x00\x12\n" +
+	"\n" +
+	"\x06REMOTE\x10\x01\x12\t\n" +
+	"\x05CACHE\x10\x02\x12\v\n" +
+	"\aDEFAULT\x10\x03\"\\\n" +
 	"\rErrorResponse\x121\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x1d.emly.updateripc.v1.ErrorCodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage*\x9d\x01\n" +
@@ -523,29 +762,35 @@ func file_updateripc_proto_rawDescGZIP() []byte {
 	return file_updateripc_proto_rawDescData
 }
 
-var file_updateripc_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_updateripc_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_updateripc_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_updateripc_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_updateripc_proto_goTypes = []any{
 	(ErrorCode)(0),             // 0: emly.updateripc.v1.ErrorCode
-	(*Envelope)(nil),           // 1: emly.updateripc.v1.Envelope
-	(*SystemInfoRequest)(nil),  // 2: emly.updateripc.v1.SystemInfoRequest
-	(*SystemInfoResponse)(nil), // 3: emly.updateripc.v1.SystemInfoResponse
-	(*ADStatusRequest)(nil),    // 4: emly.updateripc.v1.ADStatusRequest
-	(*ADStatusResponse)(nil),   // 5: emly.updateripc.v1.ADStatusResponse
-	(*ErrorResponse)(nil),      // 6: emly.updateripc.v1.ErrorResponse
+	(ConfigResponse_Source)(0), // 1: emly.updateripc.v1.ConfigResponse.Source
+	(*Envelope)(nil),           // 2: emly.updateripc.v1.Envelope
+	(*SystemInfoRequest)(nil),  // 3: emly.updateripc.v1.SystemInfoRequest
+	(*SystemInfoResponse)(nil), // 4: emly.updateripc.v1.SystemInfoResponse
+	(*ADStatusRequest)(nil),    // 5: emly.updateripc.v1.ADStatusRequest
+	(*ADStatusResponse)(nil),   // 6: emly.updateripc.v1.ADStatusResponse
+	(*ConfigRequest)(nil),      // 7: emly.updateripc.v1.ConfigRequest
+	(*ConfigResponse)(nil),     // 8: emly.updateripc.v1.ConfigResponse
+	(*ErrorResponse)(nil),      // 9: emly.updateripc.v1.ErrorResponse
 }
 var file_updateripc_proto_depIdxs = []int32{
-	2, // 0: emly.updateripc.v1.Envelope.system_info_request:type_name -> emly.updateripc.v1.SystemInfoRequest
-	3, // 1: emly.updateripc.v1.Envelope.system_info_response:type_name -> emly.updateripc.v1.SystemInfoResponse
-	4, // 2: emly.updateripc.v1.Envelope.ad_status_request:type_name -> emly.updateripc.v1.ADStatusRequest
-	5, // 3: emly.updateripc.v1.Envelope.ad_status_response:type_name -> emly.updateripc.v1.ADStatusResponse
-	6, // 4: emly.updateripc.v1.Envelope.error:type_name -> emly.updateripc.v1.ErrorResponse
-	0, // 5: emly.updateripc.v1.ErrorResponse.code:type_name -> emly.updateripc.v1.ErrorCode
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	3, // 0: emly.updateripc.v1.Envelope.system_info_request:type_name -> emly.updateripc.v1.SystemInfoRequest
+	4, // 1: emly.updateripc.v1.Envelope.system_info_response:type_name -> emly.updateripc.v1.SystemInfoResponse
+	5, // 2: emly.updateripc.v1.Envelope.ad_status_request:type_name -> emly.updateripc.v1.ADStatusRequest
+	6, // 3: emly.updateripc.v1.Envelope.ad_status_response:type_name -> emly.updateripc.v1.ADStatusResponse
+	7, // 4: emly.updateripc.v1.Envelope.config_request:type_name -> emly.updateripc.v1.ConfigRequest
+	8, // 5: emly.updateripc.v1.Envelope.config_response:type_name -> emly.updateripc.v1.ConfigResponse
+	9, // 6: emly.updateripc.v1.Envelope.error:type_name -> emly.updateripc.v1.ErrorResponse
+	1, // 7: emly.updateripc.v1.ConfigResponse.source:type_name -> emly.updateripc.v1.ConfigResponse.Source
+	0, // 8: emly.updateripc.v1.ErrorResponse.code:type_name -> emly.updateripc.v1.ErrorCode
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_updateripc_proto_init() }
@@ -558,6 +803,8 @@ func file_updateripc_proto_init() {
 		(*Envelope_SystemInfoResponse)(nil),
 		(*Envelope_AdStatusRequest)(nil),
 		(*Envelope_AdStatusResponse)(nil),
+		(*Envelope_ConfigRequest)(nil),
+		(*Envelope_ConfigResponse)(nil),
 		(*Envelope_Error)(nil),
 	}
 	type x struct{}
@@ -565,8 +812,8 @@ func file_updateripc_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_updateripc_proto_rawDesc), len(file_updateripc_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   6,
+			NumEnums:      2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

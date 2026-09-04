@@ -3,7 +3,6 @@ package config
 import (
 	"fmt"
 	"net"
-	"os"
 	"strings"
 )
 
@@ -90,86 +89,4 @@ func SubnetsContain(subnets []*net.IPNet, ip string) bool {
 		}
 	}
 	return false
-}
-
-// SetPrimary rewrites the `primary` key of the [source] section in the config
-// file at path, leaving every other byte of the file untouched.
-//
-// It deliberately does not go through ini.SaveTo: that re-serialises the whole
-// file and would drop the column alignment and the Italian comments that make
-// config.default.ini readable to whoever edits it on a machine.
-func SetPrimary(path, value string) error {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-
-	updated, err := setPrimaryIn(string(raw), value)
-	if err != nil {
-		return err
-	}
-	if updated == string(raw) {
-		return nil
-	}
-	return writeAtomic(path, updated)
-}
-
-// setPrimaryIn is the pure half of SetPrimary: it returns content with the
-// [source] primary key set to value. Split out so the line surgery can be
-// tested without touching the disk. When the key is absent it is inserted
-// right below the [source] header; a file with no [source] section at all is
-// an error rather than a guess.
-func setPrimaryIn(content, value string) (string, error) {
-	lines := strings.SplitAfter(content, "\n")
-
-	section := ""
-	inserted := -1
-	for i, line := range lines {
-		body, eol := splitEOL(line)
-		trimmed := strings.TrimSpace(body)
-
-		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
-			section = strings.ToLower(strings.TrimSpace(trimmed[1 : len(trimmed)-1]))
-			if section == "source" {
-				inserted = i
-			}
-			continue
-		}
-		if section != "source" || strings.HasPrefix(trimmed, ";") || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-
-		eq := strings.Index(body, "=")
-		if eq < 0 || !strings.EqualFold(strings.TrimSpace(body[:eq]), "primary") {
-			continue
-		}
-		// Keep everything up to and including the '=' so the column
-		// alignment of the surrounding keys survives.
-		lines[i] = body[:eq+1] + " " + value + eol
-		return strings.Join(lines, ""), nil
-	}
-
-	if inserted < 0 {
-		return "", fmt.Errorf("no [source] section found")
-	}
-	_, eol := splitEOL(lines[inserted])
-	if eol == "" {
-		// [source] was the last line and had no terminator: give it one.
-		eol = "\n"
-		lines[inserted] += eol
-	}
-	lines[inserted] += "primary = " + value + eol
-	return strings.Join(lines, ""), nil
-}
-
-// splitEOL separates a line's text from its terminator, so a rewritten line
-// keeps the file's existing CRLF or LF endings instead of imposing one.
-func splitEOL(line string) (body, eol string) {
-	switch {
-	case strings.HasSuffix(line, "\r\n"):
-		return line[:len(line)-2], "\r\n"
-	case strings.HasSuffix(line, "\n"):
-		return line[:len(line)-1], "\n"
-	}
-	return line, ""
 }

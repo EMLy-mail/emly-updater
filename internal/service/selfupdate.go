@@ -33,21 +33,21 @@ import (
 // service, so the process that launches it never learns how it went. What is
 // written to state.json beforehand is the only thing the next start has to go
 // on.
-func (u *Updater) selfUpdate(ctx context.Context) bool {
+func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 	// Every cycle that does not act says why, at Info, under this one message:
 	// grepping the log for it answers "is it looking for updates, and what did
 	// it decide?" without stopping the service to re-run it in the foreground.
 	const skipped = "no updater self-update this cycle"
 	running := version.Version
 
-	if !u.Cfg.SelfUpdateEnabled {
-		u.Log.Info(skipped, "installed", running, "reason", "selfUpdate.enabled is false")
+	if !cyc.eff.Doc.Updater.SelfUpdate.Enabled {
+		u.Log.Info(skipped, "installed", running, "reason", "updater.selfUpdate.enabled is false")
 		return false
 	}
 
 	rec := u.reconcileSelfUpdate()
 
-	src, m, manifestURL, err := u.resolveUpdaterManifest(ctx)
+	src, m, manifestURL, err := u.resolveUpdaterManifest(ctx, cyc)
 	if err != nil {
 		if errors.Is(err, source.ErrNotFound) {
 			// No source implements the endpoint. Expected on a site whose
@@ -55,7 +55,7 @@ func (u *Updater) selfUpdate(ctx context.Context) bool {
 			// that has not published an updater manifest at all. Name the
 			// address that was tried: on a 404 that is the one thing worth
 			// checking, and no source succeeded so none reported one.
-			tried, _ := u.Cfg.UpdaterManifestURL(u.Cfg.PrimaryManifestURL())
+			tried, _ := u.Cfg.UpdaterManifestURL(cyc.eff.ManifestURL(cyc.chain[0]))
 			u.Log.Info(skipped, "installed", running, "manifestURL", tried,
 				"reason", "no update source serves an updater manifest")
 		} else {
@@ -95,7 +95,7 @@ func (u *Updater) selfUpdate(ctx context.Context) bool {
 	u.Log.InfoEvent(logging.EventSelfUpdateFound, "updater update available",
 		"installed", running, "target", m.Version, "attempt", decision.Attempt,
 		"manifestURL", manifestURL, "download", m.Download,
-		"notes", m.Notes(u.Cfg.ResolveEMLy().Language))
+		"notes", m.Notes(u.Cfg.ResolveEMLyWithChannel(cyc.eff.Doc.Updater.Channel()).Language))
 
 	return u.applySelfUpdate(ctx, src, m, decision.Attempt)
 }
@@ -152,8 +152,8 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 // It returns the URL that answered alongside the manifest, so the log can name
 // the exact endpoint this machine reached rather than the source it was
 // derived from.
-func (u *Updater) resolveUpdaterManifest(ctx context.Context) (source.Source, *manifest.UpdaterManifest, string, error) {
-	resolver := u.newResolver()
+func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (source.Source, *manifest.UpdaterManifest, string, error) {
+	resolver := u.newResolver(cyc)
 	resolver.Document = "updater manifest"
 
 	return source.ResolveUpdater(ctx, resolver, func(s source.Source) (string, error) {

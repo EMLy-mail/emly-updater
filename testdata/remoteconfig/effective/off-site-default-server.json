@@ -1,0 +1,220 @@
+{
+  "document": {
+    "schemaVersion": 1,
+    "revision": 42,
+    "generatedAt": "2026-08-28T10:00:00Z",
+    "refresh": {
+      "intervalMinutes": 15,
+      "staleAfterDays": 7
+    },
+    "servers": {
+      "srv-cb-rete-3g": "http://172.16.96.73:8080",
+      "srv-cloud": "https://api.emly.ffois.it",
+      "srv-cb-rete-enel": "http://10.12.254.123:8080"
+    },
+    "defaultServer": "srv-cb-rete-3g",
+    "ipcProtocol": {
+      "versions": {
+        "1": {
+          "updater": {
+            "min": "1.2.0b",
+            "max": null
+          },
+          "emly": {
+            "min": "2.0.0",
+            "max": null
+          },
+          "enabled": true
+        }
+      },
+      "defaultVersion": 1
+    },
+    "dcLookupMap": {
+      "DC-RM2": {
+        "internalSubnets": [
+          "172.16.96.0/24",
+          "10.12.8.0/24"
+        ],
+        "baseServer": "srv-cb-rete-3g",
+        "backupServer": [
+          "srv-cloud"
+        ],
+        "enabled": true
+      },
+      "DC-CB": {
+        "internalSubnets": [
+          "172.16.33.0/24",
+          "172.16.34.0/24"
+        ],
+        "baseServer": "srv-cb-rete-3g",
+        "backupServer": [
+          "srv-cb-rete-enel",
+          "srv-cloud"
+        ],
+        "enabled": true
+      }
+    },
+    "hostIntegrity": {
+      "enabled": true,
+      "whitelist": {
+        "hostnames": [
+          "FOISX-PC",
+          "RM095"
+        ],
+        "hwids": []
+      }
+    },
+    "control": {
+      "updater": {
+        "enabled": true,
+        "reason": null,
+        "until": null
+      },
+      "app": {
+        "enabled": true,
+        "mode": "normal",
+        "reason": null,
+        "until": null
+      }
+    },
+    "updater": {
+      "pollIntervalMinutes": 15,
+      "channelOverride": null,
+      "criticalWarning": {
+        "enabled": true,
+        "seconds": 30
+      },
+      "dcLookupRetry": {
+        "attempts": 6,
+        "delaySeconds": 5
+      },
+      "resolver": {
+        "attempts": 3,
+        "baseBackoffSeconds": 5
+      },
+      "selfUpdate": {
+        "enabled": true
+      },
+      "installCertificate": {
+        "enabled": true
+      }
+    },
+    "logging": {
+      "level": "info",
+      "maxSizeMB": 2,
+      "backups": 5,
+      "compress": true,
+      "eventLog": true
+    },
+    "overrides": [
+      {
+        "id": "pilot-beta",
+        "match": {
+          "hwids": [
+            "9A3F1C77-0000-0000-0000-000000000001"
+          ]
+        },
+        "until": "2026-09-30T00:00:00Z",
+        "patch": {
+          "updater": {
+            "channelOverride": "beta",
+            "pollIntervalMinutes": 5
+          },
+          "logging": {
+            "level": "debug"
+          }
+        }
+      },
+      {
+        "id": "cb-freeze",
+        "match": {
+          "dcs": [
+            "DC-CB"
+          ]
+        },
+        "until": "2026-09-05T18:00:00Z",
+        "patch": {
+          "control": {
+            "updater": {
+              "enabled": false,
+              "reason": "chiusura contabile"
+            }
+          }
+        }
+      },
+      {
+        "id": "rm2-guest-wifi",
+        "match": {
+          "dcs": [
+            "DC-RM2"
+          ],
+          "subnets": [
+            "192.168.100.0/24"
+          ]
+        },
+        "until": null,
+        "patch": {
+          "updater": {
+            "pollIntervalMinutes": 60
+          }
+        }
+      },
+      {
+        "id": "rollout-window",
+        "match": {
+          "all": true
+        },
+        "until": "2026-09-10T20:00:00Z",
+        "patch": {
+          "updater": {
+            "pollIntervalMinutes": 5
+          }
+        }
+      },
+      {
+        "id": "fleet-freeze-except-pilot",
+        "match": {
+          "all": true
+        },
+        "except": {
+          "hwids": [
+            "9A3F1C77-0000-0000-0000-000000000001"
+          ]
+        },
+        "until": "2026-09-12T08:00:00Z",
+        "patch": {
+          "control": {
+            "updater": {
+              "enabled": false,
+              "reason": "release 2.1.3 sotto verifica"
+            }
+          }
+        }
+      }
+    ]
+  },
+  "host": {
+    "hwid": "BBBB-2",
+    "hostname": "LAPTOP7",
+    "dc": "",
+    "ips": [
+      "192.168.1.20"
+    ],
+    "domain": "",
+    "now": "2026-09-11T09:00:00Z"
+  },
+  "expect": {
+    "applied": [
+      "fleet-freeze-except-pilot"
+    ],
+    "site": "",
+    "chain": [
+      "srv-cb-rete-3g"
+    ],
+    "updaterEnabled": false,
+    "pollIntervalMinutes": 15,
+    "channelOverride": "",
+    "loggingLevel": "info",
+    "whitelisted": false
+  }
+}

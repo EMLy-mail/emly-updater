@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -21,6 +22,7 @@ import (
 	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/manifest"
 	"emlyupdater/internal/notify"
+	"emlyupdater/internal/policy"
 	"emlyupdater/internal/process"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
@@ -42,6 +44,15 @@ type Updater struct {
 	Machine       machineinfo.Info
 	IPC           *ipc.Server
 
+	// Policy holds the current remote configuration snapshot. Everything
+	// operational is read from it, per cycle, through beginCycle: config.ini
+	// only supplies the bootstrap and the values the default policy is
+	// derived from. Built by initPolicy on the first RunLoop.
+	Policy   *policy.Store
+	Defaults policy.Defaults
+	// CachePath overrides config.RemoteConfigPath() in tests.
+	CachePath string
+
 	// sourcesUnreachableNotified marks that the console user has already
 	// been toasted for the outage currently in progress - Cycle runs
 	// sequentially in one goroutine, so this needs no locking. It is only
@@ -50,10 +61,50 @@ type Updater struct {
 	// once per outage rather than once per poll - but a still-ongoing
 	// outage keeps trying every cycle until someone is there to see it.
 	sourcesUnreachableNotified bool
+
+	// cur is the state the last beginCycle produced: the snapshot, this
+	// machine's facts and the server chain they select. Read by the IPC
+	// server on its own goroutines, hence the atomic.
+	cur atomic.Pointer[cycleState]
+
+	// site carries what the source policy remembers between cycles (last DC
+	// answer, last decision logged) - see sourcepolicy.go.
+	site siteState
+
+	// paused mirrors control.updater.enabled so event 904 fires on the
+	// transition rather than on every cycle.
+	paused bool
+	// appliedLogging is the last logging section pushed into the logger.
+	appliedLogging *policy.LoggingSettings
+	// lastConfigAttempt, lastStaleWarn and configUnreachable pace the config
+	// fetch, the staleness warning and the once-per-outage event 901.
+	lastConfigAttempt time.Time
+	lastStaleWarn     time.Time
+	configUnreachable bool
+	// consoleDebug records logging.New's console flag so the policy derived
+	// from config.ini does not lower the foreground `run` mode back to info.
+	consoleDebug bool
+
+	// Seams for the tests: the machine-facts lookups, the clock and the
+	// config fetch. In production these are the real ones, set by New.
+	dcFn          dcLookup
+	ipsFn         localIPsLookup
+	nowFn         func() time.Time
+	fetchConfigFn func(ctx context.Context, url, etag string) (*source.ConfigResponse, error)
 }
 
-// New builds an Updater on the standard ProgramData paths.
-func New(cfg *config.Config, log *logging.Logger) *Updater {
+// clock is the time source; tests pin it.
+func (u *Updater) clock() time.Time {
+	if u.nowFn != nil {
+		return u.nowFn()
+	}
+	return time.Now()
+}
+
+// New builds an Updater on the standard ProgramData paths. consoleDebug
+// mirrors the flag passed to logging.New, so the policy that is derived from
+// config.ini keeps the foreground `run` mode at debug level.
+func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 	machine := machineinfo.Collect()
 	u := &Updater{
 		Cfg:       cfg,
@@ -64,10 +115,14 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 			Dir:    config.SelfDownloadsDir(),
 			Prefix: "EMLyUpdater-",
 		},
-		Machine: machine,
+		Machine:      machine,
+		consoleDebug: consoleDebug,
+		dcFn:         machineinfo.NearestDomainController,
+		ipsFn:        machineinfo.LocalIPv4Addresses,
 	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
+	u.IPC.SetPolicyProvider(u.policyView)
 	return u
 }
 
@@ -75,28 +130,45 @@ func New(cfg *config.Config, log *logging.Logger) *Updater {
 // starts immediately (it also resumes any pending update persisted before a
 // restart/reboot); afterwards the loop polls on the configured interval.
 func (u *Updater) RunLoop(ctx context.Context) {
-	// Decide which manifest source this machine can actually reach before the
-	// first cycle runs: cfg.Primary may be rewritten here. This runs here and
-	// not in New because the domain controller lookup retries a boot-time
-	// failure for up to the configured window, and New is called before
-	// svc.Run has reported the service started - blocking there is what the
-	// SCM's start timeout counts against.
-	applySourcePolicy(ctx, u.Cfg, u.Log, config.ConfigPath(),
-		machineinfo.DomainJoined(u.Machine.ADDomain, u.Machine.Hostname),
-		machineinfo.NearestDomainController, machineinfo.LocalIPv4Addresses)
+	// The last-known-good document, or the policy derived from config.ini,
+	// before anything else: every decision below reads from it.
+	u.initPolicy()
+	// One fetch attempt before the first cycle, so a machine that can reach
+	// the API starts on the current policy. It is not retried - the first
+	// cycle must not wait on the network.
+	u.refreshConfig(ctx, true)
+
+	// Which site (and therefore which servers) this machine is at. This
+	// runs here and not in New because the domain controller lookup retries
+	// a boot-time failure for up to the configured window, and New is called
+	// before svc.Run has reported the service started - blocking there is
+	// what the SCM's start timeout counts against.
+	cyc := u.beginCycle(ctx, true)
 
 	u.Log.Info("update loop started",
-		"pollInterval", u.Cfg.PollInterval.String(),
-		"primary", u.Cfg.Primary,
-		"channelOverride", u.Cfg.ChannelOverride,
+		"pollInterval", cyc.eff.Doc.Updater.PollInterval().String(),
+		"site", cyc.site,
+		"channelOverride", cyc.eff.Doc.Updater.Channel(),
+		"policyRevision", cyc.snap.Revision(),
+		"policySource", cyc.snap.Source.String(),
 	)
 
+	first := true
 	for {
-		if err := u.Cycle(ctx); err != nil && ctx.Err() == nil {
+		if !first {
+			// Every later cycle re-fetches the document when it is due and
+			// re-evaluates the site: a laptop that changed subnet, or a
+			// policy that changed under it, takes effect here.
+			u.refreshConfig(ctx, false)
+			cyc = u.beginCycle(ctx, false)
+		}
+		first = false
+
+		if err := u.Cycle(ctx, cyc); err != nil && ctx.Err() == nil {
 			u.Log.Error("update cycle failed", "error", err.Error())
 		}
 		select {
-		case <-time.After(u.Cfg.PollInterval):
+		case <-time.After(cyc.eff.Doc.Updater.PollInterval()):
 		case <-ctx.Done():
 			u.Log.Info("update loop stopped")
 			return
@@ -106,22 +178,36 @@ func (u *Updater) RunLoop(ctx context.Context) {
 
 // Cycle performs one full pass: resume pending → fetch manifest → decide →
 // download → apply.
-func (u *Updater) Cycle(ctx context.Context) error {
+func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
+	if cyc == nil {
+		cyc = u.current()
+	}
+	u.Log.Debug("update cycle starting",
+		"policyRevision", cyc.snap.Revision(), "policySource", cyc.snap.Source.String(),
+		"site", cyc.site, "overrides", len(cyc.eff.Applied))
+
 	// Trust-store self-heal, before anything that might run a setup - the
 	// self-update below verifies an Authenticode signature that chains to this
 	// very certificate.
-	u.ensureCertificate()
+	u.ensureCertificate(cyc)
+
+	// A paused updater still fetched its configuration (that is what can
+	// un-pause it), still healed the trust store and still serves IPC - but
+	// it downloads and installs nothing, its own release included.
+	if !u.applyControlGate(cyc) {
+		return nil
+	}
 
 	// The updater updates itself first, ahead of even a pending EMLy install.
 	// If this build has a bug in the way it handles EMLy, it has to be able to
 	// replace itself before exercising that bug again; the pending entry is
 	// persisted and resumes under the new binary. Returning here is not
 	// optional - the setup is already stopping this service.
-	if u.selfUpdate(ctx) {
+	if u.selfUpdate(ctx, cyc) {
 		return nil
 	}
 
-	emly := u.Cfg.ResolveEMLy()
+	emly := u.Cfg.ResolveEMLyWithChannel(cyc.eff.Doc.Updater.Channel())
 	if emly.FreshInstall {
 		u.Log.Info("EMLy config.ini not found - fresh-install mode",
 			"assumedVersion", emly.InstalledVersion, "channel", emly.Channel)
@@ -150,12 +236,12 @@ func (u *Updater) Cycle(ctx context.Context) error {
 			_ = u.Store.ClearPending()
 		} else {
 			u.Log.Info("resuming pending update", "version", p.Version, "forced", p.Forced)
-			return u.apply(ctx, p, emly)
+			return u.apply(ctx, cyc, p, emly)
 		}
 	}
 
-	// 2) Normal poll: manifest via the primary source.
-	src, m, target, err := u.resolveTarget(ctx, emly.Channel)
+	// 2) Normal poll: manifest via this machine's server chain.
+	src, m, target, err := u.resolveTarget(ctx, cyc, emly.Channel)
 	if err != nil {
 		u.notifySourcesUnreachable()
 		return err
@@ -201,7 +287,7 @@ func (u *Updater) Cycle(ctx context.Context) error {
 		u.Log.Warn("failed to persist pending update, continuing", "error", err.Error())
 	}
 
-	return u.apply(ctx, p, emly)
+	return u.apply(ctx, cyc, p, emly)
 }
 
 // newHTTPSource builds an HTTPSource for manifestURL with this machine's
@@ -217,43 +303,53 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	return httpSrc
 }
 
-// newResolver builds the source resolver this machine should use: the
-// configured primary, with retries, plus fallbacks where they make sense.
+// newResolver builds the source resolver for this cycle from the server
+// chain the policy assigns to this machine: the site's base server as the
+// primary (with retries and backoff) and its backups as one-shot fallbacks,
+// in the order the document lists them. A machine at no site gets the single
+// defaultServer with no fallback.
 //
-// When Primary is "internal", the startup source policy already confirmed
-// this machine is on a mapped internal LAN (its DC and subnets matched), but
-// that doesn't guarantee the internal manifest endpoint itself is reachable
-// (down, misconfigured, firewalled). In that case bkInternManifestURL (if
-// configured) is tried first - the machine is provably in the office, so a
-// backup internal endpoint is the closest substitute - and only then
-// externalManifestURL. Neither is persisted, so the next cycle tries the
-// internal primary again.
+// Unlike the legacy behaviour the public API is not appended implicitly: a
+// site that wants the cloud as a last resort lists it in backupServer. The
+// policy derived from config.ini does list it, so nothing changes for a
+// machine that has never received a document.
 //
 // EMLy's manifest and the updater's own both go through this, so a machine
 // that can only reach its site's mirror behaves the same way for both.
-func (u *Updater) newResolver() *source.Resolver {
+func (u *Updater) newResolver(cyc *cycleState) *source.Resolver {
+	urls := make([]string, 0, len(cyc.chain))
+	for _, name := range cyc.chain {
+		if url := cyc.eff.ManifestURL(name); url != "" {
+			urls = append(urls, url)
+		}
+	}
+	if len(urls) == 0 {
+		// Validation guarantees every referenced server exists, so this can
+		// only happen on a document whose servers map is empty for this
+		// machine - keep a resolver that fails cleanly rather than panicking.
+		urls = append(urls, "")
+	}
+
+	settings := cyc.eff.Doc.Updater.Resolver
 	resolver := &source.Resolver{
-		Primary: u.newHTTPSource(u.Cfg.PrimaryManifestURL()),
+		Primary:     u.newHTTPSource(urls[0]),
+		Attempts:    settings.Attempts,
+		BaseBackoff: settings.BaseBackoff(),
 		Logf: func(format string, args ...any) {
 			u.Log.Info(fmt.Sprintf(format, args...))
 		},
 	}
-	if u.Cfg.Primary == config.SourceInternal {
-		if u.Cfg.BackupInternalManifestURL != "" {
-			resolver.Fallbacks = append(resolver.Fallbacks, u.newHTTPSource(u.Cfg.BackupInternalManifestURL))
-		}
-		if u.Cfg.ExternalManifestURL != "" {
-			resolver.Fallbacks = append(resolver.Fallbacks, u.newHTTPSource(u.Cfg.ExternalManifestURL))
-		}
+	for _, url := range urls[1:] {
+		resolver.Fallbacks = append(resolver.Fallbacks, u.newHTTPSource(url))
 	}
 	return resolver
 }
 
-// resolveTarget fetches the update manifest from the primary source (with
-// retries) and resolves it to a channel target. Shared by the normal poll in
-// Cycle and by the forced re-download path in install.
-func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
-	src, m, err := u.newResolver().Resolve(ctx)
+// resolveTarget fetches the update manifest from this machine's server chain
+// and resolves it to a channel target. Shared by the normal poll in Cycle and
+// by the forced re-download path in install.
+func (u *Updater) resolveTarget(ctx context.Context, cyc *cycleState, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+	src, m, err := u.newResolver(cyc).Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
 	}
@@ -268,13 +364,14 @@ func (u *Updater) resolveTarget(ctx context.Context, channel string) (source.Sou
 // apply installs a verified pending update according to EMLy's running state:
 // not running → install now; running and non-forced → wait for exit; running
 // and forced → optional WTS warning, then kill.
-func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyInfo) error {
+func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
 	exe := u.Cfg.EMLyExeName
 
 	if process.IsRunning(exe) {
 		if p.Forced {
-			if u.Cfg.CriticalWarningEnabled {
-				seconds := u.Cfg.CriticalWarningSeconds
+			warning := cyc.eff.Doc.Updater.CriticalWarning
+			if warning.Enabled {
+				seconds := warning.Seconds
 				if notify.WarnCriticalUpdate(emly.Language, seconds) {
 					u.Log.Info("critical update warning shown, counting down",
 						"seconds", seconds, "language", emly.Language)
@@ -316,7 +413,7 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 		}
 	}
 
-	return u.install(ctx, p, emly)
+	return u.install(ctx, cyc, p, emly)
 }
 
 // install runs the setup and the post-install steps. The pending entry is
@@ -337,7 +434,7 @@ func (u *Updater) apply(ctx context.Context, p *state.Pending, emly config.EMLyI
 // retry, the cache entry is dropped and re-fetched fresh from the source;
 // only if that re-fetch cannot happen at all (e.g. offline) does the retry
 // fall back to the original local copy.
-func (u *Updater) install(ctx context.Context, p *state.Pending, emly config.EMLyInfo) error {
+func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
@@ -351,7 +448,7 @@ func (u *Updater) install(ctx context.Context, p *state.Pending, emly config.EML
 			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
 			"version", p.Version, "error", err.Error())
 
-		if fresh, ferr := u.forceRedownload(ctx, p, emly.Channel); ferr != nil {
+		if fresh, ferr := u.forceRedownload(ctx, cyc, p, emly.Channel); ferr != nil {
 			u.Log.Warn("could not force a fresh download for the clean-install retry, retrying with the cached copy",
 				"version", p.Version, "error", ferr.Error())
 		} else {
@@ -406,7 +503,7 @@ func (u *Updater) install(ctx context.Context, p *state.Pending, emly config.EML
 // the manifest briefly having pointed at a bad build), so nothing short of a
 // full wipe + fresh pull from the API guarantees clean bits. Returns the new,
 // persisted pending entry.
-func (u *Updater) forceRedownload(ctx context.Context, p *state.Pending, channel string) (*state.Pending, error) {
+func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state.Pending, channel string) (*state.Pending, error) {
 	if err := u.Downloads.CleanupExcept(""); err != nil {
 		u.Log.Warn("failed to fully clear the downloads cache before forcing a re-download",
 			"error", err.Error())
@@ -415,7 +512,7 @@ func (u *Updater) forceRedownload(ctx context.Context, p *state.Pending, channel
 		u.Log.Warn("failed to clear state.json before forcing a re-download", "error", err.Error())
 	}
 
-	src, _, target, err := u.resolveTarget(ctx, channel)
+	src, _, target, err := u.resolveTarget(ctx, cyc, channel)
 	if err != nil {
 		return nil, err
 	}
@@ -463,8 +560,8 @@ func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
 // be covered, and manual removal of the certificate would never heal. When it
 // is already installed everywhere the cost is two syscalls per store and
 // nothing above Debug reaches the log.
-func (u *Updater) ensureCertificate() {
-	if !u.Cfg.CertificateEnabled {
+func (u *Updater) ensureCertificate(cyc *cycleState) {
+	if !cyc.eff.Doc.Updater.InstallCertificate.Enabled {
 		return
 	}
 

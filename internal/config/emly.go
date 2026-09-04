@@ -62,6 +62,13 @@ func ReadEMLyConfig(path string) (EMLyInfo, error) {
 //   - a missing/unreadable EMLy config means fresh-install: version 0.0.0,
 //     channel = channelOverride or "stable", language "en".
 func (c *Config) ResolveEMLy() EMLyInfo {
+	return c.ResolveEMLyWithChannel(c.ChannelOverride)
+}
+
+// ResolveEMLyWithChannel is ResolveEMLy with the channel override supplied by
+// the caller instead of read from config.ini - the remote configuration can
+// change it per host, and the service passes the effective value here.
+func (c *Config) ResolveEMLyWithChannel(channelOverride string) EMLyInfo {
 	info, err := ReadEMLyConfig(c.EMLyConfigFile)
 	if err != nil {
 		info = EMLyInfo{
@@ -71,8 +78,8 @@ func (c *Config) ResolveEMLy() EMLyInfo {
 			FreshInstall:     true,
 		}
 	}
-	if c.ChannelOverride != "" {
-		info.Channel = c.ChannelOverride
+	if channelOverride != "" {
+		info.Channel = channelOverride
 	}
 	return info
 }

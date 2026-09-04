@@ -30,8 +30,13 @@ main.go                  Subcommands: install | uninstall | start | stop | run (
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
-  config/                INI loader; reset.go rewrites config.ini from this build's defaults on
+  config/                INI loader for the *bootstrap* config (never written at runtime);
+                         reset.go rewrites config.ini from this build's defaults on
                          upgrade (previous kept as config.prev.ini); paths.go owns all %ProgramData%\EMLyUpdater\* paths + ExeDir helpers
+  policy/                The remote configuration document (GET /v2/config): types, all-or-nothing
+                         validation, JSON Merge Patch overrides evaluated per host, the
+                         last-known-good cache, and the atomic Snapshot the service reads.
+                         legacy.go derives the default policy from config.ini's [source] keys
   source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + Resolver (retry/backoff)
   manifest/              JSON manifest parse/compare (go-version for semver); updater.go is the updater's own release manifest
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes. Prefix keeps
@@ -40,8 +45,9 @@ internal/
   selfupdate/            The self-update rules (Reconcile/Decide, pure) + the detached setup launch
   installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
-                         sourcepolicy.go picks the manifest source from the detected DC at startup;
-                         selfupdate.go orchestrates the updater updating itself
+                         remoteconfig.go fetches/validates/caches the policy document and builds the
+                         IPC view; sourcepolicy.go matches the machine to a site every cycle and
+                         builds its server chain; selfupdate.go orchestrates the updater updating itself
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
@@ -49,46 +55,89 @@ internal/
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
   assoc/                 HKLM file-association self-heal after install
   cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
-  ipc/                   Named-pipe server exposing SystemInfo/ADStatus to the EMLy client (protobuf)
+  ipc/                   Named-pipe server exposing SystemInfo/ADStatus/Config to the EMLy client (protobuf)
 ```
 
 See [README.md](README.md) for the full update-state-machine table and update-sources description.
 
 ## Key Conventions
 
+- **The remote configuration document is the source of truth, `config.ini` is
+  only the bootstrap** - `internal/policy` owns the document served by
+  `GET /v2/config`: servers, `dcLookupMap`, poll interval, kill switches,
+  logging, and the per-host `overrides`. It is validated all-or-nothing (a
+  single bad field rejects the whole document, event 902) and cached in
+  `%ProgramData%\EMLyUpdater\remote-config.json`; the cache is the policy when
+  the endpoint is unreachable, and `policy.FromLegacy` derives an equivalent
+  document from `config.ini`'s `[source]` keys when no document has ever been
+  accepted - which is what makes this a no-op on a machine that never reaches
+  the API. A document is only accepted when its `revision` is >= the cached
+  one, so a lagging mirror cannot roll a machine back. Adding a field to the
+  document touches `internal/policy/document.go`, its validation in
+  `parse.go`, the defaults in `legacy.go`, **and** the shared fixtures under
+  `testdata/remoteconfig/` (see below).
+- **The validation fixtures are shared with the API repo** -
+  `testdata/remoteconfig/` (`valid/`, `invalid/` with the expected problem
+  paths, `effective/` with document + host + expected result) is copied
+  verbatim between this repo and `emly-go-api`, the way
+  `proto/updateripc.proto` is. Both sides' validators run against the same
+  files; that is the only thing keeping the two implementations equal, since
+  there is no shared Go module. A rule added on one side without its fixture
+  is a rule the other side does not have.
+- **`config.ini` is never written at runtime** - the source decision lives in
+  memory and in the log (event 700), nowhere else. `config.Reset` (on install)
+  is the only writer of that file. `config.SetPrimary` is gone: a config file
+  the service rewrites is a config file with two owners and no truth.
+- **Fail-open, always** - an unreachable endpoint, a `204`, a `304`, a stale
+  cache: none of them pause anything. Only an explicit, valid
+  `control.updater.enabled = false` does, and even then the config fetch, IPC
+  and the self-heal steps keep running, because that is what can un-pause the
+  machine. An expired `until` re-enables the block on its own.
+- **The local clock is only trusted for `until` and staleness** - staleness is
+  measured from the cache's own `fetchedAt` (local clock at both ends, so the
+  error cancels), never from the document's `generatedAt`. PC clocks drift by
+  years.
+- **The remote document can only narrow the compiled-in IPC compatibility** -
+  `ipc.EffectiveCompat` intersects `ipcProtocol` with the constants in
+  `internal/ipc/version.go`: it may disable a protocol version or raise
+  `emly.min`, never enable a version this binary does not implement nor lower
+  the minimum below what the code requires. `emly.max` is informational, so
+  the document replaces it in either direction.
 - **Config is never shipped** - `config.default.ini` is embedded via `//go:embed` and written to `%ProgramData%\EMLyUpdater\config.ini` only when the file is absent. Per-machine edits do **not** survive upgrades: `cmdInstall` calls `config.Reset`, which backs the existing file up to `config.prev.ini` and rewrites `config.ini` from this build's embedded defaults. A setting that must persist has to be re-applied after the upgrade.
 - **ProgramData survives uninstall** - `cmdUninstall` deletes the service but never removes `%ProgramData%\EMLyUpdater`. The InnoSetup `[UninstallRun]` block does the same.
 - **Exe-dir log is preserved on uninstall** - `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
 - **SHA256 is mandatory** - a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
 - **The Updater's target version always wins over what's already installed** - `Updater.install` (`internal/service/service.go`) trusts `installer.VerifyInstalled` (config.ini's `GUI_SEMVER`), not the setup's own exit code. If a run doesn't leave config.ini reporting the target version - setup failure or a clean exit that still doesn't match (e.g. EMLy's installer treating a stale/inconsistent prior install as already current) - `installer.Uninstall` wipes the existing install via EMLy's own `unins*.exe` (best-effort; a missing uninstaller is not an error) and the setup is retried once against a clean slate. Still mismatched after that → the pending entry stays and the whole thing (including the uninstall/reinstall) is retried on the next poll cycle.
 - **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
-- **The update source is decided at startup, not just configured** - `applySourcePolicy`
-  (`internal/service/sourcepolicy.go`, called from `Updater.RunLoop`) resolves the nearest domain
-  controller and forces `primary` to `internal` only when that DC's name is a key in
-  `defaultMappingDCSubnets` *and* at least one of this machine's own local IPs falls inside one
-  of that key's CIDR subnets; anything else (DC not in the map, no local IP in its subnets,
-  machine off the domain) forces `external`. Each site's `internalManifestURL` lives in that
-  site's office, so a machine whose own IP is not on that site's subnet cannot reach it. The
-  decision is applied in memory *and* written back to `config.ini` via `config.SetPrimary`, and
-  is logged every start (event 700; 701 on failure) even when nothing changes. It never switches
-  to a source whose manifest URL is empty - that config would fail `Load` on the next start and
-  take the service down. Leaving `defaultMappingDCSubnets` empty disables the whole check. It
-  runs **once at startup**: a laptop that boots off-site stays `external` until the service
-  restarts on a mapped LAN.
+- **The update source is decided every cycle, from the policy** - `beginCycle`
+  (`internal/service/sourcepolicy.go`) resolves the nearest domain controller and this
+  machine's local addresses, matches them against the effective document's `dcLookupMap`
+  (DC name is a key *and* a local IP is inside one of that site's subnets), and builds the
+  server chain: the site's `baseServer` as the resolver's primary, its `backupServer` list
+  as ordered one-shot fallbacks. No site matched (DC not in the map, no local IP on its
+  subnets, machine off the domain) means `defaultServer`, alone. The public API is **not**
+  appended implicitly any more - a site that wants it lists it in `backupServer`; the
+  legacy-derived policy does, so nothing changes for a machine with no document. The
+  decision is logged as event 700 when it *changes* (plus once at startup), not on every
+  poll, so a stable machine does not emit it 96 times a day. Because it runs per cycle, a
+  laptop that changes subnet follows it without a service restart.
 - **A failed DC lookup at boot is retried before it is believed** - `resolveDC`
-  (`internal/service/sourcepolicy.go`) retries `DsGetDcName` `dcLookupRetryAttempts` times,
-  `dcLookupRetryDelaySeconds` apart (6 × 5s by default), because at boot the service can start
+  (`internal/service/sourcepolicy.go`) retries `DsGetDcName` `updater.dcLookupRetry.attempts`
+  times, `delaySeconds` apart (6 × 5s by default), because at boot the service can start
   before the network/DNS/netlogon are ready and the API then reports the domain as
-  non-existent - which `decideSource` cannot tell apart from "this machine is off the domain"
-  and would pin the machine to `external` for the whole run. The retry is gated on
+  non-existent - which the site match cannot tell apart from "this machine is off the domain"
+  and would pin the machine to `defaultServer` for the whole run. The retry is gated on
   `machineinfo.DomainJoined` (cached `Win32_ComputerSystem.Domain`, no network needed), so a
   workgroup machine does not sit out the window, and on `ctx` so a stop request during it is
-  honoured. This is why the policy call lives in `RunLoop` and not in `service.New`: `New` runs
+  honoured. This is why `beginCycle` is first called from `RunLoop` and not from `service.New`: `New` runs
   before `svc.Run` reports the service started, and blocking there is what the SCM start
   timeout counts against. `cmdInstall` also registers the service as **delayed auto-start**
   with `Dnscache` + `LanmanWorkstation` dependencies for the same reason; `Netlogon` is
   deliberately not a dependency, as it is Manual on non-domain machines and would block the
-  service from starting there at all.
+  service from starting there at all. The retry window applies to the **first**
+  lookup only: later cycles get a single attempt, since a machine that has moved
+  must not stall a cycle waiting out a doomed retry, and the cached DC answer is
+  only re-queried when the local addresses change or it is an hour old.
 - **`config.Load` reads the ini file with `IgnoreInlineComment: true`** - without it, ini.v1
   treats a bare `;` anywhere in a value as the start of an inline comment and silently truncates
   the rest of the line, no error. `defaultMappingDCSubnets` now uses `|` between DC entries, but
@@ -97,13 +146,12 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   `DC-RM2:...`, and every site after the first would look "not configured" with nothing in the
   log to explain why - `Load`'s comments live on their own line, never after a value on the same
   line, so this is safe for the whole file, not just this one key.
-- **A dead internal manifest endpoint doesn't fail the cycle** - `source.Resolver`
-  (`internal/source/resolver.go`) takes an optional `Fallback` source, tried once (no retries)
-  after `Primary` exhausts its attempts. `Updater.resolveTarget` wires `externalManifestURL` in
-  as that fallback whenever `primary = internal`: the startup DC/subnet check can be correct
-  while the internal manifest host itself is down, misconfigured, or firewalled. The fallback is
-  used for that fetch only - it is never persisted to `cfg.Primary` or `config.ini`, so the next
-  cycle still tries `internal` first.
+- **A dead site mirror doesn't fail the cycle** - `source.Resolver`
+  (`internal/source/resolver.go`) takes an ordered `Fallbacks` list, each tried once (no
+  retries) after `Primary` exhausts its attempts. `Updater.newResolver` fills it from the
+  site's `backupServer` list: the site match can be correct while that site's mirror is down,
+  misconfigured or firewalled. A fallback is used for that fetch only and never changes the
+  policy, so the next cycle still tries the site's own server first.
 - **No update source reachable at all → toast + event, once per outage** - when `resolveTarget`
   still fails (primary exhausted, fallback also failed or unconfigured), `Cycle`
   (`internal/service/service.go`) logs event 101 (`EventSourcesUnreachable`, every cycle) and

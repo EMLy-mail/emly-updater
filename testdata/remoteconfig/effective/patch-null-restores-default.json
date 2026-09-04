@@ -1,0 +1,52 @@
+{
+  "document": {
+    "schemaVersion": 1,
+    "revision": 1,
+    "generatedAt": "2026-09-01T00:00:00Z",
+    "servers": {
+      "srv-cloud": "https://api.emly.ffois.it"
+    },
+    "defaultServer": "srv-cloud",
+    "updater": {
+      "pollIntervalMinutes": 30
+    },
+    "overrides": [
+      {
+        "id": "reset",
+        "match": {
+          "hostnames": [
+            "rm095"
+          ]
+        },
+        "patch": {
+          "updater": {
+            "pollIntervalMinutes": null
+          },
+          "defaultServer": "srv-cloud"
+        }
+      }
+    ]
+  },
+  "host": {
+    "hwid": "X",
+    "hostname": "RM095",
+    "dc": "",
+    "ips": [],
+    "domain": "",
+    "now": "2026-09-11T09:00:00Z"
+  },
+  "expect": {
+    "applied": [
+      "reset"
+    ],
+    "site": "",
+    "chain": [
+      "srv-cloud"
+    ],
+    "updaterEnabled": true,
+    "pollIntervalMinutes": 15,
+    "channelOverride": "",
+    "loggingLevel": "info",
+    "whitelisted": false
+  }
+}

@@ -91,6 +91,18 @@ type Config struct {
 
 	// [certificate]
 	CertificateEnabled bool
+
+	// [remoteConfig] - the bootstrap for the remote configuration document
+	// (GET /v2/config). Everything operational lives in that document and in
+	// its on-disk cache; these keys only say how to reach it. See
+	// internal/policy and docs/superpowers/specs/2026-09-04-remote-config-design.md.
+	RemoteConfigEnabled bool
+	// RemoteConfigEndpoints are base URLs tried, in order, after the servers
+	// named by the cached policy for this machine.
+	RemoteConfigEndpoints []string
+	// RemoteConfigPath is the route appended to every base URL ("/v2/config").
+	RemoteConfigRoute   string
+	RemoteConfigTimeout time.Duration
 }
 
 // PrimaryManifestURL returns the manifest URL selected by Primary.
@@ -171,6 +183,7 @@ func Load(path string) (*Config, error) {
 	ipcSec := f.Section("ipc")
 	certSec := f.Section("certificate")
 	selfSec := f.Section("selfUpdate")
+	rcSec := f.Section("remoteConfig")
 
 	cfg := &Config{
 		EMLyInstallDir:  upd.Key("emlyInstallDir").MustString(`C:\3gIT\EMLy`),
@@ -199,7 +212,17 @@ func Load(path string) (*Config, error) {
 
 		SelfUpdateEnabled:     selfSec.Key("enabled").MustBool(true),
 		SelfUpdateManifestURL: strings.TrimSpace(selfSec.Key("manifestURL").String()),
+
+		RemoteConfigEnabled:   rcSec.Key("enabled").MustBool(true),
+		RemoteConfigEndpoints: splitEndpoints(rcSec.Key("endpoints").MustString("https://api.emly.ffois.it")),
+		RemoteConfigRoute:     strings.TrimSpace(rcSec.Key("configPath").MustString("/v2/config")),
 	}
+
+	rcTimeout := rcSec.Key("timeoutSeconds").MustInt(10)
+	if rcTimeout < 1 || rcTimeout > 120 {
+		return nil, fmt.Errorf("remoteConfig.timeoutSeconds must be between 1 and 120, got %d", rcTimeout)
+	}
+	cfg.RemoteConfigTimeout = time.Duration(rcTimeout) * time.Second
 
 	retryAttempts := src.Key("dcLookupRetryAttempts").MustInt(6)
 	if retryAttempts < 0 || retryAttempts > 60 {
@@ -263,5 +286,34 @@ func (c *Config) validate() error {
 			return fmt.Errorf("ipc.pipeName must be non-empty and must not contain '\\' or '/', got %q", c.IPCPipeName)
 		}
 	}
+
+	if c.RemoteConfigEnabled {
+		if len(c.RemoteConfigEndpoints) == 0 {
+			return fmt.Errorf("remoteConfig.endpoints must name at least one base URL when remoteConfig.enabled is true")
+		}
+		for _, ep := range c.RemoteConfigEndpoints {
+			u, err := url.Parse(ep)
+			if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("remoteConfig.endpoints: %q is not an absolute http(s) URL", ep)
+			}
+		}
+		if !strings.HasPrefix(c.RemoteConfigRoute, "/") {
+			return fmt.Errorf("remoteConfig.configPath must start with '/', got %q", c.RemoteConfigRoute)
+		}
+	}
 	return nil
+}
+
+// splitEndpoints parses the '|'-separated remoteConfig.endpoints list,
+// trimming whitespace and trailing slashes so a base URL can be joined with
+// the route without producing "//".
+func splitEndpoints(raw string) []string {
+	var out []string
+	for field := range strings.SplitSeq(raw, "|") {
+		field = strings.TrimRight(strings.TrimSpace(field), "/")
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
 }

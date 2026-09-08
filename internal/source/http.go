@@ -22,6 +22,14 @@ type HTTPSource struct {
 	HWID        string // optional; sent as X-EMLy-HWID header when non-empty
 	ADDomain    string // optional; sent as X-EMLy-ADDomain header when non-empty
 	InternalIP  string // optional; sent as X-EMLy-IntIP header when non-empty
+	Serial      string // optional; sent as X-EMLy-Serial header when non-empty
+	Product     string // optional; sent as X-EMLy-Product header when non-empty
+	// LoggedUser is the interactive user on this machine (`DOMAIN\user`),
+	// sent as X-EMLy-LoggedUser when non-empty. Unlike the machine facts
+	// above it is not fixed but a snapshot: the caller re-resolves it every
+	// time it builds a source, so the value is at most one poll cycle old.
+	// Empty means nobody is logged on - a normal state, not a failure.
+	LoggedUser string
 }
 
 // NewHTTPSource builds an HTTPSource with a sensibly timeouted client.
@@ -58,6 +66,15 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 	}
 	if s.InternalIP != "" {
 		req.Header.Set("X-EMLy-IntIP", s.InternalIP)
+	}
+	if s.Serial != "" {
+		req.Header.Set("X-EMLy-Serial", s.Serial)
+	}
+	if s.Product != "" {
+		req.Header.Set("X-EMLy-Product", s.Product)
+	}
+	if s.LoggedUser != "" {
+		req.Header.Set("X-EMLy-LoggedUser", s.LoggedUser)
 	}
 }
 

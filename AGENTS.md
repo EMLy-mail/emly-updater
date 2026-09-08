@@ -37,7 +37,10 @@ internal/
                          validation, JSON Merge Patch overrides evaluated per host, the
                          last-known-good cache, and the atomic Snapshot the service reads.
                          legacy.go derives the default policy from config.ini's [source] keys
-  source/                Source interface + HTTPSource (with User-Agent / X-Api-Key headers) + Resolver (retry/backoff)
+  source/                Source interface + HTTPSource (with User-Agent / X-Api-Key / X-EMLy-* headers) + Resolver (retry/backoff)
+  machineinfo/           The X-EMLy-* identity values: the machine facts collected once at startup
+                         (hostname, HWID, AD domain, internal IP, firmware serial + product number)
+                         and LoggedUser, resolved per request; domaincontroller.go finds the nearest DC
   manifest/              JSON manifest parse/compare (go-version for semver); updater.go is the updater's own release manifest
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes. Prefix keeps
                          EMLy's cache and the updater's own from sweeping each other away
@@ -84,6 +87,20 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   files; that is the only thing keeping the two implementations equal, since
   there is no shared Go module. A rule added on one side without its fixture
   is a rule the other side does not have.
+- **Identity headers: machine facts are collected once, the logged-on user
+  every time** - `internal/machineinfo` supplies the `X-EMLy-*` headers every
+  request carries (`Hostname`, `HWID`, `ADDomain`, `IntIP`, `Serial`,
+  `Product`, `LoggedUser`). `Collect()` runs once in `service.New` because the
+  AD domain and the firmware strings each cost a PowerShell spawn and none of
+  them change while the service runs. `LoggedUser` is the exception and is
+  **not** part of `machineinfo.Info`: it is re-resolved in `newHTTPSource`, so
+  it is at most one poll cycle stale instead of frozen at boot (when nobody is
+  usually logged on yet). It enumerates WTS sessions rather than reusing
+  `notify.ConsoleUserSID`, which only ever names the physical console and so
+  would report the wrong person - or nobody - on a machine being used over
+  RDP. An unset value sends **no header at all**, never an empty one: the API
+  reads a missing header as "unknown" and keeps what it has, while an empty
+  string would erase it.
 - **`config.ini` is never written at runtime** - the source decision lives in
   memory and in the log (event 700), nowhere else. `config.Reset` (on install)
   is the only writer of that file. `config.SetPrimary` is gone: a config file

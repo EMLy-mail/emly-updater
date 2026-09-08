@@ -89,6 +89,7 @@ type Updater struct {
 	// config fetch. In production these are the real ones, set by New.
 	dcFn          dcLookup
 	ipsFn         localIPsLookup
+	loggedUserFn  func() string
 	nowFn         func() time.Time
 	fetchConfigFn func(ctx context.Context, url, etag string) (*source.ConfigResponse, error)
 }
@@ -119,6 +120,7 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		consoleDebug: consoleDebug,
 		dcFn:         machineinfo.NearestDomainController,
 		ipsFn:        machineinfo.LocalIPv4Addresses,
+		loggedUserFn: machineinfo.LoggedUser,
 	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
@@ -292,6 +294,14 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 
 // newHTTPSource builds an HTTPSource for manifestURL with this machine's
 // identity headers attached.
+//
+// Everything but the logged-on user comes from the snapshot New took at
+// service startup - those are machine facts, and collecting them shells out
+// to PowerShell. X-EMLy-LoggedUser is resolved here instead, on every source
+// this builds: who is at the machine changes through the day, and a value
+// frozen at boot would report whoever happened to be logged on when the
+// service started (usually nobody) for the machine's whole uptime. The
+// lookup is a WTS enumeration, so it costs no process spawn.
 func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc := source.NewHTTPSource(manifestURL)
 	httpSrc.UserAgent = u.Cfg.UserAgent
@@ -300,7 +310,19 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc.HWID = u.Machine.HWID
 	httpSrc.ADDomain = u.Machine.ADDomain
 	httpSrc.InternalIP = u.Machine.InternalIP
+	httpSrc.Serial = u.Machine.Serial
+	httpSrc.Product = u.Machine.Product
+	httpSrc.LoggedUser = u.loggedUser()
 	return httpSrc
+}
+
+// loggedUser resolves the interactive user for the X-EMLy-LoggedUser header,
+// through the seam the tests pin.
+func (u *Updater) loggedUser() string {
+	if u.loggedUserFn != nil {
+		return u.loggedUserFn()
+	}
+	return machineinfo.LoggedUser()
 }
 
 // newResolver builds the source resolver for this cycle from the server

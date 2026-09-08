@@ -1,5 +1,7 @@
 // Package machineinfo collects the host-identifying data sent as EMLy
-// request headers (hostname, hardware ID, AD domain, internal IP).
+// request headers: the machine facts gathered once at startup (hostname,
+// hardware ID, AD domain, internal IP, firmware serial and product number)
+// and, separately, the interactive user of the moment (see LoggedUser).
 package machineinfo
 
 import (
@@ -14,15 +16,29 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// Info holds machine identity data: the four values sent as X-EMLy-*
-// request headers, plus OSVersion (added for the IPC SystemInfo payload,
-// not sent as a header).
+// Info holds machine identity data: the values sent as X-EMLy-* request
+// headers, plus OSVersion (added for the IPC SystemInfo payload, not sent as
+// a header).
+//
+// Everything here is a fact about the box that does not change while the
+// service runs, which is why Collect runs once at startup - the AD domain
+// and the firmware strings each cost a PowerShell spawn. The logged-on user
+// is deliberately *not* part of this: it changes through the day and is
+// resolved per request by LoggedUser.
 type Info struct {
 	Hostname   string
 	HWID       string
 	ADDomain   string
 	InternalIP string
 	OSVersion  string
+	// Serial is the chassis serial number from the BIOS, Product the
+	// vendor's product/SKU number (on HP, the "8XXXXXXX#ABZ" that identifies
+	// the exact model configuration). Both are firmware strings: they name
+	// the box for procurement and warranty lookups, which is what makes them
+	// worth reporting alongside the HWID - the HWID identifies the machine
+	// to us, these identify it to the vendor.
+	Serial  string
+	Product string
 }
 
 // Collect gathers machine identity data. Fields that cannot be retrieved are
@@ -49,6 +65,8 @@ func Collect() Info {
 	if v, err := osVersion(); err == nil {
 		info.OSVersion = v
 	}
+
+	info.Serial, info.Product = firmwareIdentifiers()
 
 	return info
 }
@@ -149,6 +167,103 @@ func hiddenCommand(name string, args ...string) *exec.Cmd {
 	cmd := exec.Command(name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000} // CREATE_NO_WINDOW
 	return cmd
+}
+
+// firmwareIdentifiers returns the chassis serial number and the vendor
+// product/SKU number, either of which is "" when the firmware does not
+// report a usable one.
+//
+// Three WMI properties in one PowerShell call, because the interesting one
+// lives in a different place depending on the vendor and the Windows build:
+//
+//   - Win32_BIOS.SerialNumber is the serial proper, and the one value every
+//     vendor fills in.
+//   - Win32_ComputerSystemProduct.SKUNumber is where HP puts the product
+//     number (Win32_BIOS has no such field, and
+//     ComputerSystemProduct.IdentifyingNumber is the *serial* again, not the
+//     SKU - reading it here would silently report the serial twice).
+//   - Win32_ComputerSystem.SystemSKUNumber carries the same SMBIOS field on
+//     machines where the ComputerSystemProduct one comes back empty, so it
+//     is the fallback rather than a separate value.
+//
+// Every line is tagged rather than positional: a $null property interpolates
+// to an empty string, and blank lines are exactly what a naive line-index
+// parse would misread after one of the three comes back unset.
+func firmwareIdentifiers() (serial, product string) {
+	out, err := hiddenCommand(
+		"powershell", "-NoProfile", "-NonInteractive", "-Command",
+		`$b = Get-CimInstance -ClassName Win32_BIOS; `+
+			`$p = Get-CimInstance -ClassName Win32_ComputerSystemProduct; `+
+			`$c = Get-CimInstance -ClassName Win32_ComputerSystem; `+
+			`"SERIAL=$($b.SerialNumber)"; "SKU=$($p.SKUNumber)"; "SYSSKU=$($c.SystemSKUNumber)"`,
+	).Output()
+	if err != nil {
+		return "", ""
+	}
+
+	var sku, sysSKU string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "SERIAL="):
+			serial = normalizeFirmwareValue(strings.TrimPrefix(line, "SERIAL="))
+		case strings.HasPrefix(line, "SKU="):
+			sku = normalizeFirmwareValue(strings.TrimPrefix(line, "SKU="))
+		case strings.HasPrefix(line, "SYSSKU="):
+			sysSKU = normalizeFirmwareValue(strings.TrimPrefix(line, "SYSSKU="))
+		}
+	}
+	if sku != "" {
+		return serial, sku
+	}
+	return serial, sysSKU
+}
+
+// firmwarePlaceholders are the strings OEMs leave in SMBIOS when they never
+// programmed the field. They are not identifiers - every machine off that
+// line reports the same one - so they are dropped, the same reasoning
+// normalizeUUID applies to an all-zero UUID.
+var firmwarePlaceholders = map[string]bool{
+	"":                          true,
+	"0":                         true,
+	"N/A":                       true,
+	"NA":                        true,
+	"NONE":                      true,
+	"NULL":                      true,
+	"INVALID":                   true,
+	"DEFAULT STRING":            true,
+	"NOT SPECIFIED":             true,
+	"NOT APPLICABLE":            true,
+	"NOT AVAILABLE":             true,
+	"UNKNOWN":                   true,
+	"SYSTEM SERIAL NUMBER":      true,
+	"CHASSIS SERIAL NUMBER":     true,
+	"BASE BOARD SERIAL NUMBER":  true,
+	"TO BE FILLED BY O.E.M.":    true,
+	"TO BE FILLED BY O.E.M":     true,
+	"SYSTEM SKU NUMBER":         true,
+	"SKU":                       true,
+	"SKUNUMBER":                 true,
+	"OEM":                       true,
+	"O.E.M.":                    true,
+	"OEM SERIAL NUMBER":         true,
+	"SERIAL NUMBER":             true,
+	"PRODUCT NUMBER":            true,
+	"FILLED BY O.E.M.":          true,
+	"DEFAULT STRING SKU NUMBER": true,
+}
+
+// normalizeFirmwareValue trims a firmware string and rejects the OEM
+// placeholders. Case is preserved - an HP product number's "#ABZ" suffix and
+// a serial's letters are printed on the chassis label the way the firmware
+// reports them, and matching that label by eye is the whole point of
+// carrying these values.
+func normalizeFirmwareValue(s string) string {
+	v := strings.TrimSpace(sanitizeHeaderValue(s))
+	if firmwarePlaceholders[strings.ToUpper(v)] {
+		return ""
+	}
+	return v
 }
 
 // adDomain queries the Active Directory domain via WMI, mirroring the

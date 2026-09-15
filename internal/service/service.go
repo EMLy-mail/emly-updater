@@ -89,7 +89,7 @@ type Updater struct {
 	// config fetch. In production these are the real ones, set by New.
 	dcFn          dcLookup
 	ipsFn         localIPsLookup
-	loggedUserFn  func() string
+	loggedUserFn  func() machineinfo.UserSession
 	nowFn         func() time.Time
 	fetchConfigFn func(ctx context.Context, url, etag string) (*source.ConfigResponse, error)
 }
@@ -312,13 +312,16 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc.InternalIP = u.Machine.InternalIP
 	httpSrc.Serial = u.Machine.Serial
 	httpSrc.Product = u.Machine.Product
-	httpSrc.LoggedUser = u.loggedUser()
+	session := u.loggedUser()
+	httpSrc.LoggedUser = session.User
+	httpSrc.LoggedUserState = string(session.State)
+	httpSrc.LoggedUserDisconnectedAt = session.DisconnectedAt
 	return httpSrc
 }
 
-// loggedUser resolves the interactive user for the X-EMLy-LoggedUser header,
-// through the seam the tests pin.
-func (u *Updater) loggedUser() string {
+// loggedUser resolves the interactive user and their session state for the
+// X-EMLy-LoggedUser* headers, through the seam the tests pin.
+func (u *Updater) loggedUser() machineinfo.UserSession {
 	if u.loggedUserFn != nil {
 		return u.loggedUserFn()
 	}

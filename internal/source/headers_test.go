@@ -14,14 +14,16 @@ import (
 // one of them leaves the API with a partial picture of the machine.
 func TestApplyHeadersCarriesIdentity(t *testing.T) {
 	want := map[string]string{
-		"X-Api-Key":         "key-1",
-		"X-EMLy-Hostname":   "PC-01",
-		"X-EMLy-HWID":       "36CC511A-F0DE-EA11-8106-842AFDCE34D0",
-		"X-EMLy-ADDomain":   "contoso.local",
-		"X-EMLy-IntIP":      "10.0.0.5",
-		"X-EMLy-Serial":     "CND0342SLW",
-		"X-EMLy-Product":    "1F3N0EA#ABZ",
-		"X-EMLy-LoggedUser": `CONTOSO\mario.rossi`,
+		"X-Api-Key":                       "key-1",
+		"X-EMLy-Hostname":                 "PC-01",
+		"X-EMLy-HWID":                     "36CC511A-F0DE-EA11-8106-842AFDCE34D0",
+		"X-EMLy-ADDomain":                 "contoso.local",
+		"X-EMLy-IntIP":                    "10.0.0.5",
+		"X-EMLy-Serial":                   "CND0342SLW",
+		"X-EMLy-Product":                  "1F3N0EA#ABZ",
+		"X-EMLy-LoggedUser":               `CONTOSO\mario.rossi`,
+		"X-EMLy-LoggedUserState":          "disconnected",
+		"X-EMLy-LoggedUserDisconnectedAt": "2026-09-12T18:04:31Z",
 	}
 
 	var got http.Header
@@ -41,6 +43,10 @@ func TestApplyHeadersCarriesIdentity(t *testing.T) {
 	s.Serial = want["X-EMLy-Serial"]
 	s.Product = want["X-EMLy-Product"]
 	s.LoggedUser = want["X-EMLy-LoggedUser"]
+	s.LoggedUserState = want["X-EMLy-LoggedUserState"]
+	// A non-UTC time still goes out as UTC: the API compares it against its
+	// own clock and must not have to guess the machine's zone.
+	s.LoggedUserDisconnectedAt = time.Date(2026, 9, 12, 20, 4, 31, 0, time.FixedZone("CEST", 2*3600))
 
 	if _, err := s.FetchConfig(context.Background(), srv.URL, "", 5*time.Second, 1<<20); err != nil {
 		t.Fatalf("fetch: %v", err)
@@ -72,7 +78,8 @@ func TestApplyHeadersOmitsEmpty(t *testing.T) {
 	if _, err := s.FetchConfig(context.Background(), srv.URL, "", 5*time.Second, 1<<20); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	for _, h := range []string{"X-EMLy-LoggedUser", "X-EMLy-Serial", "X-EMLy-Product", "X-EMLy-Hostname"} {
+	for _, h := range []string{"X-EMLy-LoggedUser", "X-EMLy-LoggedUserState", "X-EMLy-LoggedUserDisconnectedAt",
+		"X-EMLy-Serial", "X-EMLy-Product", "X-EMLy-Hostname"} {
 		if _, present := got[http.CanonicalHeaderKey(h)]; present {
 			t.Errorf("%s was sent despite being unset", h)
 		}

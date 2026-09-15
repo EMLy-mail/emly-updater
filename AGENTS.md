@@ -90,7 +90,7 @@ See [README.md](README.md) for the full update-state-machine table and update-so
 - **Identity headers: machine facts are collected once, the logged-on user
   every time** - `internal/machineinfo` supplies the `X-EMLy-*` headers every
   request carries (`Hostname`, `HWID`, `ADDomain`, `IntIP`, `Serial`,
-  `Product`, `LoggedUser`). `Collect()` runs once in `service.New` because the
+  `Product`, `LoggedUser`, `LoggedUserState`, `LoggedUserDisconnectedAt`). `Collect()` runs once in `service.New` because the
   AD domain and the firmware strings each cost a PowerShell spawn and none of
   them change while the service runs. `LoggedUser` is the exception and is
   **not** part of `machineinfo.Info`: it is re-resolved in `newHTTPSource`, so
@@ -98,7 +98,13 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   usually logged on yet). It enumerates WTS sessions rather than reusing
   `notify.ConsoleUserSID`, which only ever names the physical console and so
   would report the wrong person - or nobody - on a machine being used over
-  RDP. An unset value sends **no header at all**, never an empty one: the API
+  RDP. The same lookup also sends `LoggedUserState` (`active-console`,
+  `active-rdp`, `disconnected`) and, for a disconnected session only,
+  `LoggedUserDisconnectedAt` (RFC 3339 UTC, from `WTSSessionInfoEx`): a
+  disconnected session is still reported as the logged user, because for
+  inventory it answers "whose machine is this", and the state is what keeps
+  the server from reading it as a live presence. The state values are a wire
+  contract with the API. An unset value sends **no header at all**, never an empty one: the API
   reads a missing header as "unknown" and keeps what it has, while an empty
   string would erase it.
 - **`config.ini` is never written at runtime** - the source decision lives in

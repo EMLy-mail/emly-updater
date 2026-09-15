@@ -30,6 +30,14 @@ type HTTPSource struct {
 	// time it builds a source, so the value is at most one poll cycle old.
 	// Empty means nobody is logged on - a normal state, not a failure.
 	LoggedUser string
+	// LoggedUserState says how LoggedUser is attached to the machine
+	// (`active-console`, `active-rdp`, `disconnected`), sent as
+	// X-EMLy-LoggedUserState when non-empty. Same snapshot as LoggedUser.
+	LoggedUserState string
+	// LoggedUserDisconnectedAt is when a disconnected session lost its
+	// client, sent as X-EMLy-LoggedUserDisconnectedAt (RFC 3339, UTC) when
+	// non-zero. Zero for any session that is not disconnected.
+	LoggedUserDisconnectedAt time.Time
 }
 
 // NewHTTPSource builds an HTTPSource with a sensibly timeouted client.
@@ -75,6 +83,12 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 	}
 	if s.LoggedUser != "" {
 		req.Header.Set("X-EMLy-LoggedUser", s.LoggedUser)
+	}
+	if s.LoggedUserState != "" {
+		req.Header.Set("X-EMLy-LoggedUserState", s.LoggedUserState)
+	}
+	if !s.LoggedUserDisconnectedAt.IsZero() {
+		req.Header.Set("X-EMLy-LoggedUserDisconnectedAt", s.LoggedUserDisconnectedAt.UTC().Format(time.RFC3339))
 	}
 }
 

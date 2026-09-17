@@ -1,6 +1,7 @@
 // Package machineinfo collects the host-identifying data sent as EMLy
 // request headers: the machine facts gathered once at startup (hostname,
-// hardware ID, AD domain, internal IP, firmware serial and product number)
+// hardware ID, AD domain, internal IP, Windows version, firmware serial and
+// product number)
 // and, separately, the interactive user of the moment (see LoggedUser).
 package machineinfo
 
@@ -17,8 +18,7 @@ import (
 )
 
 // Info holds machine identity data: the values sent as X-EMLy-* request
-// headers, plus OSVersion (added for the IPC SystemInfo payload, not sent as
-// a header).
+// headers (OSVersion also feeds the IPC SystemInfo payload).
 //
 // Everything here is a fact about the box that does not change while the
 // service runs, which is why Collect runs once at startup - the AD domain
@@ -62,8 +62,8 @@ func Collect() Info {
 		info.InternalIP = ip
 	}
 
-	if v, err := osVersion(); err == nil {
-		info.OSVersion = v
+	if v, err := getWindowsVersionInfo(); err == nil {
+		info.OSVersion = sanitizeHeaderValue(v)
 	}
 
 	info.Serial, info.Product = firmwareIdentifiers()
@@ -279,29 +279,39 @@ func adDomain() (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// osVersion reads a human-readable OS version string from the registry,
-// e.g. "Windows 11 Pro 23H2 (Build 22631.3007)".
-func osVersion() (string, error) {
-	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
-		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
-	if err != nil {
-		return "", err
-	}
+// getWindowsVersionInfo reads a human-readable Windows version string from
+// the registry, e.g. "Windows 11 24H2 Professional (Build 26100.4652)".
+func getWindowsVersionInfo() (string, error) {
+	k, _ := registry.OpenKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion`,
+		registry.QUERY_VALUE,
+	)
 	defer k.Close()
 
 	product, _, _ := k.GetStringValue("ProductName")
-	display, _, _ := k.GetStringValue("DisplayVersion")
 	build, _, _ := k.GetStringValue("CurrentBuild")
 	ubr, _, _ := k.GetIntegerValue("UBR")
+	display, _, _ := k.GetStringValue("DisplayVersion")
+	edition, _, _ := k.GetStringValue("EditionID")
 
-	v := strings.TrimSpace(product)
-	if display != "" {
-		v += " " + display
+	// Append edition if available
+	if edition != "" {
+		product = fmt.Sprintf("%s %s", product, edition)
 	}
-	if build != "" {
-		v += fmt.Sprintf(" (Build %s.%d)", build, ubr)
+
+	// Split display versione via H (like 23H2, 24H2, 25H2), if its => 23, then its Windows 11, not 10
+	if strings.HasPrefix(display, "2") {
+		parts := strings.SplitN(display, "H", 2)
+		if len(parts) > 0 {
+			yearPart := parts[0]
+			if yearPartInt := strings.TrimSpace(yearPart); yearPartInt >= "23" {
+				product = "Windows 11"
+			}
+		}
 	}
-	return strings.TrimSpace(v), nil
+
+	return fmt.Sprintf("%s %s %s (Build %s.%d)", product, display, edition, build, ubr), nil
 }
 
 // internalIP returns the first non-loopback IPv4 address found on an up

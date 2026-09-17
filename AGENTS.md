@@ -104,7 +104,12 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   disconnected session is still reported as the logged user, because for
   inventory it answers "whose machine is this", and the state is what keeps
   the server from reading it as a live presence. The state values are a wire
-  contract with the API. An unset value sends **no header at all**, never an empty one: the API
+  contract with the API. `X-EMLy-Version` is the other per-request header and
+  comes from EMLy's own `config.ini` (`GUI_SEMVER`) through
+  `Cfg.ResolveEMLy`, re-read on every source because a setup this updater
+  runs changes it; a machine with no EMLy installed sends nothing rather than
+  the `0.0.0` fresh-install sentinel, which is an internal comparison value
+  and not a release. An unset value sends **no header at all**, never an empty one: the API
   reads a missing header as "unknown" and keeps what it has, while an empty
   string would erase it.
 - **`config.ini` is never written at runtime** - the source decision lives in

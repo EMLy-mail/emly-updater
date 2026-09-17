@@ -22,8 +22,17 @@ type HTTPSource struct {
 	HWID        string // optional; sent as X-EMLy-HWID header when non-empty
 	ADDomain    string // optional; sent as X-EMLy-ADDomain header when non-empty
 	InternalIP  string // optional; sent as X-EMLy-IntIP header when non-empty
+	OSVersion   string // optional; sent as X-EMLy-OSVersion header when non-empty
 	Serial      string // optional; sent as X-EMLy-Serial header when non-empty
 	Product     string // optional; sent as X-EMLy-Product header when non-empty
+	// EMLyVersion is the EMLy release installed on this machine, read from
+	// EMLy's own config.ini (`[EMLy] GUI_SEMVER`), sent as X-EMLy-Version
+	// when non-empty. Like LoggedUser it is a snapshot the caller re-reads
+	// every time it builds a source, because a setup this updater runs
+	// changes it mid-uptime. Empty means EMLy is not installed (or its
+	// config is unreadable), which stays unreported rather than being sent
+	// as the 0.0.0 fresh-install sentinel.
+	EMLyVersion string
 	// LoggedUser is the interactive user on this machine (`DOMAIN\user`),
 	// sent as X-EMLy-LoggedUser when non-empty. Unlike the machine facts
 	// above it is not fixed but a snapshot: the caller re-resolves it every
@@ -75,11 +84,17 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 	if s.InternalIP != "" {
 		req.Header.Set("X-EMLy-IntIP", s.InternalIP)
 	}
+	if s.OSVersion != "" {
+		req.Header.Set("X-EMLy-OSVersion", s.OSVersion)
+	}
 	if s.Serial != "" {
 		req.Header.Set("X-EMLy-Serial", s.Serial)
 	}
 	if s.Product != "" {
 		req.Header.Set("X-EMLy-Product", s.Product)
+	}
+	if s.EMLyVersion != "" {
+		req.Header.Set("X-EMLy-Version", s.EMLyVersion)
 	}
 	if s.LoggedUser != "" {
 		req.Header.Set("X-EMLy-LoggedUser", s.LoggedUser)

@@ -301,7 +301,9 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 // this builds: who is at the machine changes through the day, and a value
 // frozen at boot would report whoever happened to be logged on when the
 // service started (usually nobody) for the machine's whole uptime. The
-// lookup is a WTS enumeration, so it costs no process spawn.
+// lookup is a WTS enumeration, so it costs no process spawn. X-EMLy-Version
+// is re-read here for the same reason: a setup this updater just ran changes
+// the installed release, and the header has to report what is on disk now.
 func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc := source.NewHTTPSource(manifestURL)
 	httpSrc.UserAgent = u.Cfg.UserAgent
@@ -310,13 +312,28 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc.HWID = u.Machine.HWID
 	httpSrc.ADDomain = u.Machine.ADDomain
 	httpSrc.InternalIP = u.Machine.InternalIP
+	httpSrc.OSVersion = u.Machine.OSVersion
 	httpSrc.Serial = u.Machine.Serial
 	httpSrc.Product = u.Machine.Product
+	httpSrc.EMLyVersion = u.emlyVersion()
 	session := u.loggedUser()
 	httpSrc.LoggedUser = session.User
 	httpSrc.LoggedUserState = string(session.State)
 	httpSrc.LoggedUserDisconnectedAt = session.DisconnectedAt
 	return httpSrc
+}
+
+// emlyVersion reads the installed EMLy release from EMLy's config.ini for the
+// X-EMLy-Version header, and returns "" when EMLy is not installed: the
+// 0.0.0 fresh-install sentinel is the updater's own convention for comparing
+// versions, not a release the API should record as installed. A missing
+// header leaves the inventory's stored value untouched.
+func (u *Updater) emlyVersion() string {
+	info := u.Cfg.ResolveEMLy()
+	if info.FreshInstall {
+		return ""
+	}
+	return info.InstalledVersion
 }
 
 // loggedUser resolves the interactive user and their session state for the

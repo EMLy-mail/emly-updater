@@ -26,8 +26,10 @@ type HTTPSource struct {
 	Serial      string // optional; sent as X-EMLy-Serial header when non-empty
 	Product     string // optional; sent as X-EMLy-Product header when non-empty
 	// EMLyVersion is the EMLy release installed on this machine, read from
-	// EMLy's own config.ini (`[EMLy] GUI_SEMVER`), sent as X-EMLy-Version
-	// when non-empty. Like LoggedUser it is a snapshot the caller re-reads
+	// EMLy's own config.ini (`[EMLy] GUI_SEMVER`), sent as X-EMLy-AppVersion
+	// when non-empty. The header name is a wire contract with the API, which
+	// stores it in updater_clients.emly_version; "App" tells it apart from
+	// this updater's own version, which travels in the User-Agent. Like LoggedUser it is a snapshot the caller re-reads
 	// every time it builds a source, because a setup this updater runs
 	// changes it mid-uptime. Empty means EMLy is not installed (or its
 	// config is unreadable), which stays unreported rather than being sent
@@ -94,7 +96,7 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 		req.Header.Set("X-EMLy-Product", s.Product)
 	}
 	if s.EMLyVersion != "" {
-		req.Header.Set("X-EMLy-Version", s.EMLyVersion)
+		req.Header.Set("X-EMLy-AppVersion", s.EMLyVersion)
 	}
 	if s.LoggedUser != "" {
 		req.Header.Set("X-EMLy-LoggedUser", s.LoggedUser)

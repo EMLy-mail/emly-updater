@@ -22,7 +22,7 @@ func TestApplyHeadersCarriesIdentity(t *testing.T) {
 		"X-EMLy-OSVersion":                "Windows 11 24H2 Professional (Build 26100.4652)",
 		"X-EMLy-Serial":                   "CND0342SLW",
 		"X-EMLy-Product":                  "1F3N0EA#ABZ",
-		"X-EMLy-Version":                  "3.4.1",
+		"X-EMLy-AppVersion":               "3.4.1",
 		"X-EMLy-LoggedUser":               `CONTOSO\mario.rossi`,
 		"X-EMLy-LoggedUserState":          "disconnected",
 		"X-EMLy-LoggedUserDisconnectedAt": "2026-09-12T18:04:31Z",
@@ -45,7 +45,7 @@ func TestApplyHeadersCarriesIdentity(t *testing.T) {
 	s.OSVersion = want["X-EMLy-OSVersion"]
 	s.Serial = want["X-EMLy-Serial"]
 	s.Product = want["X-EMLy-Product"]
-	s.EMLyVersion = want["X-EMLy-Version"]
+	s.EMLyVersion = want["X-EMLy-AppVersion"]
 	s.LoggedUser = want["X-EMLy-LoggedUser"]
 	s.LoggedUserState = want["X-EMLy-LoggedUserState"]
 	// A non-UTC time still goes out as UTC: the API compares it against its
@@ -83,7 +83,7 @@ func TestApplyHeadersOmitsEmpty(t *testing.T) {
 		t.Fatalf("fetch: %v", err)
 	}
 	for _, h := range []string{"X-EMLy-LoggedUser", "X-EMLy-LoggedUserState", "X-EMLy-LoggedUserDisconnectedAt",
-		"X-EMLy-Serial", "X-EMLy-Product", "X-EMLy-Hostname", "X-EMLy-OSVersion", "X-EMLy-Version"} {
+		"X-EMLy-Serial", "X-EMLy-Product", "X-EMLy-Hostname", "X-EMLy-OSVersion", "X-EMLy-AppVersion"} {
 		if _, present := got[http.CanonicalHeaderKey(h)]; present {
 			t.Errorf("%s was sent despite being unset", h)
 		}

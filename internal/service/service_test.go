@@ -33,7 +33,7 @@ func TestNotifySourcesUnreachableDoesNotPanicWithoutAConsoleSession(t *testing.T
 	}
 }
 
-// The X-EMLy-Version header reports what EMLy's own config.ini says is
+// The X-EMLy-AppVersion header reports what EMLy's own config.ini says is
 // installed, and reports nothing at all when EMLy is not installed: the
 // 0.0.0 the resolver substitutes there is a comparison sentinel, and an API
 // that stored it would show the fleet a release that does not exist.

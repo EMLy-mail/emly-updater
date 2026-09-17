@@ -301,7 +301,7 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 // this builds: who is at the machine changes through the day, and a value
 // frozen at boot would report whoever happened to be logged on when the
 // service started (usually nobody) for the machine's whole uptime. The
-// lookup is a WTS enumeration, so it costs no process spawn. X-EMLy-Version
+// lookup is a WTS enumeration, so it costs no process spawn. X-EMLy-AppVersion
 // is re-read here for the same reason: a setup this updater just ran changes
 // the installed release, and the header has to report what is on disk now.
 func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
@@ -324,7 +324,7 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 }
 
 // emlyVersion reads the installed EMLy release from EMLy's config.ini for the
-// X-EMLy-Version header, and returns "" when EMLy is not installed: the
+// X-EMLy-AppVersion header, and returns "" when EMLy is not installed: the
 // 0.0.0 fresh-install sentinel is the updater's own convention for comparing
 // versions, not a release the API should record as installed. A missing
 // header leaves the inventory's stored value untouched.

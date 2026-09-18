@@ -231,6 +231,17 @@ const (
 	EventRemoteConfigRejected    = 902 // the document failed validation, cache kept
 	EventRemoteConfigStale       = 903 // the cache is older than refresh.staleAfterDays; once per day
 	EventControlGate             = 904 // control.updater.enabled flipped
+
+	// The presence channel (GET /v2/client/ws), see
+	// docs/superpowers/specs/2026-09-17-client-presence-ws-design.md §7.
+	// Block 91x is reserved for the VNC relay. One event per state change,
+	// never one per backoff attempt: 921 fires when a connection that was
+	// actually up goes down, not on every failed retry inside the same
+	// outage, or a machine off the network would fill the Event Log.
+	EventClientWSConnected   = 920 // identity accepted, the machine now reads as online
+	EventClientWSLost        = 921 // an established connection went down
+	EventClientWSUnsupported = 922 // this server answered 404 on the upgrade; once per server
+	EventClientWSDisabled    = 923 // the remote document turned the channel off
 )
 
 // alwaysMirrored reports whether an event id bypasses SetEventLog(false).

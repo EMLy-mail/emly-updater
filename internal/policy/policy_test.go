@@ -444,3 +444,86 @@ func TestSnapshotStale(t *testing.T) {
 		t.Error("the default policy is never stale")
 	}
 }
+
+// The presence channel's kill switch is off unless a document turns it on:
+// upgrading the updater must never, by itself, open ~400 permanent
+// connections to the API. A document that omits the section, and the legacy
+// policy a machine runs before it has ever seen a document, both read false.
+func TestClientWSDefaultsOff(t *testing.T) {
+	defaults := fixtureDefaults(t)
+
+	doc := []byte(`{
+		"schemaVersion": 1,
+		"revision": 7,
+		"generatedAt": "2026-09-18T10:00:00Z",
+		"servers": {"cloud": "https://api.example.test"},
+		"defaultServer": "cloud"
+	}`)
+	p, probs := Parse(doc, defaults)
+	if probs != nil {
+		t.Fatalf("expected a valid document, got: %v", probs)
+	}
+	if p.Global.ClientWS.Enabled {
+		t.Error("clientWs.enabled = true for a document that never mentions it, want false")
+	}
+
+	legacy := FromLegacy(&config.Config{
+		ExternalManifestURL: "https://api.example.test/v2/updates/manifest",
+		PollInterval:        15 * time.Minute,
+	}, defaults)
+	if legacy.Global.ClientWS.Enabled {
+		t.Error("clientWs.enabled = true in the legacy-derived policy, want false")
+	}
+}
+
+// A document that sets the switch is honoured, and the section survives the
+// defaults merge that fills in everything it left out.
+func TestClientWSEnabledByDocument(t *testing.T) {
+	defaults := fixtureDefaults(t)
+
+	doc := []byte(`{
+		"schemaVersion": 1,
+		"revision": 8,
+		"generatedAt": "2026-09-18T10:00:00Z",
+		"servers": {"cloud": "https://api.example.test"},
+		"defaultServer": "cloud",
+		"clientWs": {"enabled": true}
+	}`)
+	p, probs := Parse(doc, defaults)
+	if probs != nil {
+		t.Fatalf("expected a valid document, got: %v", probs)
+	}
+	if !p.Global.ClientWS.Enabled {
+		t.Error("clientWs.enabled = false, want true")
+	}
+	if p.Global.Logging.Level == "" {
+		t.Error("the defaults merge did not fill in the logging section")
+	}
+}
+
+// clientWs is deliberately not patchable: the API's twin validator does not
+// list it in AllowedPatchKeys either, and a rule only one side enforces is a
+// document one side accepts and the other rejects.
+func TestClientWSIsNotPatchable(t *testing.T) {
+	defaults := fixtureDefaults(t)
+
+	doc := []byte(`{
+		"schemaVersion": 1,
+		"revision": 9,
+		"generatedAt": "2026-09-18T10:00:00Z",
+		"servers": {"cloud": "https://api.example.test"},
+		"defaultServer": "cloud",
+		"overrides": [{
+			"id": "ws-pilot",
+			"match": {"dcs": ["DC-RM2"]},
+			"patch": {"clientWs": {"enabled": true}}
+		}]
+	}`)
+	_, probs := Parse(doc, defaults)
+	if probs == nil {
+		t.Fatal("expected the document to be rejected, it was accepted")
+	}
+	if !strings.Contains(probs.Error(), "/overrides/0/patch/clientWs") {
+		t.Errorf("problems did not point at the offending patch key: %v", probs)
+	}
+}

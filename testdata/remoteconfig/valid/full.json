@@ -105,6 +105,9 @@
     "compress": true,
     "eventLog": true
   },
+  "clientWs": {
+    "enabled": true
+  },
   "overrides": [
     {
       "id": "pilot-beta",

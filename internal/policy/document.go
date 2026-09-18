@@ -43,7 +43,14 @@ type Document struct {
 	Control       Control           `json:"control"`
 	Updater       UpdaterSettings   `json:"updater"`
 	Logging       LoggingSettings   `json:"logging"`
-	Overrides     []Override        `json:"overrides"`
+	// ClientWS is the kill switch for the presence channel
+	// (docs/superpowers/specs/2026-09-17-client-presence-ws-design.md §5):
+	// the permanent WebSocket the service holds open to GET /v2/client/ws.
+	// Off unless a document turns it on, so upgrading the updater alone
+	// never opens a connection. Deliberately not in PatchableSections - the
+	// API's twin validator does not accept it in an override either.
+	ClientWS  Toggle     `json:"clientWs"`
+	Overrides []Override `json:"overrides"`
 }
 
 // Refresh governs how often the document itself is re-fetched and when a
@@ -223,8 +230,8 @@ var PatchableSections = []string{"control", "updater", "logging", "defaultServer
 
 // Duration helpers, so callers do not re-derive units from field names.
 
-func (r Refresh) Interval() time.Duration     { return time.Duration(r.IntervalMinutes) * time.Minute }
-func (r Refresh) StaleAfter() time.Duration   { return time.Duration(r.StaleAfterDays) * 24 * time.Hour }
+func (r Refresh) Interval() time.Duration   { return time.Duration(r.IntervalMinutes) * time.Minute }
+func (r Refresh) StaleAfter() time.Duration { return time.Duration(r.StaleAfterDays) * 24 * time.Hour }
 func (u UpdaterSettings) PollInterval() time.Duration {
 	return time.Duration(u.PollIntervalMinutes) * time.Minute
 }

@@ -47,6 +47,7 @@ type Defaults struct {
 	Control     Control         `json:"control"`
 	Updater     UpdaterSettings `json:"updater"`
 	Logging     LoggingSettings `json:"logging"`
+	ClientWS    Toggle          `json:"clientWs"`
 	IPCProtocol IPCProtocol     `json:"ipcProtocol"`
 }
 
@@ -68,7 +69,7 @@ type Parsed struct {
 
 // mergedSections are filled field by field from the defaults; a document
 // that names only some of their keys keeps the default for the others.
-var mergedSections = []string{"refresh", "control", "updater", "logging"}
+var mergedSections = []string{"refresh", "control", "updater", "logging", "clientWs"}
 
 // Parse validates data against this build's schema and fills the omitted
 // sections from defaults. The document is accepted whole or rejected whole:

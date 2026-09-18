@@ -47,6 +47,12 @@ func DefaultsFromConfig(cfg *config.Config, ipc IPCProtocol, consoleDebug bool) 
 			InstallCertificate:  Toggle{Enabled: cfg.CertificateEnabled},
 		},
 		Logging: LoggingSettings{Level: level, MaxSizeMB: 2, Backups: 5, Compress: true, EventLog: true},
+		// Off: a machine that has never received a document opens no
+		// presence connection. Unlike selfUpdate and installCertificate
+		// there is deliberately no config.ini key to turn it on locally -
+		// the whole point of the switch is that a site controls the
+		// rollout centrally, from a published revision.
+		ClientWS:    Toggle{Enabled: false},
 		IPCProtocol: ipc,
 	}
 }
@@ -123,6 +129,7 @@ func FromLegacy(cfg *config.Config, d Defaults) *Parsed {
 		Control:       d.Control,
 		Updater:       d.Updater,
 		Logging:       d.Logging,
+		ClientWS:      d.ClientWS,
 	}
 
 	defMap, _ := toMap(d)

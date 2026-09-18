@@ -38,6 +38,10 @@ internal/
                          last-known-good cache, and the atomic Snapshot the service reads.
                          legacy.go derives the default policy from config.ini's [source] keys
   source/                Source interface + HTTPSource (with User-Agent / X-Api-Key / X-EMLy-* headers) + Resolver (retry/backoff)
+  wsclient/              The presence channel's client half: one WebSocket to the API's
+                         GET /v2/client/ws, held open for the life of the service, so the
+                         API knows this machine is online without guessing from the last poll.
+                         Pure Go (no Windows API), so the handshake and heartbeat are testable
   machineinfo/           The X-EMLy-* identity values: the machine facts collected once at startup
                          (hostname, HWID, AD domain, internal IP, firmware serial + product number)
                          and LoggedUser, resolved per request; domaincontroller.go finds the nearest DC
@@ -50,7 +54,8 @@ internal/
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
                          remoteconfig.go fetches/validates/caches the policy document and builds the
                          IPC view; sourcepolicy.go matches the machine to a site every cycle and
-                         builds its server chain; selfupdate.go orchestrates the updater updating itself
+                         builds its server chain; selfupdate.go orchestrates the updater updating itself;
+                         clientws.go supervises the presence channel (internal/wsclient)
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
@@ -79,6 +84,10 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   document touches `internal/policy/document.go`, its validation in
   `parse.go`, the defaults in `legacy.go`, **and** the shared fixtures under
   `testdata/remoteconfig/` (see below).
+  The `clientWs` section added for the presence channel is the worked example:
+  `document.go` (the field), `parse.go` (the default and `mergedSections`),
+  `legacy.go` (off for a machine with no document) and
+  `testdata/remoteconfig/valid/full.json` in **both** repos.
 - **The validation fixtures are shared with the API repo** -
   `testdata/remoteconfig/` (`valid/`, `invalid/` with the expected problem
   paths, `effective/` with document + host + expected result) is copied
@@ -112,6 +121,58 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   and not a release. An unset value sends **no header at all**, never an empty one: the API
   reads a missing header as "unknown" and keeps what it has, while an empty
   string would erase it.
+- **The presence channel is off until a document turns it on, and follows the
+  same server the poll does** — `internal/wsclient` holds one WebSocket open
+  to `GET /v2/client/ws` on `cyc.chain[0]`, the very server `beginCycle`
+  picked for this cycle, so a machine that changes site moves its presence
+  connection with it and there is no second address to configure anywhere.
+  The kill switch is the document's `clientWs.enabled`, **false by default**
+  in `policy.Defaults` and in the legacy-derived policy: upgrading the
+  updater must never, by itself, open ~400 permanent connections to the API.
+  It is deliberately **not** in `PatchableSections` — the API's twin
+  validator does not accept it in an override either, and a rule only one
+  side enforces is a document one side accepts and the other rejects. The
+  switch is honoured hot: `clientws.go` re-reads the current cycle every 15s
+  while a connection is up, so a published revision closes the channel
+  without waiting for the connection to drop on its own (event 923).
+- **A 404 on the WebSocket upgrade disables that server for an hour, not the
+  feature, and not permanently** — this is its own convention, not the one
+  `internal/source` defines: `internal/source` falls through to the chain's
+  backups on a 404, and re-evaluates from scratch on the next poll; the
+  presence supervisor does neither. It stays pinned to `chain[0]` (see
+  `clientWSTarget`'s doc comment for why - a machine's telemetry has to live
+  on the same instance that serves it) and remembers the 404 in `unsupported`
+  (`internal/service/clientws.go`) for `clientWSUnsupportedRetryAfter` (1h),
+  logging event 922 only the first time a server is marked, not on every
+  re-mark - a mirror lagging for days must not refill the Event Log every
+  hour. The mark expiring is what keeps a transient 404 (an ingress or load
+  balancer mid-deploy) from blinding a machine until its service restarts;
+  `beginCycle` picking a different server still clears it sooner, same as
+  before. A `401` or `403` is the opposite case — a real misconfiguration, or
+  the API's rate limiter answering a ban (see `wsclient.Backoff`'s doc
+  comment) — and keeps retrying, loudly, without a memo.
+- **The identity payload is the second place the machine's facts are
+  assembled** — `clientWSIdentity`/`identityFromSource`
+  (`internal/service/clientws.go`) build the `identity` message's JSON from
+  the same `HTTPSource` `newHTTPSource` populates, so the two paths cannot
+  disagree about how the logged-on user or EMLy's version is resolved. They
+  are still two lists: **a field added to the `X-EMLy-*` headers has to be
+  added to `identityFromSource` too**, or it reaches the API on the manifest
+  path and stays NULL on this one. `X-EMLy-IntIP` is the one deliberate
+  omission — it is specific to manifest/download, and the API reads this
+  connection's address off the connection itself. `updater_version` and
+  `contact` are not in the payload either: they travel in the `User-Agent` of
+  the upgrade request, exactly as on every other call. **HWID and hostname
+  are the one deliberate exception that duplicates *into* headers instead** —
+  `wsclient.Client.dial` also sends `X-EMLy-HWID`/`X-EMLy-Hostname` (from the
+  same `Identity`), even though the rest of it only travels in the
+  post-handshake payload. That is not a violation of "identity travels in
+  the payload, not headers" to clean up: the API's ban list can only enforce
+  a ban by HWID or hostname on a route it has not upgraded yet, since the
+  identity payload does not exist before the handshake completes, and these
+  two headers are what let such a ban reach this connection at all. It is
+  duplication for enforcement, the same reason `updater_version` already
+  travels in the User-Agent rather than only the payload.
 - **`config.ini` is never written at runtime** - the source decision lives in
   memory and in the log (event 700), nowhere else. `config.Reset` (on install)
   is the only writer of that file. `config.SetPrimary` is gone: a config file
@@ -414,7 +475,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `%ProgramData%\EMLyUpdater\logs\updater-selfinstall-<ver>.log` | InnoSetup log of the updater installing itself |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
 | `%ProgramData%\EMLyUpdater\config.prev.ini` | The config as it was before the last reset |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703), self-update started (800)/completed (801)/refused or abandoned (802) |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703), self-update started (800)/completed (801)/refused or abandoned (802), presence channel connected (920)/lost (921)/endpoint not implemented (922)/switched off by the document (923) |
 
 Event 801 is written by the build that came up *after* the restart, so a self-update reads
 `800` → (service stops and restarts) → `801`. An `800` with no `801` after it is one that did not

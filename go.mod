@@ -12,3 +12,5 @@ require (
 )
 
 require github.com/denisbrodbeck/machineid v1.0.1
+
+require github.com/coder/websocket v1.8.15

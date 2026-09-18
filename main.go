@@ -86,7 +86,10 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run\n", os.Args[0])
+	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run\n", os.Args[0])
+	if err != nil {
+		return
+	}
 }
 
 // cmdShowToast displays the update-complete notification in the caller's

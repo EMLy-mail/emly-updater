@@ -279,13 +279,28 @@ func validateSelector(s Selector, raw any, path string, allowAll bool) Problems 
 	if !ok {
 		return Problems{{path, "must be an object"}}
 	}
+	// A key set to explicit JSON null means the same thing as the key being
+	// absent everywhere else in this schema (see document.go's top comment:
+	// optional fields marshal as null when unset, that IS the canonical
+	// "not set"), and a generator that always emits every Selector field -
+	// null for the ones it isn't using - is a normal, reasonable shape to
+	// receive. Strip nulls before any presence check below, so `"all":
+	// null` behaves exactly like no `all` key at all, not like `"all":
+	// false` - and so a null-valued sibling key (`"hwids": null` alongside
+	// `"all": true`) doesn't trip the "must be the only key" rule either.
+	present := make(map[string]any, len(m))
+	for k, v := range m {
+		if v != nil {
+			present[k] = v
+		}
+	}
 	var problems Problems
-	if allRaw, present := m["all"]; present {
+	if allRaw, ok := present["all"]; ok {
 		if !allowAll {
 			problems = append(problems, Problem{path + "/all", "not allowed here"})
 		} else if allRaw != true {
 			problems = append(problems, Problem{path + "/all", "must be true when present"})
-		} else if len(m) > 1 {
+		} else if len(present) > 1 {
 			problems = append(problems, Problem{path + "/all", "must be the only key in the selector"})
 		}
 		if len(problems) > 0 {

@@ -545,3 +545,87 @@ func TestClientWSIsPatchable(t *testing.T) {
 		t.Error("clientWs.enabled = true for a host the override does not match, want false")
 	}
 }
+
+// A generator that always emits every Selector field - null for the ones it
+// isn't using - is a normal shape, and every other field in this schema
+// already treats an explicit JSON null the same as absent (document.go's
+// top comment). `all` used to be the one exception: it is checked by raw
+// map presence rather than the decoded struct field (to tell "false" apart
+// from "absent"), and a present-but-null key still counted as present,
+// rejecting a document a hand-built one with the key simply omitted would
+// have accepted. This is the exact document a real publish attempt produced
+// - see the fix commit.
+func TestSelectorAllNullIsSameAsAbsent(t *testing.T) {
+	defaults := fixtureDefaults(t)
+
+	doc := []byte(`{
+		"schemaVersion": 1,
+		"revision": 10,
+		"generatedAt": "2026-09-18T10:00:00Z",
+		"servers": {"cloud": "https://api.example.test"},
+		"defaultServer": "cloud",
+		"overrides": [{
+			"id": "ws-pilot",
+			"match": {
+				"all": null,
+				"hwids": null,
+				"hostnames": ["PC-TEST-01"],
+				"dcs": null,
+				"subnets": null,
+				"domains": null
+			},
+			"patch": {"clientWs": {"enabled": true}}
+		}]
+	}`)
+	p, probs := Parse(doc, defaults)
+	if probs != nil {
+		t.Fatalf("expected a valid document (all: null is not all: false), got: %v", probs)
+	}
+
+	pilot, err := p.Effective(Host{Hostname: "PC-TEST-01", Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+	if !pilot.Doc.ClientWS.Enabled {
+		t.Error("clientWs.enabled = false for the matched host, want true")
+	}
+}
+
+// The "all must be the only key" rule only fires on keys that actually carry
+// something: {"all": true, "hwids": null} is {"all": true} in every way that
+// matters, and must be accepted exactly like it.
+func TestSelectorAllTrueWithNullSiblingsIsAccepted(t *testing.T) {
+	defaults := fixtureDefaults(t)
+
+	doc := []byte(`{
+		"schemaVersion": 1,
+		"revision": 10,
+		"generatedAt": "2026-09-18T10:00:00Z",
+		"servers": {"cloud": "https://api.example.test"},
+		"defaultServer": "cloud",
+		"overrides": [{
+			"id": "rollout",
+			"match": {
+				"all": true,
+				"hwids": null,
+				"hostnames": null,
+				"dcs": null,
+				"subnets": null,
+				"domains": null
+			},
+			"patch": {"clientWs": {"enabled": true}}
+		}]
+	}`)
+	p, probs := Parse(doc, defaults)
+	if probs != nil {
+		t.Fatalf("expected a valid document (null siblings don't count against \"all\" being alone), got: %v", probs)
+	}
+
+	anyHost, err := p.Effective(Host{Hostname: "ANYTHING", Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+	if !anyHost.Doc.ClientWS.Enabled {
+		t.Error("clientWs.enabled = false for a host matched by an all:true selector, want true")
+	}
+}

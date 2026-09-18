@@ -136,13 +136,14 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   while a connection is up, so a published revision closes the channel
   without waiting for the connection to drop on its own (event 923).
 - **A 404 on the WebSocket upgrade disables that server, not the feature** —
-  the same convention `internal/selfupdate` already uses for the updater's
-  own manifest. A site mirror that has not been upgraded yet does not know
-  `/v2/client/ws`; treating that as "retry" would put an error in every
-  machine of that site's log on every backoff tick until somebody upgrades
-  the mirror. The supervisor remembers the server name (event 922, once) and
-  only tries again when `beginCycle` picks a different server. A `401` is the
-  opposite case — a real misconfiguration — and keeps retrying, loudly.
+  the same convention `internal/source` defines; `internal/service/selfupdate.go`
+  already uses it for the updater's own manifest. A site mirror that has not been
+  upgraded yet does not know `/v2/client/ws`; treating that as "retry" would put
+  an error in every machine of that site's log on every backoff tick until
+  somebody upgrades the mirror. The supervisor remembers the server name
+  (event 922, once) and only tries again when `beginCycle` picks a different
+  server. A `401` or `403` is the opposite case — a real misconfiguration — and
+  keeps retrying, loudly.
 - **The identity payload is the second place the machine's facts are
   assembled** — `clientWSIdentity`/`identityFromSource`
   (`internal/service/clientws.go`) build the `identity` message's JSON from

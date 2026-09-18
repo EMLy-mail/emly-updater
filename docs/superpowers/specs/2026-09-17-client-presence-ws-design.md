@@ -85,9 +85,23 @@ Riusa la stessa idea del `updater.resolver`/`dcLookupRetry` già nel
 documento remoto (`internal/policy/document.go`): esponenziale con cap,
 azzerato quando una connessione resta stabile per un tempo minimo (es. 60s),
 così una macchina che flappa per un attimo non finisce a fare retry ogni
-30s per il resto della giornata. Nessun jitter necessario a questa scala
-(~350-400 macchine): non è un thundering herd contro un endpoint costoso, è
-un `Accept` su una route che non fa query.
+30s per il resto della giornata. **Jitter necessario**, e non opzionale:
+questi reconnect sono sfasati zero tra loro, ogni macchina costruisce lo
+stesso schedule dagli stessi input (l'API è ripartita; il server corrente ha
+rifiutato l'upgrade) e quindi riprova esattamente nello stesso istante di
+ogni altra macchina attaccata allo stesso server. Il problema non è il carico
+sull'endpoint (`Accept` su una route senza query, come si pensava
+originariamente) ma il rate limiter davanti alla route
+(`emly-go-api/internal/middleware/ratelimit.ban.go`): il livello autenticato
+concede 100 richieste/minuto per IP e bandisce quell'IP per 5 minuti dopo 20
+violazioni nella finestra. Ogni sede non presente in `dcLookupMap` esce con
+un solo indirizzo pubblico via NAT, quindi un riavvio dell'API produce N
+richieste simultanee dalla stessa sede sullo stesso IP: superata la soglia,
+l'intera sede viene bandita per 5 minuti — poll manifest, self-update ed
+upload dei bug report di EMLy compresi, non solo il canale di presenza. Il
+jitter (full jitter: valore uniforme in `[0, ceiling]`, non solo sul primo
+tentativo) rompe questo sincronismo senza cambiare il comportamento medio
+dello schedule.
 
 Non è un ciclo indipendente scollegato dal resto: la selezione del server
 resta quella di `beginCycle`, solo il timer di retry/riconnessione è suo.

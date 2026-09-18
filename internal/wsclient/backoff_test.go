@@ -5,18 +5,32 @@ import (
 	"time"
 )
 
+// assertInRange fails unless got is in [0, ceiling] - the full-jitter
+// contract: Next never returns more than the deterministic ceiling, but it
+// is not required to return the ceiling itself.
+func assertInRange(t *testing.T, got, ceiling time.Duration) {
+	t.Helper()
+	if got < 0 || got > ceiling {
+		t.Errorf("Next() = %v, want in [0, %v]", got, ceiling)
+	}
+}
+
 // The zero value is usable: a caller that sets nothing gets the shipped
 // schedule rather than a busy loop on a zero delay.
 func TestBackoffZeroValueUsesDefaults(t *testing.T) {
 	var b Backoff
-	if got := b.Next(); got != DefaultBackoffBase {
-		t.Errorf("first Next() = %v, want %v", got, DefaultBackoffBase)
+	got := b.Next()
+	assertInRange(t, got, DefaultBackoffBase)
+	if b.ceiling() != DefaultBackoffBase {
+		t.Errorf("ceiling after first Next() = %v, want %v", b.ceiling(), DefaultBackoffBase)
 	}
 }
 
-func TestBackoffDoublesAndCaps(t *testing.T) {
+// The ceiling doubles on every call and caps at Max. Jitter randomises what
+// Next returns, but the ceiling it draws from stays exactly this sequence.
+func TestBackoffCeilingDoublesAndCaps(t *testing.T) {
 	b := Backoff{Base: time.Second, Max: 8 * time.Second}
-	want := []time.Duration{
+	wantCeilings := []time.Duration{
 		1 * time.Second,
 		2 * time.Second,
 		4 * time.Second,
@@ -24,20 +38,24 @@ func TestBackoffDoublesAndCaps(t *testing.T) {
 		8 * time.Second, // capped, not 16
 		8 * time.Second,
 	}
-	for i, w := range want {
-		if got := b.Next(); got != w {
-			t.Errorf("Next() #%d = %v, want %v", i+1, got, w)
+	for i, want := range wantCeilings {
+		got := b.Next()
+		assertInRange(t, got, want)
+		if b.ceiling() != want {
+			t.Errorf("ceiling() #%d = %v, want %v", i+1, b.ceiling(), want)
 		}
 	}
 }
 
-func TestBackoffResetReturnsToBase(t *testing.T) {
+func TestBackoffResetReturnsCeilingToBase(t *testing.T) {
 	b := Backoff{Base: time.Second, Max: time.Minute}
 	b.Next()
 	b.Next()
 	b.Reset()
-	if got := b.Next(); got != time.Second {
-		t.Errorf("Next() after Reset() = %v, want %v", got, time.Second)
+	got := b.Next()
+	assertInRange(t, got, time.Second)
+	if b.ceiling() != time.Second {
+		t.Errorf("ceiling() after Reset() = %v, want %v", b.ceiling(), time.Second)
 	}
 }
 
@@ -46,17 +64,21 @@ func TestBackoffResetReturnsToBase(t *testing.T) {
 // flapped once keeps retrying at the cap for the rest of the day.
 func TestBackoffSettleOnlyResetsAfterAStableConnection(t *testing.T) {
 	b := Backoff{Base: time.Second, Max: time.Minute, StableFor: 30 * time.Second}
-	b.Next() // 1s
-	b.Next() // 2s
+	b.Next() // ceiling 1s
+	b.Next() // ceiling 2s
 
 	b.Settle(5 * time.Second)
-	if got := b.Next(); got != 4*time.Second {
-		t.Errorf("Next() after a short connection = %v, want %v (schedule must keep growing)", got, 4*time.Second)
+	got := b.Next() // ceiling should still grow to 4s
+	assertInRange(t, got, 4*time.Second)
+	if b.ceiling() != 4*time.Second {
+		t.Errorf("ceiling() after a short connection = %v, want %v (schedule must keep growing)", b.ceiling(), 4*time.Second)
 	}
 
 	b.Settle(45 * time.Second)
-	if got := b.Next(); got != time.Second {
-		t.Errorf("Next() after a stable connection = %v, want %v", got, time.Second)
+	got = b.Next()
+	assertInRange(t, got, time.Second)
+	if b.ceiling() != time.Second {
+		t.Errorf("ceiling() after a stable connection = %v, want %v", b.ceiling(), time.Second)
 	}
 }
 
@@ -67,7 +89,22 @@ func TestBackoffSettleAtTheThresholdResets(t *testing.T) {
 	b := Backoff{Base: time.Second, Max: time.Minute, StableFor: 30 * time.Second}
 	b.Next()
 	b.Settle(30 * time.Second)
-	if got := b.Next(); got != time.Second {
-		t.Errorf("Next() after exactly StableFor = %v, want %v", got, time.Second)
+	got := b.Next()
+	assertInRange(t, got, time.Second)
+	if b.ceiling() != time.Second {
+		t.Errorf("ceiling() after exactly StableFor = %v, want %v", b.ceiling(), time.Second)
+	}
+}
+
+// Next never returns a value above its ceiling, exercised over many draws so
+// a jitter implementation that occasionally exceeds the bound (an off-by-one
+// in the random range) would be caught rather than passing by luck.
+func TestBackoffNextStaysWithinCeilingAcrossManyDraws(t *testing.T) {
+	b := Backoff{Base: 100 * time.Millisecond, Max: time.Second}
+	for i := 0; i < 500; i++ {
+		got := b.Next()
+		if got < 0 || got > b.ceiling() {
+			t.Fatalf("draw #%d: Next() = %v, ceiling() = %v", i, got, b.ceiling())
+		}
 	}
 }

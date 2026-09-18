@@ -1,6 +1,9 @@
 package wsclient
 
-import "time"
+import (
+	"math/rand/v2"
+	"time"
+)
 
 // The shipped reconnection schedule. Deliberately conservative at the top
 // end: a machine that cannot reach its server has nothing to gain from
@@ -25,10 +28,21 @@ const (
 // that lived long enough to be called healthy earns a fresh schedule and one
 // that died immediately does not.
 //
-// No jitter: at this fleet size (~350-400 machines) a synchronised retry is
-// not a thundering herd against an expensive endpoint, it is a handful of
-// Accept calls on a route that runs no query. Jitter would buy nothing and
-// make the schedule untestable without a clock seam.
+// Full jitter: Next returns a uniformly random value in [0, ceiling] rather
+// than the ceiling itself, because these reconnects are phase-locked in a way
+// a manifest poll never is. Every machine builds the same schedule from the
+// same inputs (the API restarted; the server rejected the upgrade), so
+// without jitter every machine attached to one server retries at the exact
+// same instant, in lockstep, forever. And every office not listed in
+// dcLookupMap NATs to a single public address, so that instant is N
+// simultaneous requests from one IP - the API's authenticated rate-limit
+// tier is 100 requests/minute per IP, and tripping it 20 times in a window
+// bans the IP for 5 minutes. An API deploy would otherwise ban every such
+// office's shared address, taking manifest polls, self-update checks and
+// EMLy's own bug-report uploads down with the presence reconnects that
+// caused it. The ceiling itself (cur) still advances deterministically, so
+// the schedule stays testable via that ceiling even though the value handed
+// to the caller is randomised.
 //
 // Not safe for concurrent use - the supervisor goroutine is its only caller.
 type Backoff struct {
@@ -66,8 +80,10 @@ func (b *Backoff) stableFor() time.Duration {
 	return DefaultStableFor
 }
 
-// Next returns how long to wait before the next connection attempt and
-// advances the schedule.
+// Next advances the schedule's ceiling and returns how long to wait before
+// the next connection attempt: a uniformly random duration in [0, ceiling],
+// full jitter, so a fleet of machines sharing the same schedule does not
+// reconnect in lockstep (see the doc comment above).
 func (b *Backoff) Next() time.Duration {
 	if b.cur <= 0 {
 		b.cur = b.base()
@@ -77,7 +93,21 @@ func (b *Backoff) Next() time.Duration {
 	if m := b.max(); b.cur > m {
 		b.cur = m
 	}
-	return b.cur
+	return jitter(b.cur)
+}
+
+// ceiling exposes the deterministic part of the schedule - the value Next
+// would have returned with no jitter applied - so tests can assert on it
+// without making Next's actual return value predictable.
+func (b *Backoff) ceiling() time.Duration { return b.cur }
+
+// jitter returns a uniformly random duration in [0, d], guarding against a
+// zero or negative ceiling (rand.N panics on a non-positive bound).
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return time.Duration(rand.Int64N(int64(d) + 1))
 }
 
 // Reset returns the schedule to its start, so the next Next yields Base.

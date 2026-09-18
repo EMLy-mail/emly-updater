@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 // Path is the presence endpoint, appended to a server's base URL.
@@ -218,4 +219,130 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 		return nil, fmt.Errorf("presence channel dial failed: %w", err)
 	}
 	return conn, nil
+}
+
+// Run holds one presence connection open: dial, wait for the server's hello,
+// send this machine's identity, then answer every ping with a pong until the
+// connection ends or ctx is cancelled.
+//
+// It returns ctx.Err() for a clean shutdown, ErrNotImplemented or
+// ErrUnauthorized from the dial, and a descriptive error otherwise. The
+// caller decides what any of that means for the retry schedule - this
+// function has no opinion about reconnecting.
+func (c *Client) Run(ctx context.Context) error {
+	if !c.Identity.Identified() {
+		// The server closes an unidentified connection on sight (API spec
+		// §3.1), so opening one only costs a handshake to be told so.
+		return errors.New("refusing to open the presence channel: this machine reports neither a HWID nor a hostname")
+	}
+
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.CloseNow()
+
+	if err := c.handshake(ctx, conn); err != nil {
+		return err
+	}
+	if c.OnConnected != nil {
+		c.OnConnected()
+	}
+
+	err = c.heartbeat(ctx, conn)
+	if ctx.Err() != nil {
+		// A stop request, not a failure: say goodbye properly so the API
+		// drops this machine's presence immediately instead of waiting for
+		// its own read deadline to expire.
+		_ = conn.Close(websocket.StatusNormalClosure, "service stopping")
+	}
+	return err
+}
+
+// handshake waits for the server's hello and answers with the identity.
+//
+// Messages of any other type are discarded while waiting, for the same
+// reason the heartbeat loop discards them: a type this build does not know
+// must never be a reason to hang up. The whole exchange is bounded by
+// HandshakeTimeout, so a server that accepts the upgrade and then says
+// nothing does not hold the connection open forever.
+func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
+	ctx, cancel := context.WithTimeout(ctx, c.handshakeTimeout())
+	defer cancel()
+
+	for {
+		var msg Message
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return fmt.Errorf("presence channel handshake failed waiting for %q: %w", TypeHello, err)
+		}
+		switch msg.Type {
+		case TypeHello:
+			payload, err := json.Marshal(c.Identity)
+			if err != nil {
+				return fmt.Errorf("could not serialise this machine's identity: %w", err)
+			}
+			if err := wsjson.Write(ctx, conn, Message{Type: TypeIdentity, Data: payload}); err != nil {
+				return fmt.Errorf("presence channel could not send its identity: %w", err)
+			}
+			return nil
+		case TypeError:
+			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
+		default:
+			c.logf("presence channel ignoring unknown message type %q during the handshake", msg.Type)
+		}
+	}
+}
+
+// heartbeat answers the server's pings until the connection ends.
+//
+// Each read is bounded by IdleTimeout rather than left open indefinitely:
+// a connection through a firewall that silently dropped the flow looks
+// perfectly healthy from this side, and only the absence of the pings the
+// server promised every 10 seconds gives it away.
+func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
+	for {
+		readCtx, cancel := context.WithTimeout(ctx, c.idleTimeout())
+		var msg Message
+		err := wsjson.Read(readCtx, conn, &msg)
+		cancel()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("presence channel read failed: %w", err)
+		}
+
+		switch msg.Type {
+		case TypePing:
+			writeCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := wsjson.Write(writeCtx, conn, Message{Type: TypePong})
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				return fmt.Errorf("presence channel could not answer a ping: %w", err)
+			}
+		case TypeError:
+			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
+		default:
+			c.logf("presence channel ignoring unknown message type %q", msg.Type)
+		}
+	}
+}
+
+// errorCode pulls the code out of an error message's payload, falling back
+// to the raw payload when it is not the shape we expect - a server that
+// says something unexpected is still saying something worth logging.
+func errorCode(data json.RawMessage) string {
+	var payload struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(data, &payload); err == nil && payload.Code != "" {
+		return payload.Code
+	}
+	if len(data) == 0 {
+		return "(no code)"
+	}
+	return string(data)
 }

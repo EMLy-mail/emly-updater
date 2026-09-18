@@ -108,3 +108,28 @@ func TestBackoffNextStaysWithinCeilingAcrossManyDraws(t *testing.T) {
 		}
 	}
 }
+
+// Jitter is applied: Next returns varied values, not a constant. This catches
+// a regression where the internal jitter() helper was silently removed and
+// replaced with a bare return of the ceiling.
+func TestBackoffNextIsJittered(t *testing.T) {
+	b := Backoff{Base: 100 * time.Millisecond, Max: 100 * time.Millisecond}
+	ceiling := 100 * time.Millisecond
+
+	seen := make(map[time.Duration]bool)
+	var belowCeiling bool
+	for i := 0; i < 50; i++ {
+		got := b.Next()
+		seen[got] = true
+		if got < ceiling {
+			belowCeiling = true
+		}
+	}
+
+	if len(seen) < 2 {
+		t.Errorf("drew 50 values but only saw %d distinct values; jitter not applied", len(seen))
+	}
+	if !belowCeiling {
+		t.Errorf("drew 50 values but all were at the ceiling; jitter not applied")
+	}
+}

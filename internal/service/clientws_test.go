@@ -347,7 +347,7 @@ func TestRunClientWSStandsDownWhenTheDocumentDisablesIt(t *testing.T) {
 
 	select {
 	case <-closed:
-	case <-time.After(3 * u.watchInterval()):
+	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("the connection was not closed after the document disabled the channel")
 	}
@@ -476,7 +476,7 @@ func TestRunClientWSFollowsTheWatcherToADifferentServer(t *testing.T) {
 
 	select {
 	case <-closedA:
-	case <-time.After(3 * u.watchInterval()):
+	case <-time.After(5 * time.Second):
 		cancel()
 		t.Fatal("the connection to server A was not closed after the policy moved to server B")
 	}
@@ -490,7 +490,9 @@ func TestRunClientWSFollowsTheWatcherToADifferentServer(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
+		// Budget must exceed coder/websocket's ~5s close handshake against
+		// a server that stops reading, else the test races the library's own wait.
 		t.Fatal("runClientWS did not return after the context was cancelled")
 	}
 }

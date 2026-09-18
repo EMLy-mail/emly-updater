@@ -8,3 +8,6 @@ installer/Output/
 *.pfx
 *.key
 certs/*.pfx
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/

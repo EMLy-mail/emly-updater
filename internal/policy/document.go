@@ -47,8 +47,10 @@ type Document struct {
 	// (docs/superpowers/specs/2026-09-17-client-presence-ws-design.md §5):
 	// the permanent WebSocket the service holds open to GET /v2/client/ws.
 	// Off unless a document turns it on, so upgrading the updater alone
-	// never opens a connection. Deliberately not in PatchableSections - the
-	// API's twin validator does not accept it in an override either.
+	// never opens a connection. In PatchableSections since 2026-09, so a
+	// site can pilot the channel on a handful of hosts (match.hostnames or
+	// match.hwids) before flipping it fleet-wide - the API's twin validator
+	// accepts it in an override too, same as every other patchable section.
 	ClientWS  Toggle     `json:"clientWs"`
 	Overrides []Override `json:"overrides"`
 }
@@ -226,7 +228,7 @@ type Host struct {
 
 // PatchableSections are the only top-level keys an override's patch may
 // touch. Anything else rejects the whole document.
-var PatchableSections = []string{"control", "updater", "logging", "defaultServer"}
+var PatchableSections = []string{"control", "updater", "logging", "defaultServer", "clientWs"}
 
 // Duration helpers, so callers do not re-derive units from field names.
 

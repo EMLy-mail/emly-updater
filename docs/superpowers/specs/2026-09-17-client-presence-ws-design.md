@@ -154,6 +154,14 @@ proposto per il relay VNC:
 
 `enabled: false` di default: aggiornare l'updater non apre nessuna
 connessione finché un sito non pubblica una revisione che la accende.
+**Patchabile per host** (`match: {hostnames: [...]}` o `{hwids: [...]}`,
+`patch: {clientWs: {enabled: true}}`): la scelta iniziale (solo globale) è
+stata rivista — senza patch per host non c'era modo di pilotare il canale
+su poche macchine prima di un'accensione fleet-wide, e l'unica leva restava
+pubblica-poi-rollback con fino a ~15 minuti di lag. `clientWs` è in
+`PatchableSections` (`internal/policy/document.go`) e nel gemello
+`AllowedPatchKeys` (`emly-go-api/internal/remoteconfig/types.go`) allo
+stesso modo di `control`/`updater`/`logging`/`defaultServer`.
 Toccare questa sezione tocca `internal/policy/document.go`, `parse.go`,
 `legacy.go` (default `enabled: false` per una macchina che non ha mai visto
 un documento) e il validatore gemello in `emly-go-api/internal/remoteconfig`,

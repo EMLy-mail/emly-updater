@@ -92,6 +92,17 @@ type Updater struct {
 	loggedUserFn  func() machineinfo.UserSession
 	nowFn         func() time.Time
 	fetchConfigFn func(ctx context.Context, url, etag string) (*source.ConfigResponse, error)
+
+	// clientWSWatch overrides clientWSWatchInterval (how often the presence
+	// supervisor re-reads the current cycle) when > 0. Zero means the real
+	// interval. Tests set it short so the supervisor suite does not spend
+	// real seconds asleep per test; production never sets it.
+	clientWSWatch time.Duration
+	// clientWSInitialDelayFn overrides the presence supervisor's randomised
+	// startup delay (see runClientWS). Tests set it to return 0 so the
+	// supervisor dials immediately instead of sleeping up to 60s; nil means
+	// the real jittered delay.
+	clientWSInitialDelayFn func() time.Duration
 }
 
 // clock is the time source; tests pin it.
@@ -164,13 +175,28 @@ func (u *Updater) RunLoop(ctx context.Context) {
 	//
 	// RunLoop waits for it on the way out so the service handler does not
 	// report the service stopped with a connection still open.
+	//
+	// The supervisor gets its own child context, cancelled explicitly before
+	// the wait below rather than sharing ctx directly. runClientWS only ever
+	// returns when its context ends, and ctx itself is only cancelled by an
+	// SCM stop - so an unrecovered panic inside Cycle (which shares this
+	// goroutine's stack with nothing, but whose panic still has to unwind
+	// through this defer) would otherwise leave presence.Wait() blocked
+	// forever: the process never exits, the SCM still reports Running, and
+	// the dashboard keeps reporting the wedged machine as online. Cancelling
+	// presenceCtx first guarantees runClientWS unwinds promptly on that path
+	// too, not just on the normal stop path where ctx itself gets cancelled.
+	presenceCtx, stopPresence := context.WithCancel(ctx)
 	var presence sync.WaitGroup
 	presence.Add(1)
 	go func() {
 		defer presence.Done()
-		u.runClientWS(ctx)
+		u.runClientWS(presenceCtx)
 	}()
-	defer presence.Wait()
+	defer func() {
+		stopPresence()
+		presence.Wait()
+	}()
 
 	first := true
 	for {

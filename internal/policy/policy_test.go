@@ -501,10 +501,11 @@ func TestClientWSEnabledByDocument(t *testing.T) {
 	}
 }
 
-// clientWs is deliberately not patchable: the API's twin validator does not
-// list it in AllowedPatchKeys either, and a rule only one side enforces is a
-// document one side accepts and the other rejects.
-func TestClientWSIsNotPatchable(t *testing.T) {
+// clientWs is patchable: a site can pilot the presence channel on a handful
+// of hosts (by hostname or HWID) before turning it on fleet-wide, the same
+// way pilot-beta.json already pilots a channel override. The global switch
+// stays off; only hosts the override matches see it on.
+func TestClientWSIsPatchable(t *testing.T) {
 	defaults := fixtureDefaults(t)
 
 	doc := []byte(`{
@@ -513,17 +514,34 @@ func TestClientWSIsNotPatchable(t *testing.T) {
 		"generatedAt": "2026-09-18T10:00:00Z",
 		"servers": {"cloud": "https://api.example.test"},
 		"defaultServer": "cloud",
+		"clientWs": {"enabled": false},
 		"overrides": [{
 			"id": "ws-pilot",
-			"match": {"dcs": ["DC-RM2"]},
+			"match": {"hostnames": ["PC-TEST-01"]},
 			"patch": {"clientWs": {"enabled": true}}
 		}]
 	}`)
-	_, probs := Parse(doc, defaults)
-	if probs == nil {
-		t.Fatal("expected the document to be rejected, it was accepted")
+	p, probs := Parse(doc, defaults)
+	if probs != nil {
+		t.Fatalf("expected a valid document, got: %v", probs)
 	}
-	if !strings.Contains(probs.Error(), "/overrides/0/patch/clientWs") {
-		t.Errorf("problems did not point at the offending patch key: %v", probs)
+	if p.Global.ClientWS.Enabled {
+		t.Error("clientWs.enabled = true on the global document, want false (only the pilot host is patched)")
+	}
+
+	pilot, err := p.Effective(Host{Hostname: "PC-TEST-01", Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+	if !pilot.Doc.ClientWS.Enabled {
+		t.Error("clientWs.enabled = false for the matched pilot host, want true")
+	}
+
+	other, err := p.Effective(Host{Hostname: "PC-OTHER", Now: time.Now()})
+	if err != nil {
+		t.Fatalf("Effective: %v", err)
+	}
+	if other.Doc.ClientWS.Enabled {
+		t.Error("clientWs.enabled = true for a host the override does not match, want false")
 	}
 }

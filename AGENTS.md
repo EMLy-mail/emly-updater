@@ -129,10 +129,11 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   The kill switch is the document's `clientWs.enabled`, **false by default**
   in `policy.Defaults` and in the legacy-derived policy: upgrading the
   updater must never, by itself, open ~400 permanent connections to the API.
-  It is deliberately **not** in `PatchableSections` — the API's twin
-  validator does not accept it in an override either, and a rule only one
-  side enforces is a document one side accepts and the other rejects. The
-  switch is honoured hot: `clientws.go` re-reads the current cycle every 15s
+  It is in `PatchableSections`, same as the API's `AllowedPatchKeys`, so a
+  site can pilot the channel on a handful of hosts before flipping it
+  fleet-wide — `match: {hostnames: [...]}` or `match: {hwids: [...]}`,
+  `patch: {clientWs: {enabled: true}}`, global switch left off. The switch
+  is honoured hot: `clientws.go` re-reads the current cycle every 15s
   while a connection is up, so a published revision closes the channel
   without waiting for the connection to drop on its own (event 923).
 - **A 404 on the WebSocket upgrade disables that server for an hour, not the

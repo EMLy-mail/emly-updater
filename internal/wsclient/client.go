@@ -89,10 +89,14 @@ var (
 	// retrying it on a backoff forever would put an error in every machine
 	// of that site's log, every cycle, for as long as the mirror lags.
 	ErrNotImplemented = errors.New("server does not implement the presence endpoint")
-	// ErrUnauthorized is a 401/403: the API key is wrong or not accepted.
-	// Retrying does not help either, but unlike a 404 it is a
-	// misconfiguration worth shouting about rather than a state to accept.
-	ErrUnauthorized = errors.New("presence endpoint rejected the API key")
+	// ErrUnauthorized is a 401/403 on the upgrade. The API's rate limiter
+	// also answers 403 on the request that trips a ban (see Backoff's doc
+	// comment for why that happens to a fleet of reconnecting clients), so
+	// this sentinel covers two different causes - a wrong API key and a
+	// rate-limit ban - that a caller cannot tell apart from the error alone.
+	// dial folds the actual status code into the wrapped message so a log
+	// line can still tell them apart without attaching a debugger.
+	ErrUnauthorized = errors.New("presence endpoint rejected the connection")
 )
 
 // URLFor turns a server's base URL into this endpoint's WebSocket URL:
@@ -191,6 +195,18 @@ func (c *Client) handshakeTimeout() time.Duration {
 // handshake got an answer that was not a 101, which is what makes telling
 // "this mirror has no such route" apart from "this mirror is unreachable"
 // possible at all.
+//
+// X-EMLy-HWID and X-EMLy-Hostname go out on the upgrade request too,
+// duplicating the same two fields the identity payload sends after the
+// handshake. That is a deliberate exception to "identity travels in the
+// payload, not headers" (see the Identity doc comment): the API's ban list
+// (middleware.BanList) can only enforce a ban by IP on a route it has not
+// upgraded yet, because identity does not exist before the handshake
+// completes - these two headers are what let an operator's HWID/hostname
+// ban reach this connection at all. They also de-anonymise the API's own
+// auth-failure log on a rejected key. Exactly like updater_version already
+// travels in the User-Agent instead of the JSON body, this is duplication
+// for enforcement, not an oversight - do not "clean it up" into payload-only.
 func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.handshakeTimeout())
 	defer cancel()
@@ -201,6 +217,12 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	if c.UserAgent != "" {
 		header.Set("User-Agent", c.UserAgent)
+	}
+	if c.Identity.HWID != "" {
+		header.Set("X-EMLy-HWID", c.Identity.HWID)
+	}
+	if c.Identity.Hostname != "" {
+		header.Set("X-EMLy-Hostname", c.Identity.Hostname)
 	}
 
 	conn, resp, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{
@@ -213,7 +235,11 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 			case http.StatusNotFound:
 				return nil, fmt.Errorf("%s: %w", c.URL, ErrNotImplemented)
 			case http.StatusUnauthorized, http.StatusForbidden:
-				return nil, fmt.Errorf("%s: %w", c.URL, ErrUnauthorized)
+				// The status code travels in the message text (not just the
+				// sentinel) so a log line built from this error can tell a
+				// wrong key (401) apart from a rate-limit ban (403) without
+				// the caller doing anything special - see ErrUnauthorized.
+				return nil, fmt.Errorf("%s: HTTP %d: %w", c.URL, resp.StatusCode, ErrUnauthorized)
 			}
 		}
 		return nil, fmt.Errorf("presence channel dial failed: %w", err)

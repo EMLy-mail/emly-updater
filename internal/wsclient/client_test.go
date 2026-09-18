@@ -150,6 +150,97 @@ func TestDialSendsTheApiKeyAndUserAgent(t *testing.T) {
 	}
 }
 
+// HWID and hostname go out as headers too, duplicated from the identity that
+// otherwise only travels in the post-handshake payload - it is what lets the
+// API's ban list enforce a HWID/hostname ban on this route, which cannot see
+// the payload before the upgrade completes. A field the identity does not
+// carry must not appear as an empty header (same "absent means unknown"
+// contract the X-EMLy-* headers already have on the manifest path).
+func TestDialSendsHWIDAndHostnameHeaders(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	url, err := URLFor(srv.URL)
+	if err != nil {
+		t.Fatalf("URLFor: %v", err)
+	}
+	c := &Client{
+		URL:              url,
+		Identity:         Identity{HWID: "HW-1", Hostname: "RM095"},
+		HandshakeTimeout: 5 * time.Second,
+	}
+	_, _ = c.dial(context.Background())
+
+	select {
+	case h := <-seen:
+		if got := h.Get("X-EMLy-HWID"); got != "HW-1" {
+			t.Errorf("X-EMLy-HWID = %q, want %q", got, "HW-1")
+		}
+		if got := h.Get("X-EMLy-Hostname"); got != "RM095" {
+			t.Errorf("X-EMLy-Hostname = %q, want %q", got, "RM095")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never saw the upgrade request")
+	}
+}
+
+// An identity field this machine does not have must not send an empty
+// header - "absent" means "unknown" everywhere else in this codebase.
+func TestDialOmitsEmptyIdentityHeaders(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	url, err := URLFor(srv.URL)
+	if err != nil {
+		t.Fatalf("URLFor: %v", err)
+	}
+	c := &Client{URL: url, HandshakeTimeout: 5 * time.Second}
+	_, _ = c.dial(context.Background())
+
+	select {
+	case h := <-seen:
+		if _, ok := h["X-Emly-Hwid"]; ok {
+			t.Errorf("X-EMLy-HWID sent with no value: %v", h)
+		}
+		if _, ok := h["X-Emly-Hostname"]; ok {
+			t.Errorf("X-EMLy-Hostname sent with no value: %v", h)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never saw the upgrade request")
+	}
+}
+
+// A rejected key's error names the actual status code, so a log line built
+// from it can tell a wrong key (401) apart from the rate limiter's ban (403)
+// without attaching a debugger.
+func TestDialRejectedKeyErrorNamesTheStatusCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	url, err := URLFor(srv.URL)
+	if err != nil {
+		t.Fatalf("URLFor: %v", err)
+	}
+	c := &Client{URL: url, HandshakeTimeout: 5 * time.Second}
+	_, err = c.dial(context.Background())
+	if !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("dial against a 403 = %v, want ErrUnauthorized", err)
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error %q does not name the status code", err.Error())
+	}
+}
+
 // testServer runs handler as a WebSocket endpoint on a real listener and
 // returns the wss:// URL a Client should dial. It is the API's half of the
 // protocol, so the tests below exercise the real handshake rather than a

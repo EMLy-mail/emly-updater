@@ -155,6 +155,23 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		"policySource", cyc.snap.Source.String(),
 	)
 
+	// The presence channel runs for the life of the service, beside the poll
+	// loop rather than inside it: it follows the same server chain beginCycle
+	// picks but has its own reconnection schedule, and holding a connection
+	// open for days has nothing to do with a cycle that runs every few
+	// minutes. It starts here, after the first beginCycle, because there is
+	// no server to point it at before one has run.
+	//
+	// RunLoop waits for it on the way out so the service handler does not
+	// report the service stopped with a connection still open.
+	var presence sync.WaitGroup
+	presence.Add(1)
+	go func() {
+		defer presence.Done()
+		u.runClientWS(ctx)
+	}()
+	defer presence.Wait()
+
 	first := true
 	for {
 		if !first {

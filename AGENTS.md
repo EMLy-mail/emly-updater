@@ -135,15 +135,22 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   switch is honoured hot: `clientws.go` re-reads the current cycle every 15s
   while a connection is up, so a published revision closes the channel
   without waiting for the connection to drop on its own (event 923).
-- **A 404 on the WebSocket upgrade disables that server, not the feature** —
-  the same convention `internal/source` defines; `internal/service/selfupdate.go`
-  already uses it for the updater's own manifest. A site mirror that has not been
-  upgraded yet does not know `/v2/client/ws`; treating that as "retry" would put
-  an error in every machine of that site's log on every backoff tick until
-  somebody upgrades the mirror. The supervisor remembers the server name
-  (event 922, once) and only tries again when `beginCycle` picks a different
-  server. A `401` or `403` is the opposite case — a real misconfiguration — and
-  keeps retrying, loudly.
+- **A 404 on the WebSocket upgrade disables that server for an hour, not the
+  feature, and not permanently** — this is its own convention, not the one
+  `internal/source` defines: `internal/source` falls through to the chain's
+  backups on a 404, and re-evaluates from scratch on the next poll; the
+  presence supervisor does neither. It stays pinned to `chain[0]` (see
+  `clientWSTarget`'s doc comment for why - a machine's telemetry has to live
+  on the same instance that serves it) and remembers the 404 in `unsupported`
+  (`internal/service/clientws.go`) for `clientWSUnsupportedRetryAfter` (1h),
+  logging event 922 only the first time a server is marked, not on every
+  re-mark - a mirror lagging for days must not refill the Event Log every
+  hour. The mark expiring is what keeps a transient 404 (an ingress or load
+  balancer mid-deploy) from blinding a machine until its service restarts;
+  `beginCycle` picking a different server still clears it sooner, same as
+  before. A `401` or `403` is the opposite case — a real misconfiguration, or
+  the API's rate limiter answering a ban (see `wsclient.Backoff`'s doc
+  comment) — and keeps retrying, loudly, without a memo.
 - **The identity payload is the second place the machine's facts are
   assembled** — `clientWSIdentity`/`identityFromSource`
   (`internal/service/clientws.go`) build the `identity` message's JSON from
@@ -155,7 +162,17 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   omission — it is specific to manifest/download, and the API reads this
   connection's address off the connection itself. `updater_version` and
   `contact` are not in the payload either: they travel in the `User-Agent` of
-  the upgrade request, exactly as on every other call.
+  the upgrade request, exactly as on every other call. **HWID and hostname
+  are the one deliberate exception that duplicates *into* headers instead** —
+  `wsclient.Client.dial` also sends `X-EMLy-HWID`/`X-EMLy-Hostname` (from the
+  same `Identity`), even though the rest of it only travels in the
+  post-handshake payload. That is not a violation of "identity travels in
+  the payload, not headers" to clean up: the API's ban list can only enforce
+  a ban by HWID or hostname on a route it has not upgraded yet, since the
+  identity payload does not exist before the handshake completes, and these
+  two headers are what let such a ban reach this connection at all. It is
+  duplication for enforcement, the same reason `updater_version` already
+  travels in the User-Agent rather than only the payload.
 - **`config.ini` is never written at runtime** - the source decision lives in
   memory and in the log (event 700), nowhere else. `config.Reset` (on install)
   is the only writer of that file. `config.SetPrimary` is gone: a config file

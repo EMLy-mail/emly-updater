@@ -20,10 +20,18 @@ import (
 
 // clientWSUpdater builds an Updater whose current cycle points at one
 // server, with the presence channel enabled or not.
+//
+// The watch interval and the initial-dial jitter are both shortened here so
+// that every test built on top of this helper runs the supervisor without
+// the wall-clock sleeps (up to 15s between policy re-reads, up to 60s before
+// the first dial) production uses - see clientWSWatch and
+// clientWSInitialDelayFn on Updater.
 func clientWSUpdater(t *testing.T, enabled bool) *Updater {
 	t.Helper()
 	cfg := internalCfg(t, config.SourceExternal)
 	u := newTestUpdater(t, cfg, dcNamed("DC-RM2"), ipsOf("172.16.96.10"))
+	u.clientWSWatch = 100 * time.Millisecond
+	u.clientWSInitialDelayFn = func() time.Duration { return 0 }
 	snap := u.Policy.Current()
 	snap.Parsed.Global.ClientWS = policy.Toggle{Enabled: enabled}
 	host := policy.Host{HWID: "HW-1", Hostname: "RM095", DC: "DC-RM2",
@@ -121,21 +129,50 @@ func TestClientWSIdentityReportsADisconnectedSession(t *testing.T) {
 	}
 }
 
-// clientWSUpdaterAt is clientWSUpdater pointed at a test server: the
-// document names one server, that server is the whole chain, and the
-// presence channel is on.
-func clientWSUpdaterAt(t *testing.T, baseURL string) *Updater {
+// clientWSUpdaterWithServer is clientWSUpdater pointed at a named server: the
+// document names exactly this one server as the default (no DC/subnet match
+// possible, so beginCycle always falls through to it), and the presence
+// channel is on.
+func clientWSUpdaterWithServer(t *testing.T, name, baseURL string) *Updater {
 	t.Helper()
 	u := clientWSUpdater(t, true)
 	snap := u.Policy.Current()
-	snap.Parsed.Global.Servers = map[string]string{"test": baseURL}
-	snap.Parsed.Global.DefaultServer = "test"
+	snap.Parsed.Global.Servers = map[string]string{name: baseURL}
+	snap.Parsed.Global.DefaultServer = name
 	snap.Parsed.Global.DCLookupMap = map[string]policy.Site{}
 	snap.Parsed.Global.ClientWS = policy.Toggle{Enabled: true}
 	storeCycle(t, u, snap)
 	u.Machine = machineinfo.Info{Hostname: "RM095", HWID: "HW-1"}
 	u.loggedUserFn = func() machineinfo.UserSession { return machineinfo.UserSession{} }
 	return u
+}
+
+// clientWSUpdaterAt is clientWSUpdaterWithServer under the fixed name "test"
+// - the shape almost every supervisor test wants: one server, the whole
+// chain.
+func clientWSUpdaterAt(t *testing.T, baseURL string) *Updater {
+	t.Helper()
+	return clientWSUpdaterWithServer(t, "test", baseURL)
+}
+
+// setClientWSServer publishes a cycle whose default (and only) server is
+// name→baseURL, the way beginCycle picking a different server - a site or
+// subnet change - moves the chain the supervisor reads. Built the same
+// aliasing-safe way disableClientWS is (see its comment): a fresh
+// Document/Parsed/Snapshot rather than a mutation in place, because
+// Effective() with no override applied aliases eff.Doc directly to
+// Parsed.Global.
+func setClientWSServer(t *testing.T, u *Updater, name, baseURL string) {
+	t.Helper()
+	cur := u.Policy.Current()
+	doc := *cur.Parsed.Global
+	doc.Servers = map[string]string{name: baseURL}
+	doc.DefaultServer = name
+	parsed := *cur.Parsed
+	parsed.Global = &doc
+	snap := *cur
+	snap.Parsed = &parsed
+	storeCycle(t, u, &snap)
 }
 
 // disableClientWS swaps in a cycle whose document has the channel off, the
@@ -242,8 +279,12 @@ func TestRunClientWSStopsAskingAServerThatAnswers404(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); u.runClientWS(ctx) }()
 
-	// Long enough that a supervisor which kept retrying on the default 5s
-	// base backoff would have dialled again at least once.
+	// This does not prove anything about the backoff schedule - the memo
+	// bypasses it entirely, and the schedule is jittered besides. What it
+	// catches is the no-memo regression: without unsupported recording the
+	// 404, the loop has nothing to wait on between attempts (the 404 branch
+	// never reaches clientWSIdle) and would busy-loop dialling again
+	// immediately, many times over, well within this window.
 	time.Sleep(3 * time.Second)
 	cancel()
 	<-done
@@ -257,6 +298,7 @@ func TestRunClientWSStopsAskingAServerThatAnswers404(t *testing.T) {
 // waiting for the next restart: a site that decides the channel is costing
 // it something must be able to stop it by publishing a revision.
 func TestRunClientWSStandsDownWhenTheDocumentDisablesIt(t *testing.T) {
+	connected := make(chan struct{}, 1)
 	closed := make(chan struct{}, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := websocket.Accept(w, r, nil)
@@ -271,6 +313,10 @@ func TestRunClientWSStandsDownWhenTheDocumentDisablesIt(t *testing.T) {
 		var msg wsclient.Message
 		if err := wsjson.Read(ctx, conn, &msg); err != nil {
 			return
+		}
+		select {
+		case connected <- struct{}{}:
+		default:
 		}
 		// Block until the client goes away, then say so.
 		var next wsclient.Message
@@ -288,17 +334,226 @@ func TestRunClientWSStandsDownWhenTheDocumentDisablesIt(t *testing.T) {
 	done := make(chan struct{})
 	go func() { defer close(done); u.runClientWS(ctx) }()
 
-	// Give it a connection, then turn the switch off the way a new revision
-	// would: a fresh cycle state with the section disabled.
-	time.Sleep(500 * time.Millisecond)
+	// Wait for the connection itself (not a fixed sleep) before turning the
+	// switch off the way a new revision would: a fresh cycle state with the
+	// section disabled.
+	select {
+	case <-connected:
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("the supervisor never connected")
+	}
 	disableClientWS(t, u)
 
 	select {
 	case <-closed:
-	case <-time.After(3 * clientWSWatchInterval):
+	case <-time.After(3 * u.watchInterval()):
 		cancel()
 		t.Fatal("the connection was not closed after the document disabled the channel")
 	}
 	cancel()
 	<-done
+}
+
+// The supervisor reconnects after a connection that was really established
+// drops: the server accepts, completes the handshake, then hangs up. This is
+// the ordinary "a machine dropped and comes back" path an operator's mental
+// model depends on, distinct from the 404/disabled cases above which never
+// reach a real connection at all.
+func TestRunClientWSReconnectsAfterADrop(t *testing.T) {
+	var connects atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		ctx := r.Context()
+		if err := wsjson.Write(ctx, conn, wsclient.Message{Type: wsclient.TypeHello}); err != nil {
+			return
+		}
+		var msg wsclient.Message
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return
+		}
+		connects.Add(1)
+		// Hang up right after the handshake: a connection that was really
+		// established, then lost.
+		_ = conn.Close(websocket.StatusNormalClosure, "bye")
+	}))
+	defer srv.Close()
+
+	u := clientWSUpdaterAt(t, srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); u.runClientWS(ctx) }()
+
+	waitForAtLeast(t, &connects, 2, 15*time.Second,
+		"the supervisor did not reconnect after the connection dropped")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runClientWS did not return after the context was cancelled")
+	}
+}
+
+// A connection up against server A must be closed, and a new one opened
+// against server B, when the source policy moves this machine's chain to a
+// different server - the same way a site/subnet change moves the manifest
+// poll's chain. Only the kill-switch branch of the watcher
+// (TestRunClientWSStandsDownWhenTheDocumentDisablesIt) was covered before
+// this.
+func TestRunClientWSFollowsTheWatcherToADifferentServer(t *testing.T) {
+	connectedA := make(chan struct{}, 1)
+	closedA := make(chan struct{}, 1)
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		ctx := r.Context()
+		if err := wsjson.Write(ctx, conn, wsclient.Message{Type: wsclient.TypeHello}); err != nil {
+			return
+		}
+		var msg wsclient.Message
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return
+		}
+		select {
+		case connectedA <- struct{}{}:
+		default:
+		}
+		var next wsclient.Message
+		_ = wsjson.Read(ctx, conn, &next)
+		select {
+		case closedA <- struct{}{}:
+		default:
+		}
+	}))
+	defer srvA.Close()
+
+	connectedB := make(chan struct{}, 1)
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		ctx := r.Context()
+		if err := wsjson.Write(ctx, conn, wsclient.Message{Type: wsclient.TypeHello}); err != nil {
+			return
+		}
+		var msg wsclient.Message
+		if err := wsjson.Read(ctx, conn, &msg); err != nil {
+			return
+		}
+		select {
+		case connectedB <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+	}))
+	defer srvB.Close()
+
+	u := clientWSUpdaterWithServer(t, "a", srvA.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); u.runClientWS(ctx) }()
+
+	select {
+	case <-connectedA:
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("the supervisor never connected to server A")
+	}
+
+	setClientWSServer(t, u, "b", srvB.URL)
+
+	select {
+	case <-closedA:
+	case <-time.After(3 * u.watchInterval()):
+		cancel()
+		t.Fatal("the connection to server A was not closed after the policy moved to server B")
+	}
+	select {
+	case <-connectedB:
+	case <-time.After(10 * time.Second):
+		cancel()
+		t.Fatal("the supervisor never connected to server B")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runClientWS did not return after the context was cancelled")
+	}
+}
+
+// A server marked unsupported is retried on its own once
+// clientWSUnsupportedRetryAfter elapses, without waiting for the source
+// policy to move this machine elsewhere: an ingress or load balancer that
+// answered 404 for a few seconds during an API deploy must not blind the
+// machine until its service next restarts. Exercised through the clock seam
+// rather than a real hour of wall-clock time.
+func TestRunClientWSRetriesA404dServerAfterTheMarkExpires(t *testing.T) {
+	var upgrades atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrades.Add(1)
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	u := clientWSUpdaterAt(t, srv.URL)
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	var now atomic.Pointer[time.Time]
+	now.Store(&start)
+	u.nowFn = func() time.Time { return *now.Load() }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); u.runClientWS(ctx) }()
+
+	waitForAtLeast(t, &upgrades, 1, 10*time.Second, "the server was never dialled once")
+
+	// A little short of the retry window: still marked, must not retry yet.
+	almostExpired := start.Add(clientWSUnsupportedRetryAfter - time.Second)
+	now.Store(&almostExpired)
+	time.Sleep(5 * u.watchInterval())
+	if got := upgrades.Load(); got != 1 {
+		t.Fatalf("upgrades = %d before the mark expired, want 1 (retried too early)", got)
+	}
+
+	expired := start.Add(clientWSUnsupportedRetryAfter + time.Second)
+	now.Store(&expired)
+	waitForAtLeast(t, &upgrades, 2, 10*time.Second, "the server was not retried after the mark expired")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runClientWS did not return after the context was cancelled")
+	}
+}
+
+// waitForAtLeast polls counter until it reaches want or timeout elapses.
+func waitForAtLeast(t *testing.T, counter *atomic.Int32, want int32, timeout time.Duration, msg string) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		if counter.Load() >= want {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("%s (got %d, want %d)", msg, counter.Load(), want)
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 }

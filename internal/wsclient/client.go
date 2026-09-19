@@ -211,6 +211,8 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	ctx, cancel := context.WithTimeout(ctx, c.handshakeTimeout())
 	defer cancel()
 
+	c.logf("presence channel dialing %s", c.URL)
+
 	header := http.Header{}
 	if c.APIKey != "" {
 		header.Set("X-Api-Key", c.APIKey)
@@ -244,6 +246,7 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 		}
 		return nil, fmt.Errorf("presence channel dial failed: %w", err)
 	}
+	c.logf("presence channel upgrade succeeded, waiting for hello")
 	return conn, nil
 }
 
@@ -303,6 +306,8 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 		}
 		switch msg.Type {
 		case TypeHello:
+			c.logf("presence channel received hello, sending identity (hwid=%q hostname=%q)",
+				c.Identity.HWID, c.Identity.Hostname)
 			payload, err := json.Marshal(c.Identity)
 			if err != nil {
 				return fmt.Errorf("could not serialise this machine's identity: %w", err)
@@ -310,6 +315,7 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 			if err := wsjson.Write(ctx, conn, Message{Type: TypeIdentity, Data: payload}); err != nil {
 				return fmt.Errorf("presence channel could not send its identity: %w", err)
 			}
+			c.logf("presence channel identity sent")
 			return nil
 		case TypeError:
 			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
@@ -349,6 +355,7 @@ func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
 				}
 				return fmt.Errorf("presence channel could not answer a ping: %w", err)
 			}
+			c.logf("presence channel answered a ping")
 		case TypeError:
 			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
 		default:

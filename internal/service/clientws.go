@@ -222,6 +222,9 @@ func (u *Updater) runClientWS(ctx context.Context) {
 		connCtx, cancel := context.WithCancel(ctx)
 		go u.watchClientWSTarget(connCtx, cancel, target)
 
+		u.Log.Debug("presence channel attempting connection",
+			"server", target.server, "url", target.url)
+
 		var (
 			connected   bool
 			connectedAt time.Time

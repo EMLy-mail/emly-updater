@@ -37,6 +37,11 @@ func RemoteConfigPath() string { return filepath.Join(DataDir(), "remote-config.
 // it again and the file is still there to look at.
 func RemoteConfigBadPath() string { return filepath.Join(DataDir(), "remote-config.bad.json") }
 
+// RemoteConfigPrevPath is where the cache is moved right before a
+// self-update launches the updater's setup (one copy, overwritten). Nothing
+// ever reads it back: it is only kept to look at.
+func RemoteConfigPrevPath() string { return filepath.Join(DataDir(), "remote-config.prev.json") }
+
 // DownloadsDir returns the directory where EMLy's setup executables are cached.
 func DownloadsDir() string { return filepath.Join(DataDir(), "downloads") }
 

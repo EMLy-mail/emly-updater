@@ -161,6 +161,70 @@ func TestInitPolicyLoadsTheCache(t *testing.T) {
 // A cache that no longer validates (a schema this build does not know, a
 // truncated file) must not take the machine down: it is moved aside and the
 // default policy carries the run.
+// A self-update moves the cache aside so the new build starts from the API;
+// a launch that fails puts it back.
+func TestRetireAndRestoreCache(t *testing.T) {
+	u, _ := remoteUpdater(t)
+	if err := os.WriteFile(u.CachePath, []byte("cached"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := u.retireCache(); err != nil {
+		t.Fatalf("retireCache: %v", err)
+	}
+	if _, err := os.Stat(u.CachePath); !os.IsNotExist(err) {
+		t.Fatalf("cache still present after retireCache (stat err %v)", err)
+	}
+	if got, _ := os.ReadFile(u.cachePrevPath()); string(got) != "cached" {
+		t.Fatalf("prev file = %q, want the old cache", got)
+	}
+
+	if err := u.restoreCache(); err != nil {
+		t.Fatalf("restoreCache: %v", err)
+	}
+	if got, _ := os.ReadFile(u.CachePath); string(got) != "cached" {
+		t.Fatalf("cache after restore = %q, want the old cache", got)
+	}
+}
+
+func TestRetireCacheWithoutACache(t *testing.T) {
+	u, _ := remoteUpdater(t)
+	if err := u.retireCache(); err != nil {
+		t.Fatalf("retireCache with no cache: %v", err)
+	}
+	if err := u.restoreCache(); err != nil {
+		t.Fatalf("restoreCache with nothing retired: %v", err)
+	}
+}
+
+// retireCache overwrites a prev file left by an earlier self-update, and
+// restoreCache never clobbers a cache a cycle has written in the meantime.
+func TestRetireCacheOverwritesPrevAndRestoreKeepsNewer(t *testing.T) {
+	u, _ := remoteUpdater(t)
+	if err := os.WriteFile(u.cachePrevPath(), []byte("older"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(u.CachePath, []byte("cached"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.retireCache(); err != nil {
+		t.Fatalf("retireCache: %v", err)
+	}
+	if got, _ := os.ReadFile(u.cachePrevPath()); string(got) != "cached" {
+		t.Fatalf("prev file = %q, want it overwritten with the cache", got)
+	}
+
+	if err := os.WriteFile(u.CachePath, []byte("newer"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := u.restoreCache(); err != nil {
+		t.Fatalf("restoreCache: %v", err)
+	}
+	if got, _ := os.ReadFile(u.CachePath); string(got) != "newer" {
+		t.Fatalf("cache = %q, want the newer one kept", got)
+	}
+}
+
 func TestInitPolicyQuarantinesABadCache(t *testing.T) {
 	u, _ := remoteUpdater(t)
 	bad := u.CachePath + ".bad"

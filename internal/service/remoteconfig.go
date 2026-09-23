@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"fmt"
 	"strings"
 	"time"
@@ -282,6 +283,46 @@ func (u *Updater) cacheBadPath() string {
 		return u.CachePath + ".bad"
 	}
 	return config.RemoteConfigBadPath()
+}
+
+// cachePrevPath is where retireCache moves the cache aside.
+func (u *Updater) cachePrevPath() string {
+	if u.CachePath != "" {
+		return u.CachePath + ".prev"
+	}
+	return config.RemoteConfigPrevPath()
+}
+
+// retireCache moves the cache to cachePrevPath right before a self-update, so
+// the build that comes up after it starts from the default policy and takes
+// its configuration from the API rather than from what this build accepted.
+//
+// The price is deliberate: until the new build's first successful fetch it
+// runs on the policy derived from config.ini - which config.Reset has just
+// rewritten from defaults - and the first document it fetches is accepted
+// whatever its revision, since there is no cached one to compare against.
+//
+// A missing cache is not an error (nothing to move). The in-memory snapshot
+// is untouched, so this build keeps its policy for as long as it still runs.
+func (u *Updater) retireCache() error {
+	if err := os.Rename(u.cachePath(), u.cachePrevPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
+// restoreCache undoes retireCache when the setup could not be launched after
+// all, so a restart of this same build still finds its last-known-good
+// document.
+func (u *Updater) restoreCache() error {
+	if _, err := os.Stat(u.cachePath()); err == nil {
+		// A cycle has already written a newer cache since: keep that one.
+		return nil
+	}
+	if err := os.Rename(u.cachePrevPath(), u.cachePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // applyLogging pushes the effective logging section into the running logger

@@ -213,10 +213,25 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		return false
 	}
 
+	// The new build must take its configuration from the API, not from the
+	// document this one cached (see retireCache). Best-effort: a cache that
+	// cannot be moved is no reason to hold back the update.
+	if err := u.retireCache(); err != nil {
+		u.Log.Warn("could not move the remote configuration cache aside before the self-update, the new build will start from it",
+			"path", u.cachePath(), "error", err.Error())
+	} else {
+		u.Log.Info("remote configuration cache moved aside before the self-update",
+			"path", u.cachePrevPath())
+	}
+
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
 	if err := selfupdate.Launch(setupPath, logPath); err != nil {
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
+		if err := u.restoreCache(); err != nil {
+			u.Log.Warn("could not restore the remote configuration cache after the failed launch",
+				"path", u.cachePath(), "error", err.Error())
+		}
 		return false
 	}
 

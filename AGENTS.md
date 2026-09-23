@@ -277,6 +277,17 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
   `state.json`'s `selfUpdate` record is written *before* the launch and reconciled after the restart
   by comparing `version.Version` against it. If the record cannot be persisted, the setup is not
   launched at all - without it the attempt could not be counted.
+- **The remote-config cache is moved aside right before the launch**
+  (`retireCache`, `internal/service/remoteconfig.go`): `remote-config.json` →
+  `remote-config.prev.json` (one copy, overwritten, never read back), so the new
+  build starts from the default policy and takes its configuration from the API
+  instead of from what the old build accepted. This is a deliberate exception to
+  "the cache is the policy when the endpoint is unreachable": if the API is down
+  when the new build comes up, it runs on the policy derived from the freshly reset
+  `config.ini` until the first successful fetch, and that first document is
+  accepted whatever its revision. A failed move is logged and does not hold the
+  update back; a failed launch puts the file back (`restoreCache`) unless a cycle
+  has already written a newer one.
 - **Attempts are bounded** (`selfupdate.MaxAttempts`, 3) with a 10-minute cooldown between launches.
   A release that installs but never results in the new binary running would otherwise stop and
   restart the service on every poll cycle, fleet-wide, forever. A *different* version in the

@@ -40,22 +40,24 @@ type clientWSTarget struct {
 // carried a hand-edited manifest path, and it is harmless precisely because
 // such a machine has no remote document and therefore no kill switch on.
 //
-// This deliberately pins to chain[0] only - it never falls through to
-// chain[1:] the way resolveTarget's Resolver does for the manifest poll.
-// That is not an oversight: this machine's telemetry rows (the updater_
-// events/updater_clients history) live on whichever instance actually
-// served its manifest, so its presence belongs on that same instance too.
-// A mirror-site machine whose presence connection fell through to the cloud
-// instance would split its state across two databases - the cloud one would
-// show it "online" while carrying none of its history, and the mirror would
-// show its full history but never "online". Losing presence entirely while
-// the site's own server is briefly unreachable is the correct trade-off.
+// The head is taken after preferredChain, not from cyc.chain directly: once
+// the manifest poll has found the base server unreachable and a backup
+// serving in its place, that backup leads the chain for the rest of the
+// service session and the channel moves there with it. The channel never
+// falls through the chain on its own, though - it goes where the manifest was
+// actually served. This machine's telemetry rows (the updater_events/
+// updater_clients history) live on whichever instance served its manifest, so
+// its presence belongs on that same instance too: a presence connection that
+// fell through independently could land on a different instance than the
+// manifest poll, splitting the machine's state across two databases - one
+// showing it "online" with none of its history, the other its full history
+// but never "online".
 func (u *Updater) clientWSTarget() clientWSTarget {
 	cyc := u.cur.Load()
 	if cyc == nil || !cyc.eff.Doc.ClientWS.Enabled || len(cyc.chain) == 0 {
 		return clientWSTarget{}
 	}
-	name := cyc.chain[0]
+	name := u.preferredChain(cyc)[0]
 	url, err := wsclient.URLFor(cyc.eff.BaseURL(name))
 	if err != nil {
 		u.Log.Warn("presence channel has no usable endpoint on the current server, staying closed",
@@ -180,7 +182,7 @@ func (u *Updater) runClientWS(ctx context.Context) {
 	// attempt onward, once Next has actually been called. See Backoff's doc
 	// comment for why a synchronised burst matters here (the API's rate
 	// limiter and the shared-NAT-per-site fact, not server load).
-	if !u.clientWSIdle(ctx, u.clientWSInitialDelay()) {
+	if !u.clientWSSleep(ctx, u.clientWSInitialDelay(), false) {
 		return
 	}
 
@@ -334,24 +336,44 @@ func (u *Updater) watchClientWSTarget(ctx context.Context, cancel context.Cancel
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if u.clientWSTarget() != running {
-				cancel()
-				return
-			}
+		case <-u.clientWSWake:
+			u.Log.Debug("presence channel woken by a server preference change, re-reading its target",
+				"server", running.server)
+		}
+		if u.clientWSTarget() != running {
+			cancel()
+			return
 		}
 	}
 }
 
-// clientWSIdle waits for d, or until the service is asked to stop. It
+// clientWSIdle waits for d, until the service is asked to stop, or until
+// the preferred server changes (wakeClientWS) - a machine whose base server
+// was unreachable then gets its channel onto the backup that just answered
+// right away, not at the end of a backoff that may have grown to minutes. It
 // reports whether the caller should carry on.
 func (u *Updater) clientWSIdle(ctx context.Context, d time.Duration) bool {
+	return u.clientWSSleep(ctx, d, true)
+}
+
+// clientWSSleep is clientWSIdle with the wake-up optional. The initial
+// jitter does not take it: that delay exists to spread a fleet-wide start,
+// and a whole site failing over at once is exactly when it matters.
+func (u *Updater) clientWSSleep(ctx context.Context, d time.Duration, wakeable bool) bool {
 	if d <= 0 {
 		d = time.Second
 	}
 	timer := time.NewTimer(d)
 	defer timer.Stop()
+	var wake <-chan struct{}
+	if wakeable {
+		wake = u.clientWSWake
+	}
 	select {
 	case <-timer.C:
+		return true
+	case <-wake:
+		u.Log.Debug("presence channel woken by a server preference change, re-reading its target")
 		return true
 	case <-ctx.Done():
 		return false

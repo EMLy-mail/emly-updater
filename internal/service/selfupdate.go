@@ -55,7 +55,7 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 			// that has not published an updater manifest at all. Name the
 			// address that was tried: on a 404 that is the one thing worth
 			// checking, and no source succeeded so none reported one.
-			tried, _ := u.Cfg.UpdaterManifestURL(cyc.eff.ManifestURL(cyc.chain[0]))
+			tried, _ := u.Cfg.UpdaterManifestURL(cyc.eff.ManifestURL(u.preferredChain(cyc)[0]))
 			u.Log.Info(skipped, "installed", running, "manifestURL", tried,
 				"reason", "no update source serves an updater manifest")
 		} else {
@@ -156,13 +156,17 @@ func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (
 	resolver := u.newResolver(cyc)
 	resolver.Document = "updater manifest"
 
-	return source.ResolveUpdater(ctx, resolver, func(s source.Source) (string, error) {
+	src, m, servedBy, err := source.ResolveUpdater(ctx, resolver, func(s source.Source) (string, error) {
 		http, ok := s.(*source.HTTPSource)
 		if !ok {
 			return "", fmt.Errorf("source %s has no manifest URL to derive from", s.Name())
 		}
 		return u.Cfg.UpdaterManifestURL(http.ManifestURL)
 	})
+	if err == nil {
+		u.notePreferredServer(cyc, resolver, src)
+	}
+	return src, m, servedBy, err
 }
 
 // applySelfUpdate downloads the release, verifies it, records the attempt and

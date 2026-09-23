@@ -71,6 +71,13 @@ type Updater struct {
 	// answer, last decision logged) - see sourcepolicy.go.
 	site siteState
 
+	// preferred is the server of the chain this service session found
+	// reachable when the chain's head was not, nil for none - see
+	// preferred.go. clientWSWake nudges the presence supervisor when it
+	// changes; nil (tests) simply means no nudge.
+	preferred    atomic.Pointer[string]
+	clientWSWake chan struct{}
+
 	// paused mirrors control.updater.enabled so event 904 fires on the
 	// transition rather than on every cycle.
 	paused bool
@@ -132,6 +139,7 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		dcFn:         machineinfo.NearestDomainController,
 		ipsFn:        machineinfo.LocalIPv4Addresses,
 		loggedUserFn: machineinfo.LoggedUser,
+		clientWSWake: make(chan struct{}, 1),
 	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
@@ -401,9 +409,18 @@ func (u *Updater) loggedUser() machineinfo.UserSession {
 //
 // EMLy's manifest and the updater's own both go through this, so a machine
 // that can only reach its site's mirror behaves the same way for both.
+//
+// A backup this session already found reachable when the head was not leads
+// the chain instead (see preferredChain), so an unreachable base server costs
+// its retries once per service session rather than once per cycle.
 func (u *Updater) newResolver(cyc *cycleState) *source.Resolver {
-	urls := make([]string, 0, len(cyc.chain))
-	for _, name := range cyc.chain {
+	chain := u.preferredChain(cyc)
+	if len(chain) > 0 && len(cyc.chain) > 0 && chain[0] != cyc.chain[0] {
+		u.Log.Debug("trying this session's preferred server ahead of the policy order",
+			"preferred", chain[0], "policyHead", cyc.chain[0])
+	}
+	urls := make([]string, 0, len(chain))
+	for _, name := range chain {
 		if url := cyc.eff.ManifestURL(name); url != "" {
 			urls = append(urls, url)
 		}
@@ -434,10 +451,12 @@ func (u *Updater) newResolver(cyc *cycleState) *source.Resolver {
 // and resolves it to a channel target. Shared by the normal poll in Cycle and
 // by the forced re-download path in install.
 func (u *Updater) resolveTarget(ctx context.Context, cyc *cycleState, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
-	src, m, err := u.newResolver(cyc).Resolve(ctx)
+	resolver := u.newResolver(cyc)
+	src, m, err := resolver.Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
 	}
+	u.notePreferredServer(cyc, resolver, src)
 
 	target, err := src.ResolveTarget(m, channel)
 	if err != nil {

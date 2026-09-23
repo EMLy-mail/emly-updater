@@ -38,6 +38,13 @@ type Resolver struct {
 
 	// Logf receives progress lines ("primary failed, retrying", ...). Optional.
 	Logf func(format string, args ...any)
+
+	// PrimaryErr is set by Resolve / ResolveUpdater to the last error Primary
+	// returned, nil when Primary served the document. It lets the caller tell
+	// a fallback that answered because Primary was unreachable apart from one
+	// that answered because Primary said 404 (ErrNotFound) - only the former
+	// says anything about which server this machine can actually reach.
+	PrimaryErr error
 }
 
 func (r *Resolver) logf(format string, args ...any) {
@@ -116,6 +123,7 @@ func resolveWith[T any](ctx context.Context, r *Resolver, fetch func(context.Con
 	}
 
 	var lastErr error
+	r.PrimaryErr = nil
 	for i := 0; i < attempts; i++ {
 		if i > 0 {
 			select {
@@ -131,6 +139,7 @@ func resolveWith[T any](ctx context.Context, r *Resolver, fetch func(context.Con
 			return r.Primary, doc, nil
 		}
 		lastErr = err
+		r.PrimaryErr = err
 		r.logf("primary source %s attempt %d/%d failed to serve the %s: %v",
 			r.Primary.Name(), i+1, attempts, r.document(), err)
 		if ctx.Err() != nil {

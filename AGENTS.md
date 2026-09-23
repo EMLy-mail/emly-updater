@@ -64,6 +64,8 @@ internal/
   assoc/                 HKLM file-association self-heal after install
   cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus/Config to the EMLy client (protobuf)
+  winget/                Read-only listing of winget-upgradable packages via the Microsoft.WinGet.Client
+                         PowerShell module (JSON, never `winget upgrade` text); CLI in tools/winget-update-parser
 ```
 
 See [README.md](README.md) for the full update-state-machine table and update-sources description.
@@ -453,6 +455,16 @@ The setup:
 - Calls `emly-updater.exe install` (seeds config, registers service + Event Log source)
 - Calls `emly-updater.exe start`
 - On upgrade: stops the service first (60 s wait), then replaces the binary
+- Optional component `wingetmodule` (**off by default**): downloads
+  `Microsoft.WinGet.Client` from PowerShell Gallery at install time and puts it in
+  `%ProgramFiles%\WindowsPowerShell\Modules` (= `Install-Module -Scope AllUsers`).
+  Opt in with `/COMPONENTS="updater,wingetmodule"` (`/COMPONENTS` replaces the
+  selection, so list both); without `/COMPONENTS` an upgrade keeps the previous
+  choice. Version and SHA256 are pinned by `#define`s in `installer.iss` - change
+  them together. The download runs from `[Code]`, not a `[Files]` `download` entry,
+  on purpose: a failure (Gallery unreachable, hash mismatch) is only logged and the
+  updater still installs, where a failed `[Files]` download would abort a silent
+  setup - self-update included. Uninstall leaves the module in place.
 
 ### Manual (admin shell)
 

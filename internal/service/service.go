@@ -110,6 +110,16 @@ type Updater struct {
 	// supervisor dials immediately instead of sleeping up to 60s; nil means
 	// the real jittered delay.
 	clientWSInitialDelayFn func() time.Duration
+
+	// sessionChanges carries the SCM's session notifications from the
+	// service control loop to watchSessions (sessionwatch.go). nil disables
+	// the watcher.
+	sessionChanges chan machineinfo.SessionChange
+	// Seams for the session watcher's tests: the WTS resolution, the settle
+	// window (when > 0) and a callback observing each resolved burst.
+	resolveSessionFn func(machineinfo.SessionChange) machineinfo.SessionChange
+	sessionSettle    time.Duration
+	onSessionChange  func(c machineinfo.SessionChange, changed bool)
 }
 
 // clock is the time source; tests pin it.
@@ -140,6 +150,8 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		ipsFn:        machineinfo.LocalIPv4Addresses,
 		loggedUserFn: machineinfo.LoggedUser,
 		clientWSWake: make(chan struct{}, 1),
+
+		sessionChanges: make(chan machineinfo.SessionChange, sessionChangeBuffer),
 	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
@@ -772,18 +784,24 @@ type Handler struct {
 
 // Execute implements svc.Handler: it reports Running, drives the update loop
 // in a goroutine, and translates Stop/Shutdown into context cancellation.
+// Session notifications (console/RDP connect, disconnect, logon, ...) are
+// handed to watchSessions.
 func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
-	const accepted = svc.AcceptStop | svc.AcceptShutdown
+	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 
 	changes <- svc.Status{State: svc.StartPending}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		h.Updater.RunLoop(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		h.Updater.watchSessions(ctx)
 	}()
 	go func() {
 		defer wg.Done()
@@ -801,6 +819,12 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 		switch c.Cmd {
 		case svc.Interrogate:
 			changes <- c.CurrentStatus
+		case svc.SessionChange:
+			// Parsed right here: EventData points into memory the SCM only
+			// lends for the duration of its control handler call.
+			if ev, ok := machineinfo.ParseSessionChange(c.EventType, c.EventData, time.Now()); ok {
+				h.Updater.queueSessionChange(ev)
+			}
 		case svc.Stop, svc.Shutdown:
 			changes <- svc.Status{State: svc.StopPending}
 			cancel()

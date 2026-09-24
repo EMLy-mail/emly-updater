@@ -2,19 +2,28 @@
 // docs/superpowers/specs/2026-09-17-client-presence-ws-design.md: one
 // WebSocket connection to the API's GET /v2/client/ws, held open for the
 // life of the service, whose only job is to let the API answer "is this
-// machine on right now" without guessing from the last poll.
+// machine on right now" without guessing from the last poll. On top of that
+// presence handshake, the connection also carries protocol v2 once welcome
+// negotiates it: server-to-client commands, client-to-server events, and
+// server-to-client notifies (protocol.go's Cmd*/Evt*/Topic* names).
 //
 // It is deliberately pure Go with no Windows API and no dependency on
-// internal/service, so the whole handshake and heartbeat can be exercised
-// against a real listener in an ordinary test - the same reason
-// internal/policy does not import internal/service either. What decides
-// *when* to run a connection (which server, whether the remote document
-// enables the channel at all, what to do when one drops) lives in
-// internal/service/clientws.go.
+// internal/service, so the whole handshake, heartbeat, command dispatch and
+// event/notify plumbing can be exercised against a real listener in an
+// ordinary test - the same reason internal/policy does not import
+// internal/service either. What decides *when* to run a connection (which
+// server, whether the remote document enables the channel at all, what
+// commands are allowed, what to do when one drops) and what a command
+// actually does on this machine lives in internal/service/clientws.go and
+// its clientcmd.go/clientevents.go/clientnotify.go/clientpower.go siblings.
 //
-// The wire protocol's normative reference is the API-side design document,
+// The wire protocol's normative reference is emly-go-api/CLIENT_WS_PROTOCOL.md;
+// the presence-only v1 handshake also has the API-side design document,
 // emly-go-api/docs/superpowers/specs/2026-09-17-client-presence-ws-api-design.md §3.
-// A change to the envelope, the handshake or the heartbeat touches both.
+// A change to the envelope, the handshake, the heartbeat, or a command/event/
+// notify touches both repos: protocol.go and id.go here mirror the API's
+// internal/clientproto by hand - there is no shared Go module between the
+// two repos, so nothing enforces this automatically.
 package wsclient
 
 import (

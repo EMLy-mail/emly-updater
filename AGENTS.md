@@ -26,7 +26,8 @@ iscc installer\installer.iss
 ## Architecture
 
 ```
-main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug) | show-toast (internal, see notify/)
+main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug) | show-toast (internal, see notify/) |
+                         restart-service (internal: detached stop+start for the client channel's service.restart, see service/clientpower.go)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
@@ -41,7 +42,11 @@ internal/
   wsclient/              The presence channel's client half: one WebSocket to the API's
                          GET /v2/client/ws, held open for the life of the service, so the
                          API knows this machine is online without guessing from the last poll.
-                         Pure Go (no Windows API), so the handshake and heartbeat are testable
+                         On top of that, protocol v2 (negotiated in welcome): server->client
+                         commands, client->server events, server->client notifies -
+                         Handler/Session run the dispatch, protocol.go/id.go mirror the
+                         API's internal/clientproto by hand. Pure Go (no Windows API), so the
+                         handshake, heartbeat and v2 dispatch are all testable
   machineinfo/           The X-EMLy-* identity values: the machine facts collected once at startup
                          (hostname, HWID, AD domain, internal IP, firmware serial + product number)
                          and LoggedUser, resolved per request; domaincontroller.go finds the nearest DC
@@ -55,12 +60,21 @@ internal/
                          remoteconfig.go fetches/validates/caches the policy document and builds the
                          IPC view; sourcepolicy.go matches the machine to a site every cycle and
                          builds its server chain; selfupdate.go orchestrates the updater updating itself;
-                         clientws.go supervises the presence channel (internal/wsclient)
+                         clientws.go supervises the presence channel (internal/wsclient) and its welcome
+                         burst; clientcmd.go admits/dispatches v2 commands (dedupe ring, read-only
+                         handlers, manifest dry runs); clientevents.go builds/buffers/emits v2 events
+                         (service.started, machine.info, session.changed payloads); clientnotify.go
+                         turns release.published/config.published into a jittered RunLoop wake;
+                         clientpower.go is service.restart/machine.reboot's admission, destructivePending
+                         state machine and execution (internal/power)
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
   toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
+  power/                 InitiateSystemShutdownEx for the client channel's machine.reboot command;
+                         Windows' own countdown to logged-on users, not a dialog of our own; not
+                         unit tested (it would reboot the test machine), see manual verification below
   assoc/                 HKLM file-association self-heal after install
   cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus/Config to the EMLy client (protobuf)
@@ -176,6 +190,74 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   two headers are what let such a ban reach this connection at all. It is
   duplication for enforcement, the same reason `updater_version` already
   travels in the User-Agent rather than only the payload.
+- **Protocol v2 is negotiated, not assumed** — `wsclient.Identity.Protocol`/`Capabilities`
+  go out on connect (`ProtocolV2`, `Updater.capabilities()` — every command, event and
+  topic name this build implements, deduplicated since `machine.info` names both a command
+  and an event); nothing v2 (a command, an event, a notify) is sent or accepted before the
+  server's `welcome` negotiates it, so a server still on v1 just sees an ordinary v1
+  presence connection, unaware anything else was ever offered.
+- **The welcome burst runs off the connection's read goroutine, never on it** —
+  `clientHandler.Welcome` (`internal/service/clientevents.go`) only starts `welcomeBurst` on
+  its own goroutine and returns immediately: it is called from the connection's read loop,
+  the same one answering pings, and the burst itself can take several 10s send timeouts -
+  `service.started` first (built once per process and cached via `sync.Once`, since
+  `TakePendingCommands` is destructive and a retry must report the same
+  `completed_commands`), then the pre-connection event buffer flushed, then the session
+  published for `emit` to use, then a second flush for whatever was emitted in that gap,
+  finally `machine.info`. A `gen` counter (`nextWSGeneration`/`storeWSSession`/
+  `clearWSSession`) ties a burst to the specific connection attempt that started it, so a
+  burst still running for a connection `runClientWS` has already torn down can never publish
+  a session object nobody can reach any more.
+- **The channel wakes, it never runs a cycle** — `handleNotify`
+  (`internal/service/clientnotify.go`) only ever calls `scheduleWake`, which delivers into
+  `u.wake` (a 1-slot channel: a burst of notifies collapses into a single wake) after a
+  random delay - at least 60s (`minReleaseJitter`) for `release.published`, whatever
+  `jitter_seconds` the document sends for `config.published`. `emly.manifest.check`/
+  `updater.manifest.check` are the read-only counterpart: dry runs via
+  `resolveTargetWith`/`resolveUpdaterManifestWith` with `notePreferred=false` - no download,
+  no `state.json` write, no preferred-server change, no presence-channel wake - which is
+  what makes it safe for them to run while a `Cycle` is already in progress instead of
+  answering `busy`.
+- **Commands are allowlisted by the document, destructive ones need TLS** — `admitCommand`
+  (`internal/service/clientcmd.go`) refuses anything outside the effective document's
+  `clientWs.commands` (`disabled_by_policy`; `policy.DefaultClientWSCommands` is read-only
+  only) before it refuses `service.restart`/`machine.reboot` over `ws://`
+  (`insecure_transport`, `commandSession.Secure()`). A destructive command's ID is written to
+  `state.json`'s `pendingCommands` *before* acting (`runDestructive`,
+  `internal/service/clientpower.go`) - the connection it arrived on may not survive the
+  action itself - and reported back in the next `service.started`'s `completed_commands`; a
+  64-entry dedupe ring (`commandRing`), seeded non-destructively from `state.json` at startup
+  (`seedCommandRing`), stops a redelivered command from being re-run.
+  `destructivePending`/`destructiveMu` make "start an install" and "commit a destructive
+  command" mutually exclusive (`beginInstall`/`commitDestructive`): `Cycle`, `install` and
+  `applySelfUpdate` all skip while one is pending (`installing` spans the whole `install()`
+  and the self-update launch, staying above zero after a successful launch), and a second
+  destructive command reaching `admitDestructive` is refused `busy`. The pending flag
+  auto-expires if the reboot/restart never actually completes - the requested delay plus 5
+  minutes for a reboot, 3 minutes for a restart - logging event 926, so an aborted shutdown
+  or a `restart-service` child that died cannot wedge the machine `busy` forever.
+  `machine.reboot` uses Windows' own `InitiateSystemShutdownEx` countdown (no WTS dialog of
+  the updater's own - see `internal/power`), forcing apps closed once it elapses, raised to
+  at least 60s whenever a user is actually active regardless of the requested delay;
+  `service.restart` launches the hidden `restart-service` subcommand detached (never
+  waited on, same reason `selfupdate.Launch` never waits either), which logs to the normal
+  ProgramData log/Event Log on its own and retries `cmdStart` three times, 5s apart.
+  `state.json` now holds **three** independent lifecycles: the pending EMLy update, the
+  updater's own self-update record, and pending commands.
+- **Events are best-effort** — `emit` (`internal/service/clientevents.go`) buffers in memory
+  (32 events, oldest dropped first) whenever there is no live v2 session, and flushes on the
+  next welcome; nothing is ever written to disk, and a service restart loses whatever was
+  buffered. The poll path is unaffected either way - it was the source of truth for updates
+  before this channel existed and still is.
+- **A command/event/field added to the protocol touches both repos** —
+  `wsclient/protocol.go` here (`Cmd*`/`Evt*`/`Topic*` names and the `CommandNames`/
+  `EventNames`/`TopicNames` slices), `internal/clientproto` in `emly-go-api`, and
+  `emly-go-api/CLIENT_WS_PROTOCOL.md`. `policy.knownClientWSCommands` is pinned to
+  `wsclient.CommandNames` by a test, so the document's allowlist vocabulary cannot drift
+  from the wire names silently.
+- **`SessionChangeKind` values are a wire contract** — since protocol v2 they travel
+  verbatim in `session.changed`'s `events` (`internal/machineinfo/sessionchange.go`,
+  CLIENT_WS_PROTOCOL.md §8.1); renaming one is a protocol change, not a local refactor.
 - **`config.ini` is never written at runtime** - the source decision lives in
   memory and in the log (event 700), nowhere else. `config.Reset` (on install)
   is the only writer of that file. `config.SetPrimary` is gone: a config file
@@ -255,10 +337,11 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   and the next cycle tries again - so a long outage nags once, but only once someone is actually
   there to read it.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
-- **`state.json` holds two independent lifecycles** - EMLy's pending update and the updater's own
-  self-update record. All four setters go through `Store.update` (read-modify-write); building a
-  fresh `State` and saving it, which is what `SetPending` used to do, would silently drop whichever
-  entry the other half of the cycle had just written.
+- **`state.json` holds three independent lifecycles** - EMLy's pending update, the updater's own
+  self-update record, and the client channel's pending destructive commands (see above). Every
+  setter goes through `Store.update` (read-modify-write); building a fresh `State` and saving it,
+  which is what `SetPending` used to do, would silently drop whichever entries the rest of the
+  cycle had just written.
 
 ## Self-update
 
@@ -319,6 +402,39 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
   identical `... served by primary source ...` lines. `ResolveUpdater` returns the URL that
   actually answered because a `Source`'s `Name()` only carries the *EMLy* manifest URL it was
   built from - never the `/updater` endpoint the fetch really went to.
+
+## Client channel (presence + protocol v2)
+
+The presence channel and protocol v2 (commands, events, notifies) are the same connection -
+see `internal/wsclient`'s package doc and the "Protocol v2 is negotiated..." conventions
+above. The normative wire reference is `emly-go-api/CLIENT_WS_PROTOCOL.md`.
+
+### Client channel manual verification (admin required)
+
+Nothing here is covered by `go test` for the same reason `internal/power` isn't: a reboot or
+a service restart on the test machine is not something CI can be allowed to do. This
+checklist is their verification.
+
+1. With a document enabling `clientWs` and `commands` including `machine.reboot`, over
+   `wss://`: issue `machine.info` via `POST /v2/client/{id}/commands` and confirm a `done`
+   result carrying the payload.
+2. `apps.list_upgradable` on a machine without Microsoft.WinGet.Client installed →
+   `failed` with `winget_module_missing`; with the module present → the package list.
+3. `service.restart` → the connection closes with 1001, the service actually restarts, and
+   the new process's `service.started` has `reason: "command"` listing the command's id;
+   the command itself shows `done`.
+4. `machine.reboot {"delay_seconds":120}` with a user logged on → Windows' own countdown is
+   shown, the machine reboots, the next `service.started` has `reason: "boot"`, and the
+   command shows `done`. Repeat with `"when_user_active":"skip"` → refused `user_active`,
+   nothing happens.
+5. The same `machine.reboot` issued through a `ws://` (not `wss://`) mirror → refused
+   `insecure_transport`, nothing happens.
+6. Disconnect and reconnect over RDP → a `session.changed` event carrying `active-rdp`
+   appears in `GET /v2/client/{id}/events`, and `updater_clients.logged_user_state` updates
+   without `last_seen_at` moving.
+7. `POST /v2/client/notify` a `release.published` for the current updater version + 1 →
+   the loop wakes within the jitter window, `update.available`/`update.started` events
+   appear, then `update.applied` once the new build comes back up.
 
 ## Configuration Reference
 
@@ -499,7 +615,7 @@ Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take ef
 | `%ProgramData%\EMLyUpdater\logs\updater-selfinstall-<ver>.log` | InnoSetup log of the updater installing itself |
 | `%ProgramData%\EMLyUpdater\logs\updater-final.log` | Exe-dir log preserved on uninstall |
 | `%ProgramData%\EMLyUpdater\config.prev.ini` | The config as it was before the last reset |
-| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703), self-update started (800)/completed (801)/refused or abandoned (802), presence channel connected (920)/lost (921)/endpoint not implemented (922)/switched off by the document (923) |
+| Windows Event Log → `EMLyUpdater` source | Update found (100), install ok (200)/failed (201), forced kill (300), assoc repair (400), IPC client rejected (600), IPC unavailable (601), source policy decision (700)/failure (701), cert installed (702), cert install failed (703), self-update started (800)/completed (801)/refused or abandoned (802), presence channel connected (920)/lost (921)/endpoint not implemented (922)/switched off by the document (923), client channel command accepted (924, Event Log only for `service.restart`/`machine.reboot`)/refused (925)/pending restart-or-reboot auto-expired (926) |
 
 Event 801 is written by the build that came up *after* the restart, so a self-update reads
 `800` → (service stops and restarts) → `801`. An `800` with no `801` after it is one that did not

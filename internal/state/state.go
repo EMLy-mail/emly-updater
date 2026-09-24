@@ -165,12 +165,15 @@ func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
 
 // update applies mutate to the current state and saves the result.
 //
-// Read-modify-write, not a wholesale overwrite: the document holds two
-// independent lifecycles - EMLy's queued update and the updater's own
-// self-update - and each is touched by a different part of a cycle. Saving a
-// freshly built State from either side would silently drop the other's entry,
-// losing a queued EMLy install or the record that tells the next start whether
-// a self-update landed.
+// Read-modify-write, not a wholesale overwrite: the document holds three
+// independent lifecycles - EMLy's queued update, the updater's own
+// self-update record, and the client channel's pending destructive commands
+// (PendingCommands) - and each is touched by a different part of a cycle.
+// Saving a freshly built State from any one side would silently drop the
+// others' entries, losing a queued EMLy install, the record that tells the
+// next start whether a self-update landed, or a service.restart/
+// machine.reboot id a redelivered command still needs to be recognised
+// against.
 //
 // A state file too corrupt to read is rebuilt rather than propagated: it holds
 // only re-derivable bookkeeping, and refusing to write would leave the service

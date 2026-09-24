@@ -6,8 +6,10 @@ import (
 )
 
 // SessionChangeKind names one SERVICE_CONTROL_SESSIONCHANGE notification. The
-// values are this package's own labels, not yet a wire contract: nothing
-// sends them to the API (see Updater.watchSessions).
+// values are a wire contract with the API since protocol v2 of the client
+// channel: they travel verbatim in session.changed's `events`
+// (emly-go-api/CLIENT_WS_PROTOCOL.md §8.1). Renaming one is a protocol
+// change.
 type SessionChangeKind string
 
 const (

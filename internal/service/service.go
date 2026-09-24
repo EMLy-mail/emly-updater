@@ -273,6 +273,25 @@ type Updater struct {
 	// through apply/install's signatures - both run on the poll goroutine, so
 	// this needs no locking either.
 	cycleTrigger string
+
+	// wake carries the reason for an early wake-up of RunLoop, sent by
+	// handleNotify (clientnotify.go) after its jittered delay. Buffered 1:
+	// several notifies before RunLoop's select picks it up collapse into the
+	// one pending wake, so a burst of server pushes never queues more than
+	// one extra cycle. New sets it; a literal Updater built by a test (that
+	// never calls RunLoop) may leave it nil, which is fine for a send
+	// (select/default below) but would block forever on a receive.
+	wake chan string
+	// forceConfig is set by a config.published notify and consumed by
+	// RunLoop's next refreshConfig call (Swap(false)): the notify only knows
+	// a newer document exists, not its content, so the next fetch is made
+	// unconditional rather than waiting for the poll interval to elapse.
+	forceConfig atomic.Bool
+	// jitterFn/afterFunc are scheduleWake's seams: tests pin the jitter to a
+	// deterministic value and run afterFunc's callback synchronously instead
+	// of waiting on a real timer. nil means the real rand.Int64N / time.AfterFunc.
+	jitterFn  func(max time.Duration) time.Duration
+	afterFunc func(time.Duration, func())
 }
 
 // clock is the time source; tests pin it.
@@ -303,6 +322,7 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		ipsFn:        machineinfo.LocalIPv4Addresses,
 		loggedUserFn: machineinfo.LoggedUser,
 		clientWSWake: make(chan struct{}, 1),
+		wake:         make(chan string, 1),
 		startedAt:    time.Now(),
 
 		sessionChanges: make(chan machineinfo.SessionChange, sessionChangeBuffer),
@@ -384,8 +404,10 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		if !first {
 			// Every later cycle re-fetches the document when it is due and
 			// re-evaluates the site: a laptop that changed subnet, or a
-			// policy that changed under it, takes effect here.
-			u.refreshConfig(ctx, false)
+			// policy that changed under it, takes effect here. Swap(false)
+			// both reads and clears forceConfig, so a config.published
+			// notify forces exactly the next fetch, not every one after it.
+			u.refreshConfig(ctx, u.forceConfig.Swap(false))
 			cyc = u.beginCycle(ctx, false)
 		}
 		first = false
@@ -393,8 +415,12 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		if err := u.Cycle(ctx, cyc); err != nil && ctx.Err() == nil {
 			u.Log.Error("update cycle failed", "error", err.Error())
 		}
+		u.wakeReason = ""
 		select {
 		case <-time.After(cyc.eff.Doc.Updater.PollInterval()):
+		case reason := <-u.wake:
+			u.wakeReason = reason
+			u.Log.Info("update loop woken early", "reason", reason)
 		case <-ctx.Done():
 			u.Log.Info("update loop stopped")
 			return

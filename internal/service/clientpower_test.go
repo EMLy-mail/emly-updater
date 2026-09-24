@@ -9,6 +9,7 @@ import (
 	"github.com/coder/websocket"
 
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/state"
 	"emlyupdater/internal/wsclient"
 )
 
@@ -95,5 +96,107 @@ func TestDestructiveBusyWhileInstalling(t *testing.T) {
 	u.executeCommand(context.Background(), s, msg, cmd)
 	if s.acks[0].Error.Code != wsclient.ErrBusy {
 		t.Fatalf("acks = %+v", s.acks)
+	}
+}
+
+// A failed restartFn must not leave the pending record (and the
+// destructivePending flag it set) behind: the reboot/restart never
+// actually happened, so nothing here should keep blocking further
+// destructive commands or installs.
+func TestServiceRestartFailureRemovesPendingID(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdServiceRestart)
+	u.restartFn = func() error { return errors.New("launch failed") }
+	s := &fakeSession{secure: true}
+	msg, cmd := cmdMsg(wsclient.CmdServiceRestart, ``)
+	u.executeCommand(context.Background(), s, msg, cmd)
+	cmds, _ := u.Store.TakePendingCommands()
+	if len(cmds) != 0 {
+		t.Fatalf("pending = %+v, want empty after a failed restart launch", cmds)
+	}
+	if u.destructivePendingNow() {
+		t.Fatal("destructivePending must be cleared after a failed restart launch")
+	}
+}
+
+// No delay_seconds and nobody logged on: the default (300s) is used
+// unmodified - there is no active user to raise it for.
+func TestRebootDefaultDelayNoUser(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdMachineReboot)
+	u.loggedUserFn = func() machineinfo.UserSession { return machineinfo.UserSession{} }
+	var got time.Duration
+	u.rebootFn = func(d time.Duration) error { got = d; return nil }
+	s := &fakeSession{secure: true}
+	msg, cmd := cmdMsg(wsclient.CmdMachineReboot, `{}`)
+	u.executeCommand(context.Background(), s, msg, cmd)
+	want := time.Duration(wsclient.RebootDefaultDelaySeconds) * time.Second
+	if got != want {
+		t.Fatalf("delay = %v, want default %v", got, want)
+	}
+}
+
+// A disconnected session is still "the logged user" for inventory purposes
+// (machineinfo's convention), but it is not somebody actually at the
+// machine right now - so it must not raise the requested delay the way an
+// active console/RDP session does.
+func TestRebootDisconnectedUserNoDelayRaise(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdMachineReboot)
+	u.loggedUserFn = func() machineinfo.UserSession {
+		return machineinfo.UserSession{User: `CORP\u`, State: machineinfo.SessionDisconnected}
+	}
+	var got time.Duration
+	u.rebootFn = func(d time.Duration) error { got = d; return nil }
+	s := &fakeSession{secure: true}
+	msg, cmd := cmdMsg(wsclient.CmdMachineReboot, `{"delay_seconds":10}`)
+	u.executeCommand(context.Background(), s, msg, cmd)
+	if got != 10*time.Second {
+		t.Fatalf("delay = %v, want unchanged 10s for a disconnected user", got)
+	}
+}
+
+// Once one destructive command is committed (reboot scheduled), a second
+// one of a different name must be refused busy too - not just a duplicate
+// of the same command, which the dedupe ring already handles.
+func TestSecondDestructiveCommandRefusedBusy(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdMachineReboot, wsclient.CmdServiceRestart)
+	u.rebootFn = func(time.Duration) error { return nil }
+	s1 := &fakeSession{secure: true}
+	msg1, cmd1 := cmdMsg(wsclient.CmdMachineReboot, `{}`)
+	u.executeCommand(context.Background(), s1, msg1, cmd1)
+	if !u.destructivePendingNow() {
+		t.Fatal("destructivePending should be set after a committed reboot")
+	}
+
+	u.restartFn = func() error { t.Fatal("a second destructive command must not run"); return nil }
+	s2 := &fakeSession{secure: true}
+	msg2, cmd2 := cmdMsg(wsclient.CmdServiceRestart, ``)
+	u.executeCommand(context.Background(), s2, msg2, cmd2)
+	if s2.acks[0].Accepted || s2.acks[0].Error.Code != wsclient.ErrBusy {
+		t.Fatalf("second command acks = %+v", s2.acks)
+	}
+}
+
+// seedCommandRing must recognise a pending command id left in state.json by
+// a previous process, and must not consume it: TakePendingCommands (used
+// later by service.started's welcome burst) still has to see the record.
+func TestSeedCommandRingFromState(t *testing.T) {
+	u := newClientTestUpdater(t)
+	rec := state.PendingCommand{ID: "abc123", Name: wsclient.CmdMachineReboot, AcceptedAt: time.Now().UTC()}
+	if err := u.Store.AddPendingCommand(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	u.seedCommandRing()
+
+	if _, seen := u.commands.lookup("abc123"); !seen {
+		t.Fatal("pending command id from state.json was not seeded into the dedupe ring")
+	}
+
+	cmds, err := u.Store.TakePendingCommands()
+	if err != nil || len(cmds) != 1 || cmds[0].ID != "abc123" {
+		t.Fatalf("seeding must not consume the pending command record, got %+v err=%v", cmds, err)
 	}
 }

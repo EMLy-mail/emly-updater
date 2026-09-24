@@ -240,12 +240,19 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	}
 
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
-	// installing is not decremented on success: the service is about to be
-	// stopped by the setup this launches, so there is nothing left to
-	// un-mark busy - a failed launch is the only path that gets to undo it.
-	u.installing.Add(1)
+	// beginInstall also refuses (false) when a destructive client command
+	// has been committed in the meantime (service.restart/machine.reboot) -
+	// see clientpower.go. installing is not decremented on success: the
+	// service is about to be stopped by the setup this launches, so there
+	// is nothing left to un-mark - a destructive command arriving between
+	// now and the actual restart is correctly refused as busy by
+	// admitDestructive until this process exits. A failed launch is the
+	// only path that gets to undo it.
+	if !u.beginInstall("updater self-update") {
+		return false
+	}
 	if err := selfupdate.Launch(setupPath, logPath); err != nil {
-		u.installing.Add(-1)
+		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		if err := u.restoreCache(); err != nil {

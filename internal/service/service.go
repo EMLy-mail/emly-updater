@@ -193,16 +193,43 @@ type Updater struct {
 	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck
 	updaterCheckFn func(context.Context, *cycleState) wsclient.ManifestCheck
 
-	// installing counts installs currently in flight (EMLy's own setup via
-	// runSetupAndVerify, and this updater's own via applySelfUpdate) so
-	// admitDestructive (clientpower.go) can refuse service.restart and
-	// machine.reboot as busy rather than racing a running installer.
+	// installing counts installs currently in flight: EMLy's own (the whole
+	// of install() - both setup runs, the forced redownload and the
+	// uninstall/reinstall clean-retry, not just runSetupAndVerify, since a
+	// destructive command must not be admitted mid-uninstall either) and
+	// this updater's own (applySelfUpdate, right before Launch). It gates
+	// admitDestructive (clientpower.go), which refuses service.restart and
+	// machine.reboot as busy while it is nonzero. After a successful
+	// self-update launch it intentionally stays >0 for the rest of this
+	// process's life - the service is about to stop, there is nothing left
+	// to un-mark, and refusing destructive commands as busy until the
+	// restart actually happens is the correct behaviour, not a bug.
 	installing atomic.Int32
 	// restartFn/rebootFn are the seams clientpower.go's runDestructive uses
 	// in place of launching restart-service / calling power.Reboot; tests
 	// set them so no test ever restarts the service or reboots the machine.
 	restartFn func() error
 	rebootFn  func(time.Duration) error
+
+	// destructiveMu guards destructivePending, and is also held for the
+	// whole check-then-act step wherever an install is about to start
+	// (beginInstall, used by install() and applySelfUpdate) or a
+	// destructive command is about to be committed (commitDestructive,
+	// used by runDestructive right before restartFn/rebootFn) - see
+	// clientpower.go. Sharing one mutex between both sides is what makes
+	// the check and the act atomic with respect to each other: without it,
+	// an install could start in the gap between admitDestructive's busy
+	// check and runDestructive actually committing to the reboot/restart,
+	// or a destructive command could be committed in the gap between an
+	// install's own busy check and it incrementing installing.
+	destructiveMu sync.Mutex
+	// destructivePending marks that a service.restart or machine.reboot has
+	// been committed for this process: set by commitDestructive right
+	// before restartFn/rebootFn runs, cleared if that call fails. While
+	// set, Cycle skips self-update and the EMLy pending/install path
+	// entirely (logged once at Info), and admitDestructive refuses a
+	// second destructive command as busy.
+	destructivePending bool
 }
 
 // clock is the time source; tests pin it.
@@ -269,6 +296,13 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		"policyRevision", cyc.snap.Revision(),
 		"policySource", cyc.snap.Source.String(),
 	)
+
+	// Seed the command dedupe ring from whatever pending command ids
+	// survived from a previous process (state.json) before the presence
+	// channel below makes its first connection attempt - a server that
+	// re-sends the same service.restart/machine.reboot id after the
+	// reconnect must be told "already seen", not have it executed again.
+	u.seedCommandRing()
 
 	// The presence channel runs for the life of the service, beside the poll
 	// loop rather than inside it: it follows the same server chain beginCycle
@@ -344,6 +378,21 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	// un-pause it), still healed the trust store and still serves IPC - but
 	// it downloads and installs nothing, its own release included.
 	if !u.applyControlGate(cyc) {
+		return nil
+	}
+
+	// A service.restart or machine.reboot accepted over the client channel
+	// has already been committed (runDestructive, clientpower.go) - the
+	// service is going to stop on its own within the announced delay.
+	// Starting a self-update or an EMLy install now would either race that
+	// shutdown or, for a forced kill, tear down a setup mid-run because the
+	// user closed EMLy in response to the reboot warning. This is the
+	// coarse, cycle-level skip; install() (below, via beginInstall) is the
+	// authoritative, race-safe checkpoint for a destructive command
+	// admitted after this check passes but before an install actually
+	// starts - e.g. while apply() is waiting on WaitForExit.
+	if u.destructivePendingNow() {
+		u.Log.Info("skipping this cycle: a destructive client command (service.restart/machine.reboot) is pending")
 		return nil
 	}
 
@@ -649,6 +698,18 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 // only if that re-fetch cannot happen at all (e.g. offline) does the retry
 // fall back to the original local copy.
 func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
+	// Claims installing for the whole of this function - both setup runs,
+	// the forced redownload and the uninstall/reinstall clean-retry, not
+	// just the setup execution itself - so a destructive client command
+	// cannot be admitted mid-uninstall. This is also the checkpoint that
+	// stops a WaitForExit-released install (apply, above) from starting:
+	// the client channel may have accepted a reboot/restart while EMLy was
+	// still running and this cycle was waiting on it.
+	if !u.beginInstall("EMLy install") {
+		return fmt.Errorf("EMLy install skipped: a destructive client command is pending")
+	}
+	defer u.endInstall()
+
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
@@ -753,10 +814,11 @@ func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state
 // runSetupAndVerify runs EMLy's setup for p and confirms config.ini now
 // reports p.Version. label distinguishes the first attempt from the
 // clean-install retry in the logs.
+// installing is claimed by the caller (install, above) for its whole
+// duration - both attempts, plus the redownload/uninstall between them -
+// not by this function per call.
 func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
 	u.Log.Info(label, "path", p.SetupPath, "version", p.Version)
-	u.installing.Add(1)
-	defer u.installing.Add(-1)
 	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
 		return err
 	}

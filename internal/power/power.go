@@ -54,5 +54,15 @@ func enableShutdownPrivilege() error {
 	if err := windows.AdjustTokenPrivileges(procToken, false, &tp, 0, nil, nil); err != nil {
 		return fmt.Errorf("AdjustTokenPrivileges(SeShutdownPrivilege): %w", err)
 	}
+	// AdjustTokenPrivileges returns a nil error (the Win32 BOOL was TRUE) even
+	// when the privilege was not actually granted - that failure only shows up
+	// in GetLastError as ERROR_NOT_ALL_ASSIGNED, which is easy to miss and
+	// would otherwise surface as InitiateSystemShutdownEx failing with a
+	// confusing "access denied" instead of the real reason. Must be read
+	// immediately after the call above, before any other syscall can overwrite
+	// the thread's last-error value.
+	if errno := windows.GetLastError(); errno == windows.ERROR_NOT_ALL_ASSIGNED {
+		return fmt.Errorf("AdjustTokenPrivileges(SeShutdownPrivilege): %w", errno)
+	}
 	return nil
 }

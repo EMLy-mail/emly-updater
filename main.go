@@ -115,6 +115,15 @@ func cmdShowToast(args []string) error {
 	return toast.Show(*exe, *title, *body)
 }
 
+// restartServiceStartRetries/Delay bound cmdRestartService's cmdStart
+// attempts: the SCM can still be finishing the bookkeeping of the stop this
+// same process just performed when the first start is attempted, so one
+// failed attempt is expected, not fatal.
+const (
+	restartServiceStartRetries = 3
+	restartServiceStartDelay   = 5 * time.Second
+)
+
 // cmdRestartService is not meant to be invoked directly - the running
 // service launches it detached (DETACHED_PROCESS, never waited on) for the
 // client channel's service.restart command, then closes its own
@@ -122,11 +131,38 @@ func cmdShowToast(args []string) error {
 // actually stop is why this has to be a separate process rather than
 // something the service does to itself: the stop handler blocks the
 // service's own goroutine until RunLoop returns.
+//
+// Nothing else observes this process - no console, no caller waiting on its
+// exit code - so it logs to the normal ProgramData log and Event Log itself,
+// the same way runService does, rather than leaving a failure with no
+// trace. cmdStart is retried a few times with a short pause: it can race the
+// SCM's own bookkeeping of the stop this same process just performed.
 func cmdRestartService() error {
+	_ = config.EnsureDirs() // best-effort: if this fails, so will everything below
+	log := logging.New(config.LogsDir(), config.ExeLogPath(), false)
+	log.AttachEventLog()
+	defer log.Close()
+
+	log.Info("restart-service: stopping the service")
 	if err := cmdStop(); err != nil {
+		log.ErrorEvent(logging.EventGeneric, "restart-service: stop failed", "error", err.Error())
 		return err
 	}
-	return cmdStart()
+
+	var err error
+	for attempt := 1; attempt <= restartServiceStartRetries; attempt++ {
+		if err = cmdStart(); err == nil {
+			log.Info("restart-service: service restarted", "attempt", attempt)
+			return nil
+		}
+		log.Warn("restart-service: start attempt failed", "attempt", attempt, "error", err.Error())
+		if attempt < restartServiceStartRetries {
+			time.Sleep(restartServiceStartDelay)
+		}
+	}
+	log.ErrorEvent(logging.EventGeneric, "restart-service: service did not start after retries",
+		"attempts", restartServiceStartRetries, "error", err.Error())
+	return err
 }
 
 func fatalf(format string, args ...any) {

@@ -78,6 +78,30 @@ func refuse(code, msg string) *wsclient.ErrorBody {
 	return &wsclient.ErrorBody{Code: code, Message: msg}
 }
 
+// seedCommandRing loads the pending command ids left in state.json - a
+// service.restart or machine.reboot this process's predecessor accepted
+// and persisted right before it stopped or rebooted - and marks them
+// already-seen in the dedupe ring, before the first client-channel
+// connection is even attempted. Without this, a server re-sending the same
+// command id after the reconnect (exactly what it is expected to do until
+// service.started confirms it) would be re-executed instead of recognised
+// as a duplicate.
+//
+// Uses Load, not Take: cachedServiceStarted/buildServiceStarted is what
+// consumes (and clears) these same records, on a different goroutine once
+// the connection is up and the welcome burst runs. Seeding must not race it
+// for ownership - it only reads.
+func (u *Updater) seedCommandRing() {
+	st, err := u.Store.Load()
+	if err != nil {
+		u.Log.Warn("could not read state.json to seed the command dedupe ring", "error", err.Error())
+		return
+	}
+	for _, c := range st.PendingCommands {
+		u.commands.add(c.ID)
+	}
+}
+
 // executeCommand runs one command end to end: admission, ack, execution,
 // result. It is called on its own goroutine per command by wsclient.
 func (u *Updater) executeCommand(ctx context.Context, s commandSession, msg wsclient.Message, cmd wsclient.Command) {

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"syscall"
@@ -27,15 +28,20 @@ func userActive(s machineinfo.UserSession) bool {
 }
 
 // admitDestructive is the destructive-verb half of admitCommand: busy while
-// an install is running (self-update or EMLy's), and machine.reboot's
-// when_user_active=skip refusing to interrupt somebody who is actually at
-// the machine right now.
+// an install is running (self-update or EMLy's) or a previous destructive
+// command has already been committed (a reboot/restart already scheduled -
+// this also stops a second one arriving mid-countdown), and
+// machine.reboot's when_user_active=skip refusing to interrupt somebody who
+// is actually at the machine right now.
 func (u *Updater) admitDestructive(cmd wsclient.Command) *wsclient.ErrorBody {
 	if !wsclient.Destructive(cmd.Name) {
 		return nil
 	}
 	if u.installing.Load() > 0 {
 		return refuse(wsclient.ErrBusy, "an installation is in progress")
+	}
+	if u.destructivePendingNow() {
+		return refuse(wsclient.ErrBusy, "a service.restart or machine.reboot is already pending")
 	}
 	if cmd.Name == wsclient.CmdMachineReboot {
 		var a wsclient.RebootArgs
@@ -45,6 +51,70 @@ func (u *Updater) admitDestructive(cmd wsclient.Command) *wsclient.ErrorBody {
 		}
 	}
 	return nil
+}
+
+// beginInstall claims installing for a setup that is about to run - EMLy's
+// own (install, service.go) or this updater's own (applySelfUpdate,
+// selfupdate.go) - refusing (false) when a destructive client command has
+// already been committed. It shares destructiveMu with commitDestructive
+// below, so the two cannot interleave: an install cannot start in the gap
+// between admitDestructive's busy check and runDestructive actually
+// committing to the reboot/restart. reason is only used for the Info log
+// explaining a skip.
+func (u *Updater) beginInstall(reason string) bool {
+	u.destructiveMu.Lock()
+	defer u.destructiveMu.Unlock()
+	if u.destructivePending {
+		u.Log.Info("skipping "+reason+": a destructive client command (service.restart/machine.reboot) is pending")
+		return false
+	}
+	u.installing.Add(1)
+	return true
+}
+
+// endInstall releases what beginInstall claimed. Not called on
+// applySelfUpdate's success path - the service is about to stop, so there
+// is nothing left to un-mark; see installing's doc comment on Updater.
+func (u *Updater) endInstall() {
+	u.installing.Add(-1)
+}
+
+// commitDestructive is runDestructive's last check before actually
+// restarting the service or rebooting the machine: under the same lock
+// beginInstall uses, it re-verifies that no install has started since this
+// command was admitted and, if none has, sets destructivePending so
+// beginInstall (and a second destructive command reaching
+// admitDestructive) both see it immediately. False means an install
+// slipped into the gap between admission and here; the caller must treat
+// that exactly like restartFn/rebootFn itself failing.
+func (u *Updater) commitDestructive() bool {
+	u.destructiveMu.Lock()
+	defer u.destructiveMu.Unlock()
+	if u.installing.Load() > 0 {
+		return false
+	}
+	u.destructivePending = true
+	return true
+}
+
+// clearDestructivePending undoes commitDestructive after restartFn/rebootFn
+// itself (or the late installing race commitDestructive itself catches)
+// failed - the reboot/restart never actually happened, so nothing should
+// keep refusing further commands or installs as busy.
+func (u *Updater) clearDestructivePending() {
+	u.destructiveMu.Lock()
+	u.destructivePending = false
+	u.destructiveMu.Unlock()
+}
+
+// destructivePendingNow reports whether a service.restart or machine.reboot
+// has been committed for this process (see commitDestructive). Cycle uses
+// it to skip self-update and the EMLy update path entirely while a
+// countdown or the detached restart-service launch is in flight.
+func (u *Updater) destructivePendingNow() bool {
+	u.destructiveMu.Lock()
+	defer u.destructiveMu.Unlock()
+	return u.destructivePending
 }
 
 // runDestructive executes service.restart or machine.reboot after
@@ -70,7 +140,17 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		// service, and the stop handler waits for RunLoop to return - by
 		// which point nothing would be left to send a Result on anyway.
 		s.Close(websocket.StatusGoingAway, "service restarting")
+		if !u.commitDestructive() {
+			// An install started in the narrow gap between admission and
+			// here. Same handling as restartFn itself failing below: the
+			// connection is already closed, nobody is left to send a
+			// Result to.
+			u.Log.Error("service restart aborted: an install started after admission", "id", msg.ID)
+			_ = u.Store.RemovePendingCommand(msg.ID)
+			return
+		}
 		if err := u.restart(); err != nil {
+			u.clearDestructivePending()
 			// The connection is already closed: there is nobody left to
 			// send a Result to. The server times the command out instead.
 			u.Log.Error("service restart could not be launched", "id", msg.ID, "error", err.Error())
@@ -83,7 +163,12 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		if userActive(u.loggedUser()) && delay < minRebootNoticeWithUser {
 			delay = minRebootNoticeWithUser
 		}
+		if !u.commitDestructive() {
+			fail(errors.New("an install started after admission"))
+			return
+		}
 		if err := u.reboot(delay); err != nil {
+			u.clearDestructivePending()
 			fail(err)
 			return
 		}

@@ -47,20 +47,20 @@ const (
 )
 
 const (
-	ErrUnsupportedCommand = "unsupported_command"
-	ErrInvalidArgs        = "invalid_args"
-	ErrExpired            = "expired"
-	ErrBusy               = "busy"
-	ErrDisabledByPolicy   = "disabled_by_policy"
-	ErrInsecureTransport  = "insecure_transport"
-	ErrUserActive         = "user_active"
+	ErrUnsupportedCommand  = "unsupported_command"
+	ErrInvalidArgs         = "invalid_args"
+	ErrExpired             = "expired"
+	ErrBusy                = "busy"
+	ErrDisabledByPolicy    = "disabled_by_policy"
+	ErrInsecureTransport   = "insecure_transport"
+	ErrUserActive          = "user_active"
 	ErrWingetModuleMissing = "winget_module_missing"
-	ErrPowerShellNotFound = "powershell_not_found"
-	ErrSourcesUnreachable = "sources_unreachable"
-	ErrNotFound           = "not_found"
-	ErrManifestInvalid    = "manifest_invalid"
-	ErrTimeout            = "timeout"
-	ErrInternal           = "internal"
+	ErrPowerShellNotFound  = "powershell_not_found"
+	ErrSourcesUnreachable  = "sources_unreachable"
+	ErrNotFound            = "not_found"
+	ErrManifestInvalid     = "manifest_invalid"
+	ErrTimeout             = "timeout"
+	ErrInternal            = "internal"
 )
 
 var (

@@ -47,10 +47,16 @@ const (
 )
 
 // Message is the envelope every frame on this channel carries. Data is
-// omitted for the messages that have no payload (hello, ping, pong).
+// omitted for the messages that have no payload (hello, ping, pong). ID,
+// ReplyTo and TS are v2 additions (spec §4) and stay empty - so omitted from
+// the wire - on a v1 connection, which is what keeps the handshake and
+// heartbeat byte-identical to v1 against a v1 server.
 type Message struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data,omitempty"`
+	Type    string          `json:"type"`
+	ID      string          `json:"id,omitempty"`
+	ReplyTo string          `json:"reply_to,omitempty"`
+	TS      string          `json:"ts,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // Identity is the payload of the first message the client sends: the same
@@ -74,6 +80,11 @@ type Identity struct {
 	Product                  string `json:"product,omitempty"`
 	OSVersion                string `json:"os_version,omitempty"`
 	EMLyVersion              string `json:"emly_version,omitempty"`
+
+	// Protocol and Capabilities are the v2 negotiation (spec §4). Zero
+	// Protocol keeps the payload byte-identical to v1.
+	Protocol     int      `json:"protocol,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // Identified reports whether the payload carries enough for the API to know
@@ -135,6 +146,23 @@ const (
 	writeTimeout            = 10 * time.Second
 )
 
+// Handler reacts to the v2 messages a Client's connection receives once the
+// server has switched it to v2 with a welcome. Welcome and Notify are called
+// from the connection's own goroutine (the same one running heartbeat) and
+// must not block for long, or they hold up every other read on the
+// connection, including pongs; Command runs on a fresh goroutine per
+// command, so a slow one never blocks the next.
+type Handler interface {
+	// Welcome is called once, when the server's welcome switches the
+	// connection to v2.
+	Welcome(s *Session, w Welcome)
+	// Command is called for every command frame received after welcome, on
+	// its own goroutine, with a context that ends when Run returns.
+	Command(ctx context.Context, s *Session, msg Message, cmd Command)
+	// Notify is called for every notify frame received after welcome.
+	Notify(s *Session, msg Message, n Notify)
+}
+
 // Client runs one presence connection from dial to close. It is single-use
 // in the sense that Run returns when the connection ends; the supervisor
 // calls it again for the next attempt.
@@ -150,6 +178,10 @@ type Client struct {
 	// Identity is the payload of the first message sent after the server's
 	// hello. Resolved once, by the caller, at the moment of the dial.
 	Identity Identity
+	// Handler receives v2 commands and notifies once the server switches
+	// the connection with a welcome. Nil means v1 behaviour even if the
+	// server sends a welcome - it is ignored (logged) instead of dispatched.
+	Handler Handler
 
 	// IdleTimeout bounds a single read; zero means defaultIdleTimeout.
 	IdleTimeout time.Duration
@@ -270,6 +302,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 	defer conn.CloseNow()
+	conn.SetReadLimit(int64(DefaultLimits.MaxMessageBytes) + 1024)
 
 	if err := c.handshake(ctx, conn); err != nil {
 		return err
@@ -332,6 +365,9 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 // perfectly healthy from this side, and only the absence of the pings the
 // server promised every 10 seconds gives it away.
 func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
+	var sess *Session
+	cmdCtx, cancelCmds := context.WithCancel(ctx)
+	defer cancelCmds()
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, c.idleTimeout())
 		var msg Message
@@ -356,6 +392,37 @@ func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
 				return fmt.Errorf("presence channel could not answer a ping: %w", err)
 			}
 			c.logf("presence channel answered a ping")
+		case TypeWelcome:
+			if c.Handler == nil || sess != nil {
+				continue
+			}
+			var w Welcome
+			if err := json.Unmarshal(msg.Data, &w); err != nil || w.Protocol < ProtocolV2 {
+				c.logf("presence channel ignoring an unusable welcome: %s", msg.Data)
+				continue
+			}
+			sess = newSession(conn, c.URL, w)
+			c.logf("presence channel switched to protocol v2 (%d capabilities)", len(w.AcceptedCapabilities))
+			c.Handler.Welcome(sess, w)
+		case TypeCommand:
+			if sess == nil {
+				c.logf("presence channel ignoring a command received before welcome")
+				continue
+			}
+			var cmd Command
+			if err := json.Unmarshal(msg.Data, &cmd); err != nil {
+				c.logf("presence channel ignoring a malformed command: %v", err)
+				continue
+			}
+			go c.Handler.Command(cmdCtx, sess, msg, cmd)
+		case TypeNotify:
+			if sess == nil {
+				continue
+			}
+			var n Notify
+			if err := json.Unmarshal(msg.Data, &n); err == nil {
+				c.Handler.Notify(sess, msg, n)
+			}
 		case TypeError:
 			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
 		default:

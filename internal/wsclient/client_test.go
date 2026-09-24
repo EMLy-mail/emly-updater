@@ -476,3 +476,180 @@ func TestRunRefusesAnUnidentifiedClient(t *testing.T) {
 		t.Fatal("Run() with an empty identity returned no error")
 	}
 }
+
+type recHandler struct {
+	welcomes chan *Session
+	commands chan Command
+	notifies chan Notify
+}
+
+func newRecHandler() *recHandler {
+	return &recHandler{welcomes: make(chan *Session, 1), commands: make(chan Command, 4), notifies: make(chan Notify, 4)}
+}
+
+func (h *recHandler) Welcome(s *Session, w Welcome) { h.welcomes <- s }
+func (h *recHandler) Command(ctx context.Context, s *Session, msg Message, cmd Command) {
+	_ = s.Ack(ctx, msg.ID, Ack{Accepted: true})
+	h.commands <- cmd
+}
+func (h *recHandler) Notify(s *Session, msg Message, n Notify) { h.notifies <- n }
+
+// v2Server runs a fake API: hello, read identity (handed to gotIdentity),
+// then script(c).
+func v2Server(t *testing.T, gotIdentity chan<- Identity, script func(ctx context.Context, c *websocket.Conn)) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.CloseNow()
+		ctx := r.Context()
+		_ = wsjson.Write(ctx, c, Message{Type: TypeHello})
+		var msg Message
+		if err := wsjson.Read(ctx, c, &msg); err != nil {
+			return
+		}
+		var id Identity
+		_ = json.Unmarshal(msg.Data, &id)
+		gotIdentity <- id
+		script(ctx, c)
+	}))
+}
+
+func welcomeFrame(caps ...string) Message {
+	data, _ := json.Marshal(Welcome{Protocol: 2, AcceptedCapabilities: caps, Limits: DefaultLimits})
+	return Message{Type: TypeWelcome, ID: NewID(), Data: data}
+}
+
+func runClient(t *testing.T, srv *httptest.Server, h Handler) (context.CancelFunc, <-chan error) {
+	t.Helper()
+	url, _ := URLFor(srv.URL)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	c := &Client{URL: url, Identity: Identity{HWID: "HW-1", Protocol: 2, Capabilities: []string{CmdMachineInfo}}, Handler: h}
+	go func() { done <- c.Run(ctx) }()
+	return cancel, done
+}
+
+func TestIdentityCarriesProtocolAndCapabilities(t *testing.T) {
+	ids := make(chan Identity, 1)
+	srv := v2Server(t, ids, func(ctx context.Context, c *websocket.Conn) { <-ctx.Done() })
+	defer srv.Close()
+	cancel, _ := runClient(t, srv, newRecHandler())
+	defer cancel()
+	select {
+	case id := <-ids:
+		if id.Protocol != 2 || len(id.Capabilities) != 1 || id.Capabilities[0] != CmdMachineInfo {
+			t.Fatalf("identity = %+v", id)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no identity")
+	}
+}
+
+func TestWelcomeThenCommandIsDispatchedAndAcked(t *testing.T) {
+	ids := make(chan Identity, 1)
+	acks := make(chan Message, 1)
+	srv := v2Server(t, ids, func(ctx context.Context, c *websocket.Conn) {
+		_ = wsjson.Write(ctx, c, welcomeFrame(CmdMachineInfo))
+		data, _ := json.Marshal(Command{Name: CmdMachineInfo, ExpiresAt: "2099-01-01T00:00:00Z"})
+		cmdID := NewID()
+		_ = wsjson.Write(ctx, c, Message{Type: TypeCommand, ID: cmdID, Data: data})
+		var m Message
+		if wsjson.Read(ctx, c, &m) == nil {
+			acks <- m
+		}
+		<-ctx.Done()
+	})
+	defer srv.Close()
+	h := newRecHandler()
+	cancel, _ := runClient(t, srv, h)
+	defer cancel()
+
+	select {
+	case s := <-h.welcomes:
+		if s.Secure() || !s.Accepted(CmdMachineInfo) || s.Accepted(CmdMachineReboot) {
+			t.Fatalf("session secure=%v", s.Secure())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no welcome")
+	}
+	select {
+	case cmd := <-h.commands:
+		if cmd.Name != CmdMachineInfo {
+			t.Fatalf("cmd = %+v", cmd)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("command not dispatched")
+	}
+	select {
+	case m := <-acks:
+		if m.Type != TypeAck || m.ReplyTo == "" || len(m.ID) != 26 {
+			t.Fatalf("ack = %+v", m)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("no ack")
+	}
+}
+
+func TestCommandIgnoredBeforeWelcome(t *testing.T) {
+	ids := make(chan Identity, 1)
+	srv := v2Server(t, ids, func(ctx context.Context, c *websocket.Conn) {
+		data, _ := json.Marshal(Command{Name: CmdMachineInfo})
+		_ = wsjson.Write(ctx, c, Message{Type: TypeCommand, ID: NewID(), Data: data})
+		_ = wsjson.Write(ctx, c, Message{Type: TypePing})
+		var pong Message
+		_ = wsjson.Read(ctx, c, &pong)
+		<-ctx.Done()
+	})
+	defer srv.Close()
+	h := newRecHandler()
+	cancel, _ := runClient(t, srv, h)
+	defer cancel()
+	select {
+	case <-h.commands:
+		t.Fatal("command executed on a connection that never received welcome")
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
+func TestNotifyDispatched(t *testing.T) {
+	ids := make(chan Identity, 1)
+	srv := v2Server(t, ids, func(ctx context.Context, c *websocket.Conn) {
+		_ = wsjson.Write(ctx, c, welcomeFrame(TopicConfigPublished))
+		payload, _ := json.Marshal(ConfigPublished{Revision: 44, JitterSeconds: 60})
+		data, _ := json.Marshal(Notify{Topic: TopicConfigPublished, Payload: payload})
+		_ = wsjson.Write(ctx, c, Message{Type: TypeNotify, ID: NewID(), Data: data})
+		<-ctx.Done()
+	})
+	defer srv.Close()
+	h := newRecHandler()
+	cancel, _ := runClient(t, srv, h)
+	defer cancel()
+	select {
+	case n := <-h.notifies:
+		if n.Topic != TopicConfigPublished {
+			t.Fatalf("n = %+v", n)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("notify not dispatched")
+	}
+}
+
+func TestSessionRefusesOversizedFrames(t *testing.T) {
+	ids := make(chan Identity, 1)
+	srv := v2Server(t, ids, func(ctx context.Context, c *websocket.Conn) {
+		_ = wsjson.Write(ctx, c, welcomeFrame(EvtMachineInfo))
+		<-ctx.Done()
+	})
+	defer srv.Close()
+	h := newRecHandler()
+	cancel, _ := runClient(t, srv, h)
+	defer cancel()
+	s := <-h.welcomes
+	big := strings.Repeat("x", DefaultLimits.MaxMessageBytes)
+	if err := s.Event(context.Background(), EvtMachineInfo, big); !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("err = %v, want ErrTooLarge", err)
+	}
+}

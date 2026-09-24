@@ -179,6 +179,45 @@ func TestSecondDestructiveCommandRefusedBusy(t *testing.T) {
 	}
 }
 
+// Once destructivePending auto-expires (the committed reboot never actually
+// completed - see destructivePendingLocked), the command's own
+// pendingCommands record must go with it. Left behind, the next start's
+// service.started would read it back (buildServiceStarted,
+// clientevents.go) and report the aborted reboot as a completed one, under
+// reason "boot".
+func TestDestructivePendingExpiryRemovesPendingCommandRecord(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdMachineReboot)
+	u.rebootFn = func(time.Duration) error { return nil }
+
+	now := time.Now()
+	u.nowFn = func() time.Time { return now }
+
+	s := &fakeSession{secure: true}
+	msg, cmd := cmdMsg(wsclient.CmdMachineReboot, `{}`)
+	u.executeCommand(context.Background(), s, msg, cmd)
+
+	st, err := u.Store.Load()
+	if err != nil || len(st.PendingCommands) != 1 || st.PendingCommands[0].ID != msg.ID {
+		t.Fatalf("pending command not recorded before expiry: %+v, err=%v", st, err)
+	}
+
+	// Advance well past the reboot's auto-expiry deadline (default delay +
+	// rebootGrace).
+	now = now.Add(time.Hour)
+
+	if u.destructivePendingNow() {
+		t.Fatal("destructivePending should have auto-expired")
+	}
+	st, err = u.Store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.PendingCommands) != 0 {
+		t.Fatalf("expired destructive command's pending record was not removed: %+v", st.PendingCommands)
+	}
+}
+
 // seedCommandRing must recognise a pending command id left in state.json by
 // a previous process, and must not consume it: TakePendingCommands (used
 // later by service.started's welcome burst) still has to see the record.
@@ -191,7 +230,7 @@ func TestSeedCommandRingFromState(t *testing.T) {
 
 	u.seedCommandRing()
 
-	if _, seen := u.commands.lookup("abc123"); !seen {
+	if _, _, seen := u.commands.lookup("abc123"); !seen {
 		t.Fatal("pending command id from state.json was not seeded into the dedupe ring")
 	}
 

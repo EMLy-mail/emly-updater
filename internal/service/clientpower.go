@@ -106,7 +106,7 @@ func (u *Updater) endInstall() {
 // admitDestructive) both see it immediately. False means an install
 // slipped into the gap between admission and here; the caller must treat
 // that exactly like restartFn/rebootFn itself failing.
-func (u *Updater) commitDestructive(deadline time.Time) bool {
+func (u *Updater) commitDestructive(id string, deadline time.Time) bool {
 	u.destructiveMu.Lock()
 	defer u.destructiveMu.Unlock()
 	if u.installing.Load() > 0 {
@@ -114,6 +114,7 @@ func (u *Updater) commitDestructive(deadline time.Time) bool {
 	}
 	u.destructivePending = true
 	u.destructiveDeadline = deadline
+	u.destructiveCommandID = id
 	u.destructiveSkipLogged = false
 	return true
 }
@@ -137,6 +138,7 @@ func (u *Updater) clearDestructivePending() {
 func (u *Updater) clearDestructivePendingLocked() {
 	u.destructivePending = false
 	u.destructiveDeadline = time.Time{}
+	u.destructiveCommandID = ""
 	u.destructiveSkipLogged = false
 }
 
@@ -151,11 +153,23 @@ func (u *Updater) clearDestructivePendingLocked() {
 // once for the transition, not on every read after it.
 func (u *Updater) destructivePendingLocked() bool {
 	if u.destructivePending && !u.destructiveDeadline.IsZero() && !u.clock().Before(u.destructiveDeadline) {
-		deadline := u.destructiveDeadline
+		deadline, id := u.destructiveDeadline, u.destructiveCommandID
 		u.clearDestructivePendingLocked()
 		u.Log.WarnEvent(logging.EventClientCommandExpired,
 			"a committed service.restart/machine.reboot did not complete by its deadline, resuming normal operation",
 			"deadline", deadline.UTC().Format(time.RFC3339))
+		// The reboot/restart never actually happened, so its pendingCommands
+		// record must go with it: left behind, the next start's
+		// service.started (buildServiceStarted, clientevents.go) would read
+		// it back and report this aborted command as completed instead -
+		// machine.reboot always under reason "boot", since
+		// serviceStartedReason cannot tell an aborted reboot from a real one.
+		if id != "" && u.Store != nil {
+			if err := u.Store.RemovePendingCommand(id); err != nil {
+				u.Log.Warn("could not remove the expired destructive command's pending record",
+					"id", id, "error", err.Error())
+			}
+		}
 	}
 	return u.destructivePending
 }
@@ -209,7 +223,7 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		// service, and the stop handler waits for RunLoop to return - by
 		// which point nothing would be left to send a Result on anyway.
 		s.Close(websocket.StatusGoingAway, "service restarting")
-		if !u.commitDestructive(u.clock().Add(serviceRestartGrace)) {
+		if !u.commitDestructive(msg.ID, u.clock().Add(serviceRestartGrace)) {
 			// An install started in the narrow gap between admission and
 			// here. Same handling as restartFn itself failing below: the
 			// connection is already closed, nobody is left to send a
@@ -232,7 +246,7 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		if userActive(u.loggedUser()) && delay < minRebootNoticeWithUser {
 			delay = minRebootNoticeWithUser
 		}
-		if !u.commitDestructive(u.clock().Add(delay + rebootGrace)) {
+		if !u.commitDestructive(msg.ID, u.clock().Add(delay+rebootGrace)) {
 			fail(errors.New("an install started after admission"))
 			return
 		}

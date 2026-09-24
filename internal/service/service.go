@@ -252,6 +252,15 @@ type Updater struct {
 	// destructivePendingLocked is what actually enforces the deadline,
 	// lazily, on whichever check happens to run next.
 	destructiveDeadline time.Time
+	// destructiveCommandID is the msg.ID commitDestructive was called with,
+	// remembered alongside destructiveDeadline so an auto-expiry
+	// (destructivePendingLocked) can also remove that command's
+	// state.json pendingCommands record. Without this, an aborted
+	// reboot/restart whose deadline lapses leaves the record behind, and
+	// the next start's service.started (buildServiceStarted,
+	// clientevents.go) reads it back and reports the aborted command as
+	// completed - reboot always with reason "boot".
+	destructiveCommandID string
 	// destructiveSkipLogged marks that Cycle's "skipping this cycle"
 	// message has already been logged for the destructivePending episode
 	// currently in progress, so a countdown of several minutes does not

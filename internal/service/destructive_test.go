@@ -104,7 +104,7 @@ func TestCommitDestructiveRefusedWhileInstalling(t *testing.T) {
 	u := newClientTestUpdater(t)
 	u.installing.Add(1)
 
-	if u.commitDestructive(u.clock().Add(time.Minute)) {
+	if u.commitDestructive("cmd-1", u.clock().Add(time.Minute)) {
 		t.Fatal("commitDestructive must refuse while installing > 0")
 	}
 	if u.destructivePendingNow() {
@@ -123,7 +123,7 @@ func TestDestructivePendingAutoExpires(t *testing.T) {
 	now := time.Now()
 	u.nowFn = func() time.Time { return now }
 
-	if !u.commitDestructive(now.Add(time.Minute)) {
+	if !u.commitDestructive("cmd-1", now.Add(time.Minute)) {
 		t.Fatal("commitDestructive should have succeeded")
 	}
 	if !u.destructivePendingNow() {

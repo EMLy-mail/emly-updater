@@ -11,17 +11,35 @@ import (
 	"github.com/coder/websocket"
 	"golang.org/x/sys/windows"
 
+	"emlyupdater/internal/logging"
 	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/power"
 	"emlyupdater/internal/state"
 	"emlyupdater/internal/wsclient"
 )
 
-// minRebootNoticeWithUser is the floor machine.reboot's delay is raised to
-// when somebody is actively using the console or an RDP session: Windows
-// shows its own countdown, but a shorter one is not enough warning for a
-// user who is actually there.
-const minRebootNoticeWithUser = 60 * time.Second
+const (
+	// minRebootNoticeWithUser is the floor machine.reboot's delay is raised
+	// to when somebody is actively using the console or an RDP session:
+	// Windows shows its own countdown, but a shorter one is not enough
+	// warning for a user who is actually there.
+	minRebootNoticeWithUser = 60 * time.Second
+
+	// rebootGrace is added to the reboot's own requested delay when
+	// computing destructivePending's auto-expiry deadline: slack, beyond
+	// InitiateSystemShutdownEx's own countdown, for the shutdown to
+	// actually happen. If it is aborted (`shutdown /a`) or hangs, this is
+	// what lets destructivePending - and the busy state it holds the
+	// machine in - heal on its own instead of staying stuck for the rest
+	// of the process's life.
+	rebootGrace = 5 * time.Minute
+	// serviceRestartGrace is destructivePending's auto-expiry deadline for
+	// service.restart: cmdStop's own wait (up to 60s), the restart-service
+	// child's retried cmdStart attempts, and a margin for process/SCM
+	// scheduling. If the detached child dies, or the service never comes
+	// back, this is what lets the flag heal the same way.
+	serviceRestartGrace = 3 * time.Minute
+)
 
 func userActive(s machineinfo.UserSession) bool {
 	return s.State == machineinfo.SessionActiveConsole || s.State == machineinfo.SessionActiveRDP
@@ -64,7 +82,7 @@ func (u *Updater) admitDestructive(cmd wsclient.Command) *wsclient.ErrorBody {
 func (u *Updater) beginInstall(reason string) bool {
 	u.destructiveMu.Lock()
 	defer u.destructiveMu.Unlock()
-	if u.destructivePending {
+	if u.destructivePendingLocked() {
 		u.Log.Info("skipping "+reason+": a destructive client command (service.restart/machine.reboot) is pending")
 		return false
 	}
@@ -82,18 +100,21 @@ func (u *Updater) endInstall() {
 // commitDestructive is runDestructive's last check before actually
 // restarting the service or rebooting the machine: under the same lock
 // beginInstall uses, it re-verifies that no install has started since this
-// command was admitted and, if none has, sets destructivePending so
+// command was admitted and, if none has, sets destructivePending (with the
+// given auto-expiry deadline - see rebootGrace/serviceRestartGrace) so
 // beginInstall (and a second destructive command reaching
 // admitDestructive) both see it immediately. False means an install
 // slipped into the gap between admission and here; the caller must treat
 // that exactly like restartFn/rebootFn itself failing.
-func (u *Updater) commitDestructive() bool {
+func (u *Updater) commitDestructive(deadline time.Time) bool {
 	u.destructiveMu.Lock()
 	defer u.destructiveMu.Unlock()
 	if u.installing.Load() > 0 {
 		return false
 	}
 	u.destructivePending = true
+	u.destructiveDeadline = deadline
+	u.destructiveSkipLogged = false
 	return true
 }
 
@@ -103,18 +124,66 @@ func (u *Updater) commitDestructive() bool {
 // keep refusing further commands or installs as busy.
 func (u *Updater) clearDestructivePending() {
 	u.destructiveMu.Lock()
-	u.destructivePending = false
+	u.clearDestructivePendingLocked()
 	u.destructiveMu.Unlock()
 }
 
+// clearDestructivePendingLocked must be called with destructiveMu held.
+// Shared by clearDestructivePending (an explicit failure) and
+// destructivePendingLocked (an expired deadline) so both reset the same
+// three fields together - in particular destructiveSkipLogged, so the next
+// episode logs its own "skipping this cycle" line instead of staying
+// silent because a previous, now-irrelevant episode already logged once.
+func (u *Updater) clearDestructivePendingLocked() {
+	u.destructivePending = false
+	u.destructiveDeadline = time.Time{}
+	u.destructiveSkipLogged = false
+}
+
+// destructivePendingLocked must be called with destructiveMu held. It is
+// the single place that enforces destructiveDeadline: once the deadline has
+// passed, the committed reboot/restart is assumed to have failed silently
+// (an aborted shutdown, a restart-service child that died or a service that
+// never came back up) and the flag is released so the machine is not stuck
+// refusing every cycle and every new destructive command forever. This is
+// checked lazily, on whichever caller happens to read the flag next -
+// there is no background timer - and logged (Warn + Event Log) exactly
+// once for the transition, not on every read after it.
+func (u *Updater) destructivePendingLocked() bool {
+	if u.destructivePending && !u.destructiveDeadline.IsZero() && !u.clock().Before(u.destructiveDeadline) {
+		deadline := u.destructiveDeadline
+		u.clearDestructivePendingLocked()
+		u.Log.WarnEvent(logging.EventClientCommandExpired,
+			"a committed service.restart/machine.reboot did not complete by its deadline, resuming normal operation",
+			"deadline", deadline.UTC().Format(time.RFC3339))
+	}
+	return u.destructivePending
+}
+
 // destructivePendingNow reports whether a service.restart or machine.reboot
-// has been committed for this process (see commitDestructive). Cycle uses
-// it to skip self-update and the EMLy update path entirely while a
-// countdown or the detached restart-service launch is in flight.
+// has been committed for this process (see commitDestructive), applying
+// destructiveDeadline's auto-expiry. Cycle uses it to skip self-update and
+// the EMLy update path entirely while a countdown or the detached
+// restart-service launch is in flight.
 func (u *Updater) destructivePendingNow() bool {
 	u.destructiveMu.Lock()
 	defer u.destructiveMu.Unlock()
-	return u.destructivePending
+	return u.destructivePendingLocked()
+}
+
+// logDestructiveSkipOnce logs Cycle's "skipping this cycle" line at most
+// once per destructivePending episode (reset by clearDestructivePendingLocked
+// whenever the flag clears, explicitly or by expiry) - a reboot's countdown
+// can span several poll intervals, and the point of the message is to
+// explain the first skip, not to repeat on every one of them.
+func (u *Updater) logDestructiveSkipOnce() {
+	u.destructiveMu.Lock()
+	already := u.destructiveSkipLogged
+	u.destructiveSkipLogged = true
+	u.destructiveMu.Unlock()
+	if !already {
+		u.Log.Info("skipping cycles: a destructive client command (service.restart/machine.reboot) is pending")
+	}
 }
 
 // runDestructive executes service.restart or machine.reboot after
@@ -140,7 +209,7 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		// service, and the stop handler waits for RunLoop to return - by
 		// which point nothing would be left to send a Result on anyway.
 		s.Close(websocket.StatusGoingAway, "service restarting")
-		if !u.commitDestructive() {
+		if !u.commitDestructive(u.clock().Add(serviceRestartGrace)) {
 			// An install started in the narrow gap between admission and
 			// here. Same handling as restartFn itself failing below: the
 			// connection is already closed, nobody is left to send a
@@ -163,7 +232,7 @@ func (u *Updater) runDestructive(ctx context.Context, s commandSession, msg wscl
 		if userActive(u.loggedUser()) && delay < minRebootNoticeWithUser {
 			delay = minRebootNoticeWithUser
 		}
-		if !u.commitDestructive() {
+		if !u.commitDestructive(u.clock().Add(delay + rebootGrace)) {
 			fail(errors.New("an install started after admission"))
 			return
 		}

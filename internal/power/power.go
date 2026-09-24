@@ -5,6 +5,7 @@ package power
 
 import (
 	"fmt"
+	"runtime"
 	"time"
 
 	"golang.org/x/sys/windows"
@@ -51,16 +52,21 @@ func enableShutdownPrivilege() error {
 			{Luid: luid, Attributes: windows.SE_PRIVILEGE_ENABLED},
 		},
 	}
-	if err := windows.AdjustTokenPrivileges(procToken, false, &tp, 0, nil, nil); err != nil {
-		return fmt.Errorf("AdjustTokenPrivileges(SeShutdownPrivilege): %w", err)
-	}
 	// AdjustTokenPrivileges returns a nil error (the Win32 BOOL was TRUE) even
 	// when the privilege was not actually granted - that failure only shows up
 	// in GetLastError as ERROR_NOT_ALL_ASSIGNED, which is easy to miss and
 	// would otherwise surface as InitiateSystemShutdownEx failing with a
-	// confusing "access denied" instead of the real reason. Must be read
-	// immediately after the call above, before any other syscall can overwrite
-	// the thread's last-error value.
+	// confusing "access denied" instead of the real reason. GetLastError is
+	// per-OS-thread, and a goroutine can migrate between OS threads (or share
+	// one with another goroutine's syscalls) at any point the Go runtime
+	// schedules it - so without pinning this goroutine to one thread for the
+	// call and the read together, the value read back may not even be this
+	// call's own.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := windows.AdjustTokenPrivileges(procToken, false, &tp, 0, nil, nil); err != nil {
+		return fmt.Errorf("AdjustTokenPrivileges(SeShutdownPrivilege): %w", err)
+	}
 	if errno := windows.GetLastError(); errno == windows.ERROR_NOT_ALL_ASSIGNED {
 		return fmt.Errorf("AdjustTokenPrivileges(SeShutdownPrivilege): %w", errno)
 	}

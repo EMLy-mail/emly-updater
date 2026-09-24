@@ -192,6 +192,11 @@ type Updater struct {
 	// their network paths need not be exercised.
 	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck
 	updaterCheckFn func(context.Context, *cycleState) wsclient.ManifestCheck
+	// verifySelfSetupFn overrides applySelfUpdate's Authenticode signature
+	// check in tests - there is no way to produce a file signed by the
+	// embedded 3gIT certificate's private key outside a real release build.
+	// nil means the real verifySelfSetup.
+	verifySelfSetupFn func(string) error
 
 	// installing counts installs currently in flight: EMLy's own (the whole
 	// of install() - both setup runs, the forced redownload and the
@@ -227,9 +232,27 @@ type Updater struct {
 	// been committed for this process: set by commitDestructive right
 	// before restartFn/rebootFn runs, cleared if that call fails. While
 	// set, Cycle skips self-update and the EMLy pending/install path
-	// entirely (logged once at Info), and admitDestructive refuses a
-	// second destructive command as busy.
+	// entirely (logged once per pending episode at Info), and
+	// admitDestructive refuses a second destructive command as busy.
 	destructivePending bool
+	// destructiveDeadline is when destructivePending stops being trusted:
+	// commitDestructive sets it to roughly "when the reboot/restart should
+	// have already happened, plus a safety margin" (see rebootGrace and
+	// serviceRestartGrace in clientpower.go). An aborted shutdown
+	// (`shutdown /a`) or a restart-service child that never brings the
+	// service back (a hung cmdStop, an SCM that refuses the start) would
+	// otherwise leave this flag - and therefore every Cycle and every new
+	// destructive command - stuck for the rest of the process's life, with
+	// no way to recover the host except physically touching it.
+	// destructivePendingLocked is what actually enforces the deadline,
+	// lazily, on whichever check happens to run next.
+	destructiveDeadline time.Time
+	// destructiveSkipLogged marks that Cycle's "skipping this cycle"
+	// message has already been logged for the destructivePending episode
+	// currently in progress, so a countdown of several minutes does not
+	// repeat the line on every poll. Reset whenever destructivePending
+	// clears, explicitly or by expiry.
+	destructiveSkipLogged bool
 }
 
 // clock is the time source; tests pin it.
@@ -392,7 +415,7 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	// admitted after this check passes but before an install actually
 	// starts - e.g. while apply() is waiting on WaitForExit.
 	if u.destructivePendingNow() {
-		u.Log.Info("skipping this cycle: a destructive client command (service.restart/machine.reboot) is pending")
+		u.logDestructiveSkipOnce()
 		return nil
 	}
 
@@ -628,6 +651,20 @@ func (u *Updater) resolveTargetWith(ctx context.Context, cyc *cycleState, channe
 // not running → install now; running and non-forced → wait for exit; running
 // and forced → optional WTS warning, then kill.
 func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
+	// Coarse check, same reasoning as Cycle's own: apply is reached after
+	// resolveTarget/download, which can take a while, so a destructive
+	// command could have been committed since Cycle's own top-level check.
+	// install() (below, via beginInstall) is still the authoritative,
+	// race-safe checkpoint for the non-forced path - but the forced path
+	// kills EMLy before ever reaching install(), so it gets its own check
+	// too, right before the kill (see below): a user closing EMLy because
+	// of an unrelated reboot warning must not have the forced kill run
+	// anyway for an install that is about to be refused.
+	if u.destructivePendingNow() {
+		u.logDestructiveSkipOnce()
+		return nil
+	}
+
 	exe := u.Cfg.EMLyExeName
 
 	if process.IsRunning(exe) {
@@ -648,6 +685,16 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 				} else {
 					u.Log.Info("no active console session, skipping warning")
 				}
+			}
+			// Re-checked here, not just at the top of apply: the warning
+			// countdown above can run for cyc.eff.Doc.Updater.CriticalWarning
+			// .Seconds (default 30s) of real time, long enough for a
+			// destructive command to be admitted and committed while EMLy is
+			// still running and untouched. Killing it now would be for
+			// nothing - install() is about to refuse anyway.
+			if u.destructivePendingNow() {
+				u.logDestructiveSkipOnce()
+				return nil
 			}
 			killed, err := process.TerminateAll(exe)
 			if err != nil {

@@ -198,13 +198,35 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		return false
 	}
 
-	if err := verifySelfSetup(setupPath); err != nil {
+	verify := verifySelfSetup
+	if u.verifySelfSetupFn != nil {
+		verify = u.verifySelfSetupFn
+	}
+	if err := verify(setupPath); err != nil {
 		// A checksum that matched a signature that does not means the manifest
 		// and the file agree with each other but not with us: drop the file so
 		// a re-download cannot be served from cache.
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "refusing to run the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		_ = os.Remove(setupPath)
+		return false
+	}
+
+	// Claimed before anything below is done, and nothing below is undone if
+	// it refuses: beginInstall also refuses (false) when a destructive
+	// client command has been committed in the meantime
+	// (service.restart/machine.reboot) - see clientpower.go. Checking this
+	// first, ahead of SetSelfUpdate and retireCache, means a refusal here
+	// leaves neither the self-update attempt record nor the remote-config
+	// cache touched - there would be nothing to undo them with, since
+	// nothing has failed and rolling either back "because a reboot is
+	// coming" would be its own bug. installing is not decremented on
+	// success: the service is about to be stopped by the setup this
+	// launches, so there is nothing left to un-mark - a destructive command
+	// arriving between now and the actual restart is correctly refused as
+	// busy by admitDestructive until this process exits. A failed launch,
+	// below, is the only path that gets to undo it.
+	if !u.beginInstall("updater self-update") {
 		return false
 	}
 
@@ -222,6 +244,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		LaunchedAt:  time.Now().UTC(),
 	}
 	if err := u.Store.SetSelfUpdate(rec); err != nil {
+		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed,
 			"refusing to launch the updater setup: the attempt could not be recorded",
 			"target", m.Version, "error", err.Error())
@@ -240,17 +263,6 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	}
 
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
-	// beginInstall also refuses (false) when a destructive client command
-	// has been committed in the meantime (service.restart/machine.reboot) -
-	// see clientpower.go. installing is not decremented on success: the
-	// service is about to be stopped by the setup this launches, so there
-	// is nothing left to un-mark - a destructive command arriving between
-	// now and the actual restart is correctly refused as busy by
-	// admitDestructive until this process exits. A failed launch is the
-	// only path that gets to undo it.
-	if !u.beginInstall("updater self-update") {
-		return false
-	}
 	if err := selfupdate.Launch(setupPath, logPath); err != nil {
 		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",

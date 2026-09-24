@@ -1,5 +1,5 @@
 #define ApplicationName 'EMLyUpdater'
-#define ApplicationVersion '1.7.1'
+#define ApplicationVersion '1.7.2'
 #define ServiceName 'EMLyUpdater'
 
 ; Microsoft.WinGet.Client, the PowerShell module internal/winget drives.

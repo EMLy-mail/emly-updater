@@ -345,10 +345,12 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   update: the welcome-burst goroutine (`TakePendingCommands`), the command goroutines (`Add`/
   `RemovePendingCommand`) and the poll goroutine (`SetPending`/`SetSelfUpdate`/...) can all be in
   flight at once, and without it two read-modify-write calls racing on the same `Load` could each
-  start from the same snapshot and have one write silently lost. Only a missing file loads as
-  empty; any other `Load` error (a corrupt file, a permission or disk error) is returned from
-  `update` as-is, with nothing written - a bad read must not silently clobber the file in its
-  place.
+  start from the same snapshot and have one write silently lost. A missing file loads as empty.
+  A file that does not parse (`state.ErrCorrupt`) is moved aside to `state.json.corrupt`
+  (`Store.OnCorrupt` logs it) and the write rebuilds from an empty `State`: failing closed there
+  would block self-update and `service.restart`/`machine.reboot` forever, since all of them
+  refuse to act without first recording state. Any other `Load` error (sharing violation, access
+  denied, disk error) may be transient, so `update` returns it with nothing written.
 
 ## Self-update
 

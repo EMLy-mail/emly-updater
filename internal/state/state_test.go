@@ -1,6 +1,7 @@
 package state
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -120,28 +121,67 @@ func TestPendingAndSelfUpdateCoexist(t *testing.T) {
 	}
 }
 
-// A state file that cannot be parsed must not be silently clobbered: only a
-// missing file is treated as empty. Returning the error (and leaving the
-// file untouched) is what stops a transient or corrupt read from discarding
-// whatever is already on disk in its place.
-func TestSetReturnsErrorOnCorruptStateAndLeavesItUntouched(t *testing.T) {
+// A state file that exists but does not parse must not block writes forever
+// (self-update and the destructive commands all need to record state before
+// acting): the write moves it aside to state.json.corrupt, keeping the
+// original bytes for diagnosis, and rebuilds from an empty State.
+func TestSetBacksUpCorruptStateAndRebuilds(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	original := []byte("{truncated")
 	if err := os.WriteFile(path, original, 0644); err != nil {
 		t.Fatal(err)
 	}
-	s := &Store{Path: path}
+	var gotBackup string
+	var gotErr error
+	s := &Store{Path: path, OnCorrupt: func(backup string, err error) { gotBackup, gotErr = backup, err }}
 
-	if err := s.SetPending(&Pending{Version: "1.7.5"}); err == nil {
-		t.Fatal("SetPending over a corrupt state file must return an error, not rebuild it")
+	if err := s.SetPending(&Pending{Version: "1.7.5"}); err != nil {
+		t.Fatalf("SetPending over a corrupt state file: %v", err)
 	}
 
-	got, err := os.ReadFile(path)
+	backup := path + ".corrupt"
+	if gotBackup != backup || !errors.Is(gotErr, ErrCorrupt) {
+		t.Fatalf("OnCorrupt(%q, %v), want (%q, ErrCorrupt)", gotBackup, gotErr, backup)
+	}
+	got, err := os.ReadFile(backup)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(got) != string(original) {
-		t.Fatalf("corrupt state file was overwritten: %q", got)
+		t.Fatalf("backup = %q, want the original bytes %q", got, original)
+	}
+	st, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Pending == nil || st.Pending.Version != "1.7.5" || st.SelfUpdate != nil || len(st.PendingCommands) != 0 {
+		t.Fatalf("rebuilt state = %+v, want only the new pending update", st)
+	}
+}
+
+// Any read error other than a missing or unparseable file (sharing
+// violation, access denied, disk error) may be transient: the write must
+// fail and leave whatever is at the path alone. A directory in place of the
+// file stands in for such an error here.
+func TestSetReturnsErrorOnUnreadableStateAndLeavesItUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.Mkdir(path, 0755); err != nil {
+		t.Fatal(err)
+	}
+	s := &Store{Path: path}
+
+	err := s.SetPending(&Pending{Version: "1.7.5"})
+	if err == nil {
+		t.Fatal("SetPending over an unreadable state file must return an error")
+	}
+	if errors.Is(err, ErrCorrupt) {
+		t.Fatalf("an I/O error was classified as corrupt: %v", err)
+	}
+	if fi, statErr := os.Stat(path); statErr != nil || !fi.IsDir() {
+		t.Fatalf("unreadable state path was touched: %v", statErr)
+	}
+	if _, statErr := os.Stat(path + ".corrupt"); !os.IsNotExist(statErr) {
+		t.Fatalf("an I/O error produced a .corrupt backup: %v", statErr)
 	}
 }
 

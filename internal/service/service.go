@@ -359,6 +359,9 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 
 		sessionChanges: make(chan machineinfo.SessionChange, sessionChangeBuffer),
 	}
+	u.Store.OnCorrupt = func(backup string, err error) {
+		log.Warn("state file did not parse; moved aside and rebuilt empty", "backup", backup, "err", err)
+	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
 	u.IPC.SetPolicyProvider(u.policyView)

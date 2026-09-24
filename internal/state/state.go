@@ -5,6 +5,7 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -78,8 +79,17 @@ type State struct {
 type Store struct {
 	Path string
 
+	// OnCorrupt, if set, is called when a write finds a state file that does
+	// not parse and moves it aside to backupPath before rebuilding (see
+	// update). It runs with mu held, so it must not call back into the Store.
+	OnCorrupt func(backupPath string, err error)
+
 	mu sync.Mutex
 }
+
+// ErrCorrupt is wrapped by the error Load returns for a state file that
+// exists but does not parse as JSON.
+var ErrCorrupt = errors.New("corrupt state file")
 
 // Load reads the state file. A missing file is an empty state, not an error;
 // a corrupt file is reported so the caller can log it and start fresh.
@@ -102,7 +112,7 @@ func (s *Store) loadLocked() (*State, error) {
 	}
 	var st State
 	if err := json.Unmarshal(data, &st); err != nil {
-		return nil, fmt.Errorf("corrupt state file %s: %w", s.Path, err)
+		return nil, fmt.Errorf("%w %s: %v", ErrCorrupt, s.Path, err)
 	}
 	return &st, nil
 }
@@ -206,16 +216,30 @@ func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
 // machine.reboot id a redelivered command still needs to be recognised
 // against.
 //
-// Only a missing file is treated as empty (loadLocked already reports that
-// case as State{}, nil error). Any other Load error - a corrupt file, a
-// permission or disk error - is returned as-is and nothing is written: a
-// state file that failed to parse for a reason that might be transient (a
-// lock, a partial read) must not be silently clobbered with a freshly built
-// empty document on the strength of one bad read.
+// A missing file is treated as empty (loadLocked already reports that case
+// as State{}, nil error). A file that exists but does not parse is moved
+// aside to state.json.corrupt and the write proceeds on an empty State: a
+// document that no read will ever parse again must not block every later
+// write forever - self-update refuses to launch a setup it cannot record,
+// and service.restart/machine.reboot refuse to run without their pending
+// record. Nothing is lost that a read could still recover; the original
+// bytes stay in the backup for diagnosis. Any other Load error - a sharing
+// violation, access denied, a disk error - may be transient, so it is
+// returned as-is and nothing is written.
 func (s *Store) update(mutate func(*State)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	st, err := s.loadLocked()
+	if errors.Is(err, ErrCorrupt) {
+		backup := s.Path + ".corrupt"
+		if rerr := os.Rename(s.Path, backup); rerr != nil {
+			return fmt.Errorf("%w (backup failed: %v)", err, rerr)
+		}
+		if s.OnCorrupt != nil {
+			s.OnCorrupt(backup, err)
+		}
+		st, err = &State{}, nil
+	}
 	if err != nil {
 		return err
 	}

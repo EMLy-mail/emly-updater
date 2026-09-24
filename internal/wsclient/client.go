@@ -269,7 +269,7 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 
 	conn, resp, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{
-		HTTPClient: c.HTTPClient,
+		HTTPClient: c.httpClientRefusingSchemeDowngrade(),
 		HTTPHeader: header,
 	})
 	if err != nil {
@@ -289,6 +289,46 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	c.logf("presence channel upgrade succeeded, waiting for hello")
 	return conn, nil
+}
+
+// httpClientRefusingSchemeDowngrade returns c.HTTPClient (http.DefaultClient
+// if nil) with a CheckRedirect that fails a redirect from https to a
+// non-https scheme.
+//
+// coder/websocket performs the upgrade with an ordinary http.Client.Do,
+// which follows a 3xx response exactly like any other request - including
+// across schemes, since the standard library's default redirect policy only
+// bounds the hop count. Session.Secure() (session.go) is derived from the
+// URL this Client was configured with (c.URL, from URLFor: wss:// for an
+// https:// server), not from the scheme the connection actually ended up
+// using: without this,
+// a server (or anything sitting in front of it) that redirects the upgrade
+// request from https to a plain http endpoint would leave Secure() reporting
+// true - the condition destructive commands require (spec §12.2) - over a
+// connection that was never actually TLS for the hop that mattered.
+// Refusing the downgrade at dial time is simpler than trying to recompute
+// Secure() from the post-redirect URL: the dial just fails, the same as any
+// other unreachable server.
+func (c *Client) httpClientRefusingSchemeDowngrade() *http.Client {
+	base := c.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	prevCheck := base.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 {
+			prev := via[len(via)-1].URL
+			if prev.Scheme == "https" && req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing to follow a redirect from %s to %s: TLS scheme downgrade", prev, req.URL)
+			}
+		}
+		if prevCheck != nil {
+			return prevCheck(req, via)
+		}
+		return nil
+	}
+	return &client
 }
 
 // Run holds one presence connection open: dial, wait for the server's hello,

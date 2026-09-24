@@ -39,10 +39,17 @@ type commandSession interface {
 
 // commandRing remembers the last commandRingSize command IDs and their
 // result, so a redelivered command is confirmed, not re-run (spec §5.5).
+//
+// refusals holds the Ack a redelivered id must be replayed with when the
+// original delivery was refused (policy, transport, validation, busy):
+// without it, a redelivery of a refused command falls back to the
+// accepted+duplicate Ack results holds for a command that actually ran -
+// telling a redelivered refusal it was accepted.
 type commandRing struct {
-	mu      sync.Mutex
-	order   []string
-	results map[string]*wsclient.Result
+	mu       sync.Mutex
+	order    []string
+	results  map[string]*wsclient.Result
+	refusals map[string]*wsclient.ErrorBody
 }
 
 func (r *commandRing) add(id string) {
@@ -55,15 +62,16 @@ func (r *commandRing) add(id string) {
 	r.results[id] = nil
 	if len(r.order) > commandRingSize {
 		delete(r.results, r.order[0])
+		delete(r.refusals, r.order[0])
 		r.order = r.order[1:]
 	}
 }
 
-func (r *commandRing) lookup(id string) (*wsclient.Result, bool) {
+func (r *commandRing) lookup(id string) (*wsclient.Result, *wsclient.ErrorBody, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	res, ok := r.results[id]
-	return res, ok
+	return res, r.refusals[id], ok
 }
 
 func (r *commandRing) store(id string, res wsclient.Result) {
@@ -74,8 +82,46 @@ func (r *commandRing) store(id string, res wsclient.Result) {
 	}
 }
 
+// refuse remembers the Ack a refused id's redelivery must be replayed with.
+func (r *commandRing) refuse(id string, e *wsclient.ErrorBody) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.refusals == nil {
+		r.refusals = map[string]*wsclient.ErrorBody{}
+	}
+	r.refusals[id] = e
+}
+
 func refuse(code, msg string) *wsclient.ErrorBody {
 	return &wsclient.ErrorBody{Code: code, Message: msg}
+}
+
+// commandRefusalEventID returns the Event Log id a command refusal should
+// mirror to, or 0 for none. Only a destructive command's refusal reaches
+// Event Viewer (925): a read-only command refused by policy, an unsupported
+// verb, or a busy winget call is common enough (a stale policy document, a
+// second machine.info while the first is still in flight) that mirroring
+// every one would fill the log with noise that carries no operational
+// weight - a refused service.restart/machine.reboot does.
+func commandRefusalEventID(name string) uint32 {
+	if wsclient.Destructive(name) {
+		return logging.EventClientCommandRefused
+	}
+	return 0
+}
+
+// logCommandRefused logs a command refusal, every time, to the file -
+// mirroring to the Event Log only for a destructive command (see
+// commandRefusalEventID). Used for both admitCommand's refusal and the
+// per-name busy refusal (claimCommand), which previously logged nothing at
+// all.
+func (u *Updater) logCommandRefused(cmd wsclient.Command, msg wsclient.Message, e *wsclient.ErrorBody) {
+	kv := []any{"name", cmd.Name, "id", msg.ID, "issuedBy", cmd.IssuedBy, "code", e.Code, "reason", e.Message}
+	if id := commandRefusalEventID(cmd.Name); id != 0 {
+		u.Log.WarnEvent(id, "client command refused", kv...)
+		return
+	}
+	u.Log.Warn("client command refused", kv...)
 }
 
 // seedCommandRing loads the pending command ids left in state.json - a
@@ -105,7 +151,26 @@ func (u *Updater) seedCommandRing() {
 // executeCommand runs one command end to end: admission, ack, execution,
 // result. It is called on its own goroutine per command by wsclient.
 func (u *Updater) executeCommand(ctx context.Context, s commandSession, msg wsclient.Message, cmd wsclient.Command) {
-	if prev, seen := u.commands.lookup(msg.ID); seen {
+	defer u.recoverGoroutine("executeCommand", "name", cmd.Name, "id", msg.ID)
+
+	if msg.ID == "" {
+		// Nothing to dedupe or correlate an Ack/Result against - the ring is
+		// keyed on it, and a bare "" would make every other id-less command
+		// collide with it. Refuse instead of ever touching the ring.
+		e := refuse(wsclient.ErrInvalidArgs, "command id is required")
+		u.logCommandRefused(cmd, msg, e)
+		_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: false, Error: e})
+		return
+	}
+
+	if prev, refusal, seen := u.commands.lookup(msg.ID); seen {
+		if refusal != nil {
+			// The original delivery was refused: replay that refusal, not
+			// the generic accepted+duplicate Ack below - otherwise a
+			// redelivered refusal reads back as an acceptance.
+			_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: false, Duplicate: true, Error: refusal})
+			return
+		}
 		_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: true, Duplicate: true})
 		if prev != nil {
 			_ = s.Result(ctx, msg.ID, *prev)
@@ -115,13 +180,16 @@ func (u *Updater) executeCommand(ctx context.Context, s commandSession, msg wscl
 	u.commands.add(msg.ID)
 
 	if e := u.admitCommand(s, msg, cmd); e != nil {
-		u.Log.WarnEvent(logging.EventClientCommandRefused, "client command refused",
-			"name", cmd.Name, "id", msg.ID, "issuedBy", cmd.IssuedBy, "code", e.Code, "reason", e.Message)
+		u.commands.refuse(msg.ID, e)
+		u.logCommandRefused(cmd, msg, e)
 		_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: false, Error: e})
 		return
 	}
 	if !u.claimCommand(cmd.Name) {
-		_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: false, Error: refuse(wsclient.ErrBusy, cmd.Name+" is already running")})
+		e := refuse(wsclient.ErrBusy, cmd.Name+" is already running")
+		u.commands.refuse(msg.ID, e)
+		u.logCommandRefused(cmd, msg, e)
+		_ = s.Ack(ctx, msg.ID, wsclient.Ack{Accepted: false, Error: e})
 		return
 	}
 	defer u.releaseCommand(cmd.Name)

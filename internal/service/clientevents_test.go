@@ -2,10 +2,17 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 
 	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/state"
@@ -131,10 +138,13 @@ func TestEventsBufferedUntilWelcome(t *testing.T) {
 	u.flushEvents(func(name string, _ any) error { t.Fatal("buffer not emptied"); return nil })
 }
 
+// session.changed is the one event that is never buffered (see
+// TestSessionChangedNotBufferedWithoutSession) - this uses update.applied
+// instead so the buffer-eviction behaviour it actually tests is unaffected.
 func TestEventBufferDropsOldest(t *testing.T) {
 	u := &Updater{Log: testLogger(t)}
 	for i := 0; i < eventBufferSize+5; i++ {
-		u.emit(wsclient.EvtSessionChanged, i)
+		u.emit(wsclient.EvtUpdateApplied, i)
 	}
 	var first any
 	n := 0
@@ -192,6 +202,145 @@ func TestMachineInfoSectionsFilter(t *testing.T) {
 	p := u.machineInfo([]string{"network"})
 	if p.Network == nil || p.Hardware != nil || p.HWID != "" || p.EMLy != nil {
 		t.Fatalf("payload = %+v", p)
+	}
+}
+
+// session.changed only anticipates what the next poll's
+// X-EMLy-LoggedUser* headers would carry (spec §8.1) - stale by the time a
+// channel reconnects, so it must be dropped rather than buffered while no
+// session is up. Other events keep buffering.
+func TestSessionChangedNotBufferedWithoutSession(t *testing.T) {
+	u := &Updater{Log: testLogger(t)}
+	u.emit(wsclient.EvtSessionChanged, map[string]string{"session_id": "1"})
+	u.emit(wsclient.EvtUpdateApplied, map[string]string{"target": "emly"})
+
+	u.eventsMu.Lock()
+	buf := u.eventBuf
+	u.eventsMu.Unlock()
+	if len(buf) != 1 || buf[0].name != wsclient.EvtUpdateApplied {
+		t.Fatalf("buffer = %+v, want only the non-session.changed event", buf)
+	}
+}
+
+// flushEvents must drop an event that a live session refused as too large
+// rather than keep it at the head of the buffer: retrying it can only ever
+// reproduce the same failure, blocking every event queued behind it.
+func TestFlushEventsDropsOversizedEvent(t *testing.T) {
+	u := &Updater{Log: testLogger(t)}
+	u.eventBuf = []bufferedEvent{
+		{name: "too.big", payload: 1},
+		{name: wsclient.EvtUpdateApplied, payload: 2},
+	}
+	var sent []string
+	u.flushEvents(func(name string, _ any) error {
+		if name == "too.big" {
+			return wsclient.ErrTooLarge
+		}
+		sent = append(sent, name)
+		return nil
+	})
+	if len(sent) != 1 || sent[0] != wsclient.EvtUpdateApplied {
+		t.Fatalf("sent = %v, want only the event after the oversized one", sent)
+	}
+	u.eventsMu.Lock()
+	n := len(u.eventBuf)
+	u.eventsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("buffer = %d entries, want the oversized event dropped rather than re-queued", n)
+	}
+}
+
+// emit's live-session path must drop an oversized event the same way,
+// rather than fall into the generic "connection going away" buffering path -
+// otherwise a single event too large for the negotiated limit sits at the
+// head of the buffer forever, blocking everything behind it.
+func TestEmitDropsOversizedEventOnALiveSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		ctx := r.Context()
+		if err := wsjson.Write(ctx, conn, wsclient.Message{Type: wsclient.TypeHello}); err != nil {
+			return
+		}
+		var msg wsclient.Message
+		if err := wsjson.Read(ctx, conn, &msg); err != nil { // identity
+			return
+		}
+		welcome, _ := json.Marshal(wsclient.Welcome{
+			Protocol:             wsclient.ProtocolV2,
+			AcceptedCapabilities: wsclient.EventNames,
+			Limits:               wsclient.Limits{MaxMessageBytes: 200, AckTimeoutSeconds: 5},
+		})
+		if err := wsjson.Write(ctx, conn, wsclient.Message{Type: wsclient.TypeWelcome, Data: welcome}); err != nil {
+			return
+		}
+		<-ctx.Done()
+	}))
+	defer srv.Close()
+
+	u := clientWSUpdaterAt(t, srv.URL)
+	u.Store = &state.Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	u.systemFactsFn = func(time.Time) machineinfo.SystemFacts { return machineinfo.SystemFacts{Cores: 4} }
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); u.runClientWS(ctx) }()
+	defer func() { cancel(); <-done }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for u.wsSession.Load() == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("the presence channel never became live")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	u.emit(wsclient.EvtUpdateApplied, map[string]string{"data": strings.Repeat("x", 1000)})
+
+	u.eventsMu.Lock()
+	n := len(u.eventBuf)
+	u.eventsMu.Unlock()
+	if n != 0 {
+		t.Fatalf("oversized event was buffered instead of dropped: %d entries", n)
+	}
+}
+
+// welcomeBurst - like executeCommand and handleNotify's delayed wake - runs
+// on its own goroutine for remote-triggered work: a panic there must be
+// recovered and logged, not crash the process.
+func TestWelcomeBurstRecoversFromPanic(t *testing.T) {
+	u := &Updater{Log: testLogger(t)}
+	u.welcomeBurstFn = func(uint64, *wsclient.Session) { panic("boom") }
+
+	done := make(chan struct{})
+	go func() {
+		u.welcomeBurst(0, nil)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("welcomeBurst did not return after a panicking seam - the panic was not recovered")
+	}
+}
+
+// commandRefusalEventID is the pure predicate logCommandRefused
+// (clientcmd.go) uses to decide whether a refusal mirrors to the Event Log:
+// only a destructive command's refusal is consequential enough for Event
+// Viewer (925) - a read-only refusal (policy, a busy winget call) stays in
+// the file only.
+func TestCommandRefusalEventID(t *testing.T) {
+	for _, name := range []string{wsclient.CmdServiceRestart, wsclient.CmdMachineReboot} {
+		if got := commandRefusalEventID(name); got != 925 {
+			t.Errorf("commandRefusalEventID(%s) = %d, want 925", name, got)
+		}
+	}
+	for _, name := range []string{wsclient.CmdMachineInfo, wsclient.CmdAppsListUpgradable, "machine.format_disk"} {
+		if got := commandRefusalEventID(name); got != 0 {
+			t.Errorf("commandRefusalEventID(%s) = %d, want 0 (file only)", name, got)
+		}
 	}
 }
 

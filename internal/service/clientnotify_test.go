@@ -53,6 +53,52 @@ func TestConfigPublishedForcesRefresh(t *testing.T) {
 	}
 }
 
+// config.published gets the same kind of client-side floor
+// release.published already has, just shorter: the document is only stale,
+// not missing, so a fleet-wide push does not need release's full spread,
+// but still needs one - jitterSeconds is a server suggestion, not something
+// a small value (or 0) is allowed to defeat.
+func TestConfigPublishedGetsAMinimumJitterFloor(t *testing.T) {
+	u, delays := newNotifyUpdater(t)
+	u.handleNotify(notifyOf(t, wsclient.TopicConfigPublished, wsclient.ConfigPublished{Revision: 1 << 40, JitterSeconds: 5}))
+	if len(*delays) != 1 || (*delays)[0] != minConfigJitter {
+		t.Fatalf("delays = %v, want the %s floor", *delays, minConfigJitter)
+	}
+}
+
+// At most one notify-triggered wake is allowed per notifyWakeThrottle,
+// across both topics: a second notify well within the window must not
+// schedule another early wake, but forceConfig must still be set (the
+// ordinary poll still forces a fetch), and a notify arriving once the
+// window has fully elapsed wakes again.
+func TestNotifyWakeThrottledWithinTenMinutes(t *testing.T) {
+	u, delays := newNotifyUpdater(t)
+	now := time.Now()
+	u.nowFn = func() time.Time { return now }
+
+	u.handleNotify(notifyOf(t, wsclient.TopicReleasePublished,
+		wsclient.ReleasePublished{Target: "updater", Version: "99.0.0", JitterSeconds: 60}))
+	if len(*delays) != 1 {
+		t.Fatalf("first notify did not wake: %v", *delays)
+	}
+
+	now = now.Add(time.Minute)
+	u.handleNotify(notifyOf(t, wsclient.TopicConfigPublished, wsclient.ConfigPublished{Revision: 1 << 40, JitterSeconds: 30}))
+	if len(*delays) != 1 {
+		t.Fatalf("throttled notify still scheduled a wake: %v", *delays)
+	}
+	if !u.forceConfig.Load() {
+		t.Fatal("forceConfig must still be set even when the wake itself is throttled")
+	}
+
+	now = now.Add(notifyWakeThrottle)
+	u.handleNotify(notifyOf(t, wsclient.TopicReleasePublished,
+		wsclient.ReleasePublished{Target: "updater", Version: "99.0.0", JitterSeconds: 60}))
+	if len(*delays) != 2 {
+		t.Fatalf("delays after the window elapsed = %v, want 2", *delays)
+	}
+}
+
 func TestNotifyCoalescesWakes(t *testing.T) {
 	u, _ := newNotifyUpdater(t)
 	n := notifyOf(t, wsclient.TopicReleasePublished, wsclient.ReleasePublished{Target: "updater", Version: "99.0.0", JitterSeconds: 60})

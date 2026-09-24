@@ -312,6 +312,18 @@ type Updater struct {
 	// of waiting on a real timer. nil means the real rand.Int64N / time.AfterFunc.
 	jitterFn  func(max time.Duration) time.Duration
 	afterFunc func(time.Duration, func())
+
+	// notifyWakeMu guards lastNotifyWake: handleNotify runs on the presence
+	// connection's own read goroutine (see wsclient.Handler's doc comment),
+	// which - unlike announced/cycleTrigger above - is not the poll
+	// goroutine, so this one does need locking.
+	notifyWakeMu sync.Mutex
+	// lastNotifyWake is when a notify last scheduled an early wake (see
+	// allowNotifyWake, clientnotify.go): at most one per
+	// notifyWakeThrottle, so a burst of release.published/config.published
+	// pushes cannot collapse into a stampede of early cycles. Zero means
+	// none yet this process.
+	lastNotifyWake time.Time
 }
 
 // clock is the time source; tests pin it.

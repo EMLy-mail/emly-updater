@@ -117,6 +117,38 @@ func TestDialReportsARejectedKey(t *testing.T) {
 // what the route authenticates on, and the User-Agent is where the API reads
 // updater_version and contact from - they are deliberately not in the
 // identity payload.
+// A wss:// dial (over TLS) redirected to a plain http:// endpoint must be
+// refused rather than followed: Session.Secure() is derived from the URL
+// this Client was configured with, not from the connection the redirect
+// actually ends up using, so following the downgrade would leave Secure()
+// reporting true - the condition destructive commands require - over a
+// connection that was never TLS for the hop that mattered.
+func TestDialRefusesATLSToPlainHTTPRedirect(t *testing.T) {
+	var plainHit bool
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHit = true
+		http.NotFound(w, r)
+	}))
+	defer plain.Close()
+
+	secure := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL, http.StatusFound)
+	}))
+	defer secure.Close()
+
+	url, err := URLFor(secure.URL)
+	if err != nil {
+		t.Fatalf("URLFor: %v", err)
+	}
+	c := &Client{URL: url, HandshakeTimeout: 5 * time.Second, HTTPClient: secure.Client()}
+	if _, err := c.dial(context.Background()); err == nil {
+		t.Fatal("dial must fail rather than follow a wss -> ws (https -> http) redirect")
+	}
+	if plainHit {
+		t.Fatal("the plain HTTP endpoint must never actually be reached")
+	}
+}
+
 func TestDialSendsTheApiKeyAndUserAgent(t *testing.T) {
 	seen := make(chan http.Header, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

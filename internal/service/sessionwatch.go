@@ -100,9 +100,10 @@ func (u *Updater) watchSessions(ctx context.Context) {
 				"changed", changed,
 			)
 			// Push the result over the client channel (CLIENT_WS_PROTOCOL.md
-			// §8.1). Not a source of truth: with the channel down the event is
-			// buffered, and the next poll's X-EMLy-LoggedUser* headers carry
-			// the same value anyway.
+			// §8.1). Not a source of truth: with the channel down, emit drops
+			// this one instead of buffering it - it only anticipates what the
+			// next poll's X-EMLy-LoggedUser* headers would carry anyway, and
+			// would be stale by the time a channel reconnects.
 			u.emit(wsclient.EvtSessionChanged, sessionChangedPayload(kinds, got, changed))
 
 			kinds = nil

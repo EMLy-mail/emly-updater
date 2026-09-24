@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"errors"
+	"runtime/debug"
 	"slices"
 	"time"
 
@@ -11,6 +13,22 @@ import (
 	"emlyupdater/internal/version"
 	"emlyupdater/internal/wsclient"
 )
+
+// recoverGoroutine recovers a panic in one of the goroutines started for
+// remote-triggered work - a command (executeCommand, clientcmd.go), the
+// welcome burst (below) or a notify's delayed wake (scheduleWake,
+// clientnotify.go) - and logs it instead of taking the whole service down.
+// None of these run on RunLoop's own goroutine, so an unhandled panic here
+// would otherwise crash the process over a single bad command, a session
+// change, or a redelivered notify that only this one machine ever triggers -
+// out of proportion for work the rest of the update cycle does not depend
+// on. where and kv are only used when a panic actually happened.
+func (u *Updater) recoverGoroutine(where string, kv ...any) {
+	if r := recover(); r != nil {
+		kv = append(kv, "panic", r, "stack", string(debug.Stack()))
+		u.Log.Error("recovered from a panic in "+where, kv...)
+	}
+}
 
 // eventBufferSize bounds the events kept while no v2 session is up. They
 // are flushed after service.started on the next welcome; the oldest go
@@ -48,19 +66,37 @@ func (u *Updater) capabilities() []string {
 }
 
 // emit sends an event on the current v2 session, or buffers it.
+//
+// Two events never reach the buffer: session.changed while no session is up
+// (spec §8.1 - it only anticipates what the next poll's X-EMLy-LoggedUser*
+// headers would carry anyway, so it is stale, not lost, by the time a
+// channel reconnects) is dropped outright, and any event that a live
+// session refused as ErrTooLarge is dropped rather than kept for a retry
+// that can only ever fail the same way again.
 func (u *Updater) emit(name string, payload any) {
 	if u.emitFn != nil {
 		u.emitFn(name, payload)
 		return
 	}
-	if s := u.wsSession.Load(); s != nil {
+	s := u.wsSession.Load()
+	if s == nil {
+		if name == wsclient.EvtSessionChanged {
+			u.Log.Debug("no client channel session, session.changed dropped (not buffered)", "name", name)
+			return
+		}
+	} else {
 		if !s.Accepted(name) {
 			u.Log.Debug("event not accepted by the server, dropped", "name", name)
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		if err := s.Event(ctx, name, payload); err == nil {
+		err := s.Event(ctx, name, payload)
+		if err == nil {
+			return
+		}
+		if errors.Is(err, wsclient.ErrTooLarge) {
+			u.Log.Warn("event too large to send, dropped", "name", name)
 			return
 		}
 		// Connection going away: fall through and keep it for the next one.
@@ -74,19 +110,28 @@ func (u *Updater) emit(name string, payload any) {
 }
 
 // flushEvents hands the buffered events to send, oldest first, and empties
-// the buffer. A failed send stops the flush and keeps the rest.
+// the buffer. A failed send stops the flush and keeps the rest - except an
+// ErrTooLarge event, which is dropped instead of kept at the head: retrying
+// it would only reproduce the same failure and block every event queued
+// behind it forever.
 func (u *Updater) flushEvents(send func(name string, payload any) error) {
 	u.eventsMu.Lock()
 	buf := u.eventBuf
 	u.eventBuf = nil
 	u.eventsMu.Unlock()
 	for i, ev := range buf {
-		if err := send(ev.name, ev.payload); err != nil {
-			u.eventsMu.Lock()
-			u.eventBuf = append(buf[i:], u.eventBuf...)
-			u.eventsMu.Unlock()
-			return
+		err := send(ev.name, ev.payload)
+		if err == nil {
+			continue
 		}
+		if errors.Is(err, wsclient.ErrTooLarge) {
+			u.Log.Warn("buffered event too large to send, dropped", "name", ev.name)
+			continue
+		}
+		u.eventsMu.Lock()
+		u.eventBuf = append(buf[i:], u.eventBuf...)
+		u.eventsMu.Unlock()
+		return
 	}
 }
 
@@ -123,6 +168,7 @@ func (h clientHandler) Notify(_ *wsclient.Session, _ wsclient.Message, n wsclien
 // override it wholesale via welcomeBurstFn to verify Welcome itself never
 // blocks, without needing a real *wsclient.Session.
 func (u *Updater) welcomeBurst(gen uint64, s *wsclient.Session) {
+	defer u.recoverGoroutine("welcomeBurst")
 	if u.welcomeBurstFn != nil {
 		u.welcomeBurstFn(gen, s)
 		return

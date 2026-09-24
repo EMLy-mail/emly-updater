@@ -121,12 +121,98 @@ func TestExecuteCommandDedupes(t *testing.T) {
 	}
 }
 
+// A redelivered id whose first delivery was refused must be replayed with
+// that same refusal, not the generic accepted+duplicate Ack - otherwise a
+// server retrying a refused command (e.g. after a reconnect) reads the
+// redelivery as an acceptance.
+func TestExecuteCommandRedeliveredRefusalIsReplayed(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u) // no commands allowed: every command is refused by policy
+	s := &fakeSession{}
+	msg, cmd := cmdMsg(wsclient.CmdMachineInfo, ``)
+
+	u.executeCommand(context.Background(), s, msg, cmd)
+	u.executeCommand(context.Background(), s, msg, cmd)
+
+	if len(s.acks) != 2 {
+		t.Fatalf("acks = %+v, want 2", s.acks)
+	}
+	if s.acks[0].Accepted || s.acks[0].Error.Code != wsclient.ErrDisabledByPolicy {
+		t.Fatalf("first ack = %+v", s.acks[0])
+	}
+	if s.acks[1].Accepted || !s.acks[1].Duplicate || s.acks[1].Error == nil || s.acks[1].Error.Code != wsclient.ErrDisabledByPolicy {
+		t.Fatalf("redelivered refusal = %+v, want the same refusal replayed", s.acks[1])
+	}
+}
+
+// The per-name busy refusal (claimCommand) is refused the same way as an
+// admission refusal, so its redelivery must also replay that same refusal -
+// even once the name has freed up again - rather than actually attempting
+// the command a second time and reading back as an acceptance.
+func TestExecuteCommandRedeliveredBusyRefusalIsReplayed(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdAppsListUpgradable)
+	release := make(chan struct{})
+	u.listUpgradableFn = func(ctx context.Context) ([]winget.Package, error) { <-release; return nil, nil }
+	s1 := &fakeSession{}
+	m1, c1 := cmdMsg(wsclient.CmdAppsListUpgradable, ``)
+	done := make(chan struct{})
+	go func() { u.executeCommand(context.Background(), s1, m1, c1); close(done) }()
+	time.Sleep(50 * time.Millisecond)
+
+	// A second, distinct id for the same command name is refused busy while
+	// m1 is still running.
+	s2 := &fakeSession{}
+	m2, c2 := cmdMsg(wsclient.CmdAppsListUpgradable, ``)
+	u.executeCommand(context.Background(), s2, m2, c2)
+	if len(s2.acks) != 1 || s2.acks[0].Accepted || s2.acks[0].Error == nil || s2.acks[0].Error.Code != wsclient.ErrBusy {
+		t.Fatalf("first delivery of m2 = %+v, want a busy refusal", s2.acks)
+	}
+
+	close(release)
+	<-done
+
+	// Redelivering m2 - even after m1 has finished and the name is free
+	// again - must replay the same busy refusal, not actually run the
+	// command this time.
+	u.executeCommand(context.Background(), s2, m2, c2)
+
+	if len(s2.acks) != 2 {
+		t.Fatalf("acks = %+v, want 2", s2.acks)
+	}
+	if s2.acks[1].Accepted || !s2.acks[1].Duplicate || s2.acks[1].Error == nil || s2.acks[1].Error.Code != wsclient.ErrBusy {
+		t.Fatalf("redelivered busy refusal = %+v, want the same refusal replayed", s2.acks[1])
+	}
+	if len(s2.results) != 0 {
+		t.Fatalf("a redelivered refusal must never produce a Result: %+v", s2.results)
+	}
+}
+
+// An empty command id cannot be deduped (the ring is keyed on it) or
+// correlated to a later Result, so it must be refused outright and never
+// reach the ring.
+func TestExecuteCommandRefusesEmptyID(t *testing.T) {
+	u := newClientTestUpdater(t)
+	withPolicy(t, u, wsclient.CmdMachineInfo)
+	s := &fakeSession{}
+	msg, cmd := cmdMsg(wsclient.CmdMachineInfo, ``)
+	msg.ID = ""
+	u.executeCommand(context.Background(), s, msg, cmd)
+
+	if len(s.acks) != 1 || s.acks[0].Accepted || s.acks[0].Error == nil || s.acks[0].Error.Code != wsclient.ErrInvalidArgs {
+		t.Fatalf("acks = %+v", s.acks)
+	}
+	if _, _, seen := u.commands.lookup(""); seen {
+		t.Fatal("an empty command id must never be recorded in the dedupe ring")
+	}
+}
+
 func TestCommandRingEvictsOldest(t *testing.T) {
 	var r commandRing
 	for i := 0; i < commandRingSize+1; i++ {
 		r.add(string(rune('A'+i%26)) + time.Duration(i).String())
 	}
-	if _, seen := r.lookup("A0s"); seen {
+	if _, _, seen := r.lookup("A0s"); seen {
 		t.Fatal("oldest id survived")
 	}
 }

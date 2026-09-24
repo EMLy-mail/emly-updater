@@ -26,6 +26,7 @@ import (
 	"emlyupdater/internal/process"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
+	"emlyupdater/internal/wsclient"
 )
 
 // Name is the Windows service name (also the Event Log source).
@@ -120,6 +121,38 @@ type Updater struct {
 	resolveSessionFn func(machineinfo.SessionChange) machineinfo.SessionChange
 	sessionSettle    time.Duration
 	onSessionChange  func(c machineinfo.SessionChange, changed bool)
+
+	// startedAt is when this process's Updater was built (New), used for
+	// service.started's started_at and the boot-window heuristic in
+	// serviceStartedReason.
+	startedAt time.Time
+
+	// wsSession is the live v2 client-channel session, or nil when none is
+	// up - emit and the Welcome handler read/write it from different
+	// goroutines, hence the atomic.
+	wsSession atomic.Pointer[wsclient.Session]
+	// eventsMu guards eventBuf, the in-memory buffer emit falls back to
+	// while no v2 session is up (see clientevents.go).
+	eventsMu sync.Mutex
+	eventBuf []bufferedEvent
+	// startedSent marks that service.started has already been sent once for
+	// this process (it must not repeat on a reconnect).
+	startedSent atomic.Bool
+	// selfLanded is set by reconcileSelfUpdate on selfupdate.OutcomeLanded
+	// and read once by serviceStarted, for service.started's
+	// previous_version/reason=self_update. Written on the poll goroutine,
+	// read on the client-channel goroutine, hence the atomic.
+	selfLanded atomic.Pointer[state.SelfUpdate]
+
+	// emitFn overrides emit in tests, so the session watcher and other
+	// callers can be exercised without a real client-channel session.
+	emitFn func(name string, payload any)
+	// systemFactsFn overrides machineinfo.CollectSystemFacts in tests.
+	systemFactsFn func(time.Time) machineinfo.SystemFacts
+	// netInterfacesFn overrides machineinfo.NetworkInterfaces in tests.
+	netInterfacesFn func() []machineinfo.NetInterface
+	// emlyRunningFn overrides process.IsRunning in tests.
+	emlyRunningFn func() bool
 }
 
 // clock is the time source; tests pin it.
@@ -150,6 +183,7 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		ipsFn:        machineinfo.LocalIPv4Addresses,
 		loggedUserFn: machineinfo.LoggedUser,
 		clientWSWake: make(chan struct{}, 1),
+		startedAt:    time.Now(),
 
 		sessionChanges: make(chan machineinfo.SessionChange, sessionChangeBuffer),
 	}

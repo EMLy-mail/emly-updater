@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/wsclient"
 )
 
 type resolvedSession struct {
@@ -27,6 +28,7 @@ func newSessionWatchUpdater(t *testing.T, user *machineinfo.UserSession) (*Updat
 		onSessionChange: func(c machineinfo.SessionChange, changed bool) {
 			out <- resolvedSession{c, changed}
 		},
+		emitFn: func(string, any) {},
 	}
 	return u, out
 }
@@ -80,6 +82,29 @@ func TestWatchSessionsReportsUnchanged(t *testing.T) {
 	u.queueSessionChange(machineinfo.SessionChange{Kind: machineinfo.SessionLock, SessionID: 1})
 	if r := waitResolved(t, out); r.changed {
 		t.Fatal("lock left the same user in the same state, want changed=false")
+	}
+}
+
+// A resolved session change is pushed over the client channel too, carrying
+// the whole burst's kinds and the resolved logged-on user.
+func TestWatchSessionsEmitsSessionChanged(t *testing.T) {
+	user := machineinfo.UserSession{User: `TREGCC\mrossi`, State: machineinfo.SessionActiveConsole}
+	u, out := newSessionWatchUpdater(t, &user)
+	got := make(chan wsclient.SessionChanged, 1)
+	u.emitFn = func(name string, p any) {
+		if name == wsclient.EvtSessionChanged {
+			got <- p.(wsclient.SessionChanged)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go u.watchSessions(ctx)
+	u.queueSessionChange(machineinfo.SessionChange{Kind: machineinfo.SessionLogon, SessionID: 1})
+	u.queueSessionChange(machineinfo.SessionChange{Kind: machineinfo.SessionUnlock, SessionID: 1})
+	waitResolved(t, out)
+	p := <-got
+	if len(p.Events) != 2 || p.Events[1] != "unlock" || !p.Changed || p.LoggedUser.User != `TREGCC\mrossi` {
+		t.Fatalf("payload = %+v", p)
 	}
 }
 

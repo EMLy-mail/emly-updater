@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"emlyupdater/internal/machineinfo"
+	"emlyupdater/internal/wsclient"
 )
 
 // sessionSettle is how long watchSessions waits for the notifications to go
@@ -98,17 +99,14 @@ func (u *Updater) watchSessions(ctx context.Context) {
 				"loggedUserState", string(got.LoggedUser.State),
 				"changed", changed,
 			)
+			// Push the result over the client channel (CLIENT_WS_PROTOCOL.md
+			// §8.1). Not a source of truth: with the channel down the event is
+			// buffered, and the next poll's X-EMLy-LoggedUser* headers carry
+			// the same value anyway.
+			u.emit(wsclient.EvtSessionChanged, sessionChangedPayload(kinds, got, changed))
+
 			kinds = nil
 
-			// TODO(presence WS): integrate here. When changed is true, push
-			// got.LoggedUser to the API over the presence channel
-			// (internal/wsclient) instead of waiting for the next poll's
-			// X-EMLy-LoggedUser* headers - e.g. a new message type
-			// ("session") or a re-sent identity through clientWSIdentity.
-			// That is a new wire contract: define it in emly-go-api too and
-			// document it in AGENTS.md. When the channel is off
-			// (clientWs.enabled = false) or not connected, do nothing: the
-			// next poll carries the same value.
 			if u.onSessionChange != nil {
 				u.onSessionChange(got, changed)
 			}

@@ -127,6 +127,8 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeLanded:
 		u.Log.InfoEvent(logging.EventSelfUpdateApplied, "updater self-update completed",
 			"from", rec.FromVersion, "to", running, "target", rec.Version, "attempts", rec.Attempts)
+		landed := *rec
+		u.selfLanded.Store(&landed)
 		if err := u.Store.ClearSelfUpdate(); err != nil {
 			u.Log.Warn("failed to clear the self-update record", "error", err.Error())
 		}

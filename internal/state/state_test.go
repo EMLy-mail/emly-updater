@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -119,24 +120,28 @@ func TestPendingAndSelfUpdateCoexist(t *testing.T) {
 	}
 }
 
-// A state file that cannot be parsed must not wedge the service into being
-// unable to record anything: it holds only re-derivable bookkeeping.
-func TestSetRebuildsCorruptState(t *testing.T) {
+// A state file that cannot be parsed must not be silently clobbered: only a
+// missing file is treated as empty. Returning the error (and leaving the
+// file untouched) is what stops a transient or corrupt read from discarding
+// whatever is already on disk in its place.
+func TestSetReturnsErrorOnCorruptStateAndLeavesItUntouched(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
-	if err := os.WriteFile(path, []byte("{truncated"), 0644); err != nil {
+	original := []byte("{truncated")
+	if err := os.WriteFile(path, original, 0644); err != nil {
 		t.Fatal(err)
 	}
 	s := &Store{Path: path}
 
-	if err := s.SetPending(&Pending{Version: "1.7.5"}); err != nil {
-		t.Fatalf("writing over a corrupt state file failed: %v", err)
+	if err := s.SetPending(&Pending{Version: "1.7.5"}); err == nil {
+		t.Fatal("SetPending over a corrupt state file must return an error, not rebuild it")
 	}
-	st, err := s.Load()
+
+	got, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatalf("state file still unreadable: %v", err)
+		t.Fatal(err)
 	}
-	if st.Pending == nil || st.Pending.Version != "1.7.5" {
-		t.Fatalf("unexpected state after rebuild: %+v", st)
+	if string(got) != string(original) {
+		t.Fatalf("corrupt state file was overwritten: %q", got)
 	}
 }
 
@@ -187,5 +192,62 @@ func TestPendingCommandsSurviveAndAreTakenOnce(t *testing.T) {
 	st, _ := s.Load()
 	if st.Pending == nil || st.Pending.Version != "3.5.0" {
 		t.Fatalf("pending update lost: %+v", st.Pending)
+	}
+}
+
+// TestConcurrentWritesUnderRace exercises Store the way the service actually
+// drives it: the welcome-burst goroutine (TakePendingCommands), several
+// command goroutines (Add/RemovePendingCommand) and the poll goroutine
+// (SetPending/SetSelfUpdate/ClearSelfUpdate) all writing state.json at once.
+// Run with -race: without Store's mutex, two read-modify-write calls racing
+// on the same Load can each start from the same snapshot and one write is
+// silently lost - this both catches the data race and asserts nothing was
+// actually dropped.
+func TestConcurrentWritesUnderRace(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "state.json")}
+
+	const commands = 20
+	var wg sync.WaitGroup
+
+	// Add N distinct pending commands concurrently...
+	for i := 0; i < commands; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			id := "cmd-" + string(rune('A'+i))
+			_ = s.AddPendingCommand(PendingCommand{ID: id, Name: "machine.reboot", AcceptedAt: time.Now()})
+		}(i)
+	}
+	// ...while the poll goroutine repeatedly sets and clears the two other
+	// lifecycles, and one command goroutine removes one of the pending ids.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < commands; i++ {
+			_ = s.SetPending(&Pending{Version: "1.7.5"})
+			_ = s.SetSelfUpdate(&SelfUpdate{Version: "1.8.0", Attempts: i})
+		}
+	}()
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_ = s.RemovePendingCommand("cmd-" + string(rune('A')))
+	}()
+	wg.Wait()
+
+	st, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load after concurrent writes: %v", err)
+	}
+	if st.Pending == nil || st.Pending.Version != "1.7.5" {
+		t.Fatalf("pending update lost under concurrent writes: %+v", st.Pending)
+	}
+	if st.SelfUpdate == nil || st.SelfUpdate.Version != "1.8.0" {
+		t.Fatalf("self-update record lost under concurrent writes: %+v", st.SelfUpdate)
+	}
+	// Every Add landed (none silently overwritten by a concurrent one), and
+	// the one Remove took effect: commands-1 pending commands remain.
+	if len(st.PendingCommands) != commands-1 {
+		t.Fatalf("pending commands = %d, want %d: %+v", len(st.PendingCommands), commands-1, st.PendingCommands)
 	}
 }

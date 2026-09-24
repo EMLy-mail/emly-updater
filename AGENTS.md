@@ -341,7 +341,14 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   self-update record, and the client channel's pending destructive commands (see above). Every
   setter goes through `Store.update` (read-modify-write); building a fresh `State` and saving it,
   which is what `SetPending` used to do, would silently drop whichever entries the rest of the
-  cycle had just written.
+  cycle had just written. `Store` writes are serialised by its own mutex, held across Load/Save/
+  update: the welcome-burst goroutine (`TakePendingCommands`), the command goroutines (`Add`/
+  `RemovePendingCommand`) and the poll goroutine (`SetPending`/`SetSelfUpdate`/...) can all be in
+  flight at once, and without it two read-modify-write calls racing on the same `Load` could each
+  start from the same snapshot and have one write silently lost. Only a missing file loads as
+  empty; any other `Load` error (a corrupt file, a permission or disk error) is returned from
+  `update` as-is, with nothing written - a bad read must not silently clobber the file in its
+  place.
 
 ## Self-update
 

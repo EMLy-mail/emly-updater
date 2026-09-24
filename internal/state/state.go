@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -64,13 +65,34 @@ type State struct {
 }
 
 // Store reads and writes the state file.
+//
+// state.json holds three independent lifecycles - EMLy's pending update, the
+// updater's own self-update record, and the client channel's pending
+// destructive commands - each written by a different part of a cycle: the
+// welcome-burst goroutine (TakePendingCommands), the command goroutines
+// (Add/RemovePendingCommand) and the poll goroutine (SetPending/
+// SetSelfUpdate/ClearPending/ClearSelfUpdate) can all be in flight at once.
+// mu serialises every read-modify-write (and a bare Load/Save) so two calls
+// racing on the same read-modify-write cycle cannot each read the same
+// starting state and have one write silently overwrite the other's.
 type Store struct {
 	Path string
+
+	mu sync.Mutex
 }
 
 // Load reads the state file. A missing file is an empty state, not an error;
 // a corrupt file is reported so the caller can log it and start fresh.
 func (s *Store) Load() (*State, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.loadLocked()
+}
+
+// loadLocked is Load without acquiring mu - callers that already hold it
+// (update, below) call this instead of Load to avoid deadlocking on a
+// non-reentrant mutex.
+func (s *Store) loadLocked() (*State, error) {
 	data, err := os.ReadFile(s.Path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -88,6 +110,13 @@ func (s *Store) Load() (*State, error) {
 // Save writes the state atomically: temp file in the same directory, then
 // rename, so a crash mid-write can never leave a truncated state.json.
 func (s *Store) Save(st *State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(st)
+}
+
+// saveLocked is Save without acquiring mu - see loadLocked.
+func (s *Store) saveLocked(st *State) error {
 	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
@@ -163,7 +192,9 @@ func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
 	return taken, err
 }
 
-// update applies mutate to the current state and saves the result.
+// update applies mutate to the current state and saves the result, holding
+// mu for the whole read-modify-write so no other Load/Save/update call can
+// interleave with it (see the Store doc comment).
 //
 // Read-modify-write, not a wholesale overwrite: the document holds three
 // independent lifecycles - EMLy's queued update, the updater's own
@@ -175,14 +206,19 @@ func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
 // machine.reboot id a redelivered command still needs to be recognised
 // against.
 //
-// A state file too corrupt to read is rebuilt rather than propagated: it holds
-// only re-derivable bookkeeping, and refusing to write would leave the service
-// unable to record anything at all.
+// Only a missing file is treated as empty (loadLocked already reports that
+// case as State{}, nil error). Any other Load error - a corrupt file, a
+// permission or disk error - is returned as-is and nothing is written: a
+// state file that failed to parse for a reason that might be transient (a
+// lock, a partial read) must not be silently clobbered with a freshly built
+// empty document on the strength of one bad read.
 func (s *Store) update(mutate func(*State)) error {
-	st, err := s.Load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	st, err := s.loadLocked()
 	if err != nil {
-		st = &State{}
+		return err
 	}
 	mutate(st)
-	return s.Save(st)
+	return s.saveLocked(st)
 }

@@ -192,6 +192,17 @@ type Updater struct {
 	// their network paths need not be exercised.
 	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck
 	updaterCheckFn func(context.Context, *cycleState) wsclient.ManifestCheck
+
+	// installing counts installs currently in flight (EMLy's own setup via
+	// runSetupAndVerify, and this updater's own via applySelfUpdate) so
+	// admitDestructive (clientpower.go) can refuse service.restart and
+	// machine.reboot as busy rather than racing a running installer.
+	installing atomic.Int32
+	// restartFn/rebootFn are the seams clientpower.go's runDestructive uses
+	// in place of launching restart-service / calling power.Reboot; tests
+	// set them so no test ever restarts the service or reboots the machine.
+	restartFn func() error
+	rebootFn  func(time.Duration) error
 }
 
 // clock is the time source; tests pin it.
@@ -744,6 +755,8 @@ func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state
 // clean-install retry in the logs.
 func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
 	u.Log.Info(label, "path", p.SetupPath, "version", p.Version)
+	u.installing.Add(1)
+	defer u.installing.Add(-1)
 	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
 		return err
 	}

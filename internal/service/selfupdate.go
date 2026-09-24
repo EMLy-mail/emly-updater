@@ -240,7 +240,12 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	}
 
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
+	// installing is not decremented on success: the service is about to be
+	// stopped by the setup this launches, so there is nothing left to
+	// un-mark busy - a failed launch is the only path that gets to undo it.
+	u.installing.Add(1)
 	if err := selfupdate.Launch(setupPath, logPath); err != nil {
+		u.installing.Add(-1)
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		if err := u.restoreCache(); err != nil {

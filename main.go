@@ -14,6 +14,9 @@
 //	show-toast  display the update-complete notification (internal use: the
 //	            SYSTEM service re-launches itself with this subcommand inside
 //	            the console user's session, see internal/notify.LaunchToast)
+//	restart-service  stop then start the service (internal use: launched
+//	            detached by the service itself for the client channel's
+//	            service.restart command)
 //
 // Without arguments the binary expects to be launched by the SCM.
 //
@@ -76,6 +79,11 @@ func main() {
 		err = cmdRun()
 	case "show-toast":
 		err = cmdShowToast(os.Args[2:])
+	case "restart-service":
+		// Internal: launched detached by the service itself for the client
+		// channel's service.restart command. cmdStop waits for the service
+		// to finish stopping (60s), then cmdStart brings it back.
+		err = cmdRestartService()
 	default:
 		usage()
 		os.Exit(2)
@@ -105,6 +113,20 @@ func cmdShowToast(args []string) error {
 		return err
 	}
 	return toast.Show(*exe, *title, *body)
+}
+
+// cmdRestartService is not meant to be invoked directly - the running
+// service launches it detached (DETACHED_PROCESS, never waited on) for the
+// client channel's service.restart command, then closes its own
+// WebSocket connection and returns. cmdStop's 60s wait for the service to
+// actually stop is why this has to be a separate process rather than
+// something the service does to itself: the stop handler blocks the
+// service's own goroutine until RunLoop returns.
+func cmdRestartService() error {
+	if err := cmdStop(); err != nil {
+		return err
+	}
+	return cmdStart()
 }
 
 func fatalf(format string, args ...any) {

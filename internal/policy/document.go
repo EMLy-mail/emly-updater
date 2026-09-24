@@ -11,7 +11,10 @@
 // behaves exactly as it did before this package existed.
 package policy
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // SchemaVersion is the only document schema this build understands. Additive
 // changes (new fields) do not bump it - unknown fields are ignored - so a
@@ -51,9 +54,36 @@ type Document struct {
 	// site can pilot the channel on a handful of hosts (match.hostnames or
 	// match.hwids) before flipping it fleet-wide - the API's twin validator
 	// accepts it in an override too, same as every other patchable section.
-	ClientWS  Toggle     `json:"clientWs"`
-	Overrides []Override `json:"overrides"`
+	//
+	// Commands (ClientWSSettings.Commands) further restricts what a
+	// connected channel is allowed to execute; see ClientWSSettings.
+	ClientWS  ClientWSSettings `json:"clientWs"`
+	Overrides []Override       `json:"overrides"`
 }
+
+// ClientWSSettings is the clientWs section. Commands is the allowlist of
+// protocol v2 commands this machine executes (CLIENT_WS_PROTOCOL.md §12.3).
+// It is an array, so a document that sets it replaces the default whole -
+// merge patch never merges arrays - and a document that omits it keeps
+// DefaultClientWSCommands: read-only verbs only, so the two that restart
+// the service or the PC need a document that names them.
+type ClientWSSettings struct {
+	Enabled  bool     `json:"enabled"`
+	Commands []string `json:"commands"`
+}
+
+func (c ClientWSSettings) Allows(name string) bool { return slices.Contains(c.Commands, name) }
+
+// DefaultClientWSCommands are the read-only commands.
+var DefaultClientWSCommands = []string{"machine.info", "emly.manifest.check", "updater.manifest.check", "apps.list_upgradable"}
+
+// knownClientWSCommands mirrors wsclient.CommandNames; policy must not
+// import wsclient, so internal/service pins the two equal in a test.
+var knownClientWSCommands = []string{"machine.info", "emly.manifest.check", "updater.manifest.check",
+	"apps.list_upgradable", "service.restart", "machine.reboot"}
+
+// KnownClientWSCommands is exported for that test.
+func KnownClientWSCommands() []string { return slices.Clone(knownClientWSCommands) }
 
 // Refresh governs how often the document itself is re-fetched and when a
 // cache that could not be refreshed is reported as stale.

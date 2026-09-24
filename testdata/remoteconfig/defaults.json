@@ -45,6 +45,10 @@
     "compress": true,
     "eventLog": true
   },
+  "clientWs": {
+    "enabled": false,
+    "commands": ["machine.info", "emly.manifest.check", "updater.manifest.check", "apps.list_upgradable"]
+  },
   "ipcProtocol": {
     "versions": {
       "1": {

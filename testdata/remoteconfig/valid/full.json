@@ -2,10 +2,7 @@
   "schemaVersion": 1,
   "revision": 42,
   "generatedAt": "2026-08-28T10:00:00Z",
-  "refresh": {
-    "intervalMinutes": 15,
-    "staleAfterDays": 7
-  },
+  "refresh": { "intervalMinutes": 15, "staleAfterDays": 7 },
   "servers": {
     "srv-cb-rete-3g": "http://172.16.96.73:8080",
     "srv-cloud": "https://api.emly.ffois.it",
@@ -15,14 +12,8 @@
   "ipcProtocol": {
     "versions": {
       "1": {
-        "updater": {
-          "min": "1.2.0b",
-          "max": null
-        },
-        "emly": {
-          "min": "2.0.0",
-          "max": null
-        },
+        "updater": { "min": "1.2.0b", "max": null },
+        "emly": { "min": "2.0.0", "max": null },
         "enabled": true
       }
     },
@@ -30,73 +21,34 @@
   },
   "dcLookupMap": {
     "DC-RM2": {
-      "internalSubnets": [
-        "172.16.96.0/24",
-        "10.12.8.0/24"
-      ],
+      "internalSubnets": ["172.16.96.0/24", "10.12.8.0/24"],
       "baseServer": "srv-cb-rete-3g",
-      "backupServer": [
-        "srv-cloud"
-      ],
+      "backupServer": ["srv-cloud"],
       "enabled": true
     },
     "DC-CB": {
-      "internalSubnets": [
-        "172.16.33.0/24",
-        "172.16.34.0/24"
-      ],
+      "internalSubnets": ["172.16.33.0/24", "172.16.34.0/24"],
       "baseServer": "srv-cb-rete-3g",
-      "backupServer": [
-        "srv-cb-rete-enel",
-        "srv-cloud"
-      ],
+      "backupServer": ["srv-cb-rete-enel", "srv-cloud"],
       "enabled": true
     }
   },
   "hostIntegrity": {
     "enabled": true,
-    "whitelist": {
-      "hostnames": [
-        "FOISX-PC",
-        "RM095"
-      ],
-      "hwids": []
-    }
+    "whitelist": { "hostnames": ["FOISX-PC", "RM095"], "hwids": [] }
   },
   "control": {
-    "updater": {
-      "enabled": true,
-      "reason": null,
-      "until": null
-    },
-    "app": {
-      "enabled": true,
-      "mode": "normal",
-      "reason": null,
-      "until": null
-    }
+    "updater": { "enabled": true, "reason": null, "until": null },
+    "app": { "enabled": true, "mode": "normal", "reason": null, "until": null }
   },
   "updater": {
     "pollIntervalMinutes": 15,
     "channelOverride": null,
-    "criticalWarning": {
-      "enabled": true,
-      "seconds": 30
-    },
-    "dcLookupRetry": {
-      "attempts": 6,
-      "delaySeconds": 5
-    },
-    "resolver": {
-      "attempts": 3,
-      "baseBackoffSeconds": 5
-    },
-    "selfUpdate": {
-      "enabled": true
-    },
-    "installCertificate": {
-      "enabled": true
-    }
+    "criticalWarning": { "enabled": true, "seconds": 30 },
+    "dcLookupRetry": { "attempts": 6, "delaySeconds": 5 },
+    "resolver": { "attempts": 3, "baseBackoffSeconds": 5 },
+    "selfUpdate": { "enabled": true },
+    "installCertificate": { "enabled": true }
   },
   "logging": {
     "level": "info",
@@ -106,91 +58,47 @@
     "eventLog": true
   },
   "clientWs": {
-    "enabled": true
+    "enabled": true,
+    "commands": ["machine.info", "emly.manifest.check", "updater.manifest.check", "apps.list_upgradable"]
   },
   "overrides": [
     {
       "id": "pilot-beta",
-      "match": {
-        "hwids": [
-          "9A3F1C77-0000-0000-0000-000000000001"
-        ]
-      },
+      "match": { "hwids": ["9A3F1C77-0000-0000-0000-000000000001"] },
+      "except": null,
       "until": "2026-09-30T00:00:00Z",
       "patch": {
-        "updater": {
-          "channelOverride": "beta",
-          "pollIntervalMinutes": 5
-        },
-        "logging": {
-          "level": "debug"
-        }
+        "updater": { "channelOverride": "beta", "pollIntervalMinutes": 5 },
+        "logging": { "level": "debug" }
       }
     },
     {
       "id": "cb-freeze",
-      "match": {
-        "dcs": [
-          "DC-CB"
-        ]
-      },
+      "match": { "dcs": ["DC-CB"] },
       "until": "2026-09-05T18:00:00Z",
       "patch": {
-        "control": {
-          "updater": {
-            "enabled": false,
-            "reason": "chiusura contabile"
-          }
-        }
+        "control": { "updater": { "enabled": false, "reason": "chiusura contabile" } }
       }
     },
     {
       "id": "rm2-guest-wifi",
-      "match": {
-        "dcs": [
-          "DC-RM2"
-        ],
-        "subnets": [
-          "192.168.100.0/24"
-        ]
-      },
+      "match": { "dcs": ["DC-RM2"], "subnets": ["192.168.100.0/24"] },
       "until": null,
-      "patch": {
-        "updater": {
-          "pollIntervalMinutes": 60
-        }
-      }
+      "patch": { "updater": { "pollIntervalMinutes": 60 } }
     },
     {
       "id": "rollout-window",
-      "match": {
-        "all": true
-      },
+      "match": { "all": true },
       "until": "2026-09-10T20:00:00Z",
-      "patch": {
-        "updater": {
-          "pollIntervalMinutes": 5
-        }
-      }
+      "patch": { "updater": { "pollIntervalMinutes": 5 } }
     },
     {
       "id": "fleet-freeze-except-pilot",
-      "match": {
-        "all": true
-      },
-      "except": {
-        "hwids": [
-          "9A3F1C77-0000-0000-0000-000000000001"
-        ]
-      },
+      "match": { "all": true },
+      "except": { "hwids": ["9A3F1C77-0000-0000-0000-000000000001"] },
       "until": "2026-09-12T08:00:00Z",
       "patch": {
-        "control": {
-          "updater": {
-            "enabled": false,
-            "reason": "release 2.1.3 sotto verifica"
-          }
-        }
+        "control": { "updater": { "enabled": false, "reason": "release 2.1.3 sotto verifica" } }
       }
     }
   ]

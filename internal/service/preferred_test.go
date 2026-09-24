@@ -49,7 +49,7 @@ func preferredUpdater(t *testing.T, internalBase, externalBase string) *Updater 
 	u.clientWSWake = make(chan struct{}, 1)
 	snap := u.Policy.Current()
 	snap.Parsed.Global.Updater.Resolver = policy.ResolverSettings{Attempts: 1, BaseBackoffSeconds: 0}
-	snap.Parsed.Global.ClientWS = policy.Toggle{Enabled: true}
+	snap.Parsed.Global.ClientWS = policy.ClientWSSettings{Enabled: true, Commands: policy.DefaultClientWSCommands}
 	return u
 }
 

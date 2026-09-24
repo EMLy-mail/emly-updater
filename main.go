@@ -14,6 +14,9 @@
 //	show-toast  display the update-complete notification (internal use: the
 //	            SYSTEM service re-launches itself with this subcommand inside
 //	            the console user's session, see internal/notify.LaunchToast)
+//	restart-service  stop then start the service (internal use: launched
+//	            detached by the service itself for the client channel's
+//	            service.restart command)
 //
 // Without arguments the binary expects to be launched by the SCM.
 //
@@ -76,6 +79,11 @@ func main() {
 		err = cmdRun()
 	case "show-toast":
 		err = cmdShowToast(os.Args[2:])
+	case "restart-service":
+		// Internal: launched detached by the service itself for the client
+		// channel's service.restart command. cmdStop waits for the service
+		// to finish stopping (60s), then cmdStart brings it back.
+		err = cmdRestartService()
 	default:
 		usage()
 		os.Exit(2)
@@ -105,6 +113,56 @@ func cmdShowToast(args []string) error {
 		return err
 	}
 	return toast.Show(*exe, *title, *body)
+}
+
+// restartServiceStartRetries/Delay bound cmdRestartService's cmdStart
+// attempts: the SCM can still be finishing the bookkeeping of the stop this
+// same process just performed when the first start is attempted, so one
+// failed attempt is expected, not fatal.
+const (
+	restartServiceStartRetries = 3
+	restartServiceStartDelay   = 5 * time.Second
+)
+
+// cmdRestartService is not meant to be invoked directly - the running
+// service launches it detached (DETACHED_PROCESS, never waited on) for the
+// client channel's service.restart command, then closes its own
+// WebSocket connection and returns. cmdStop's 60s wait for the service to
+// actually stop is why this has to be a separate process rather than
+// something the service does to itself: the stop handler blocks the
+// service's own goroutine until RunLoop returns.
+//
+// Nothing else observes this process - no console, no caller waiting on its
+// exit code - so it logs to the normal ProgramData log and Event Log itself,
+// the same way runService does, rather than leaving a failure with no
+// trace. cmdStart is retried a few times with a short pause: it can race the
+// SCM's own bookkeeping of the stop this same process just performed.
+func cmdRestartService() error {
+	_ = config.EnsureDirs() // best-effort: if this fails, so will everything below
+	log := logging.New(config.LogsDir(), config.ExeLogPath(), false)
+	log.AttachEventLog()
+	defer log.Close()
+
+	log.Info("restart-service: stopping the service")
+	if err := cmdStop(); err != nil {
+		log.ErrorEvent(logging.EventGeneric, "restart-service: stop failed", "error", err.Error())
+		return err
+	}
+
+	var err error
+	for attempt := 1; attempt <= restartServiceStartRetries; attempt++ {
+		if err = cmdStart(); err == nil {
+			log.Info("restart-service: service restarted", "attempt", attempt)
+			return nil
+		}
+		log.Warn("restart-service: start attempt failed", "attempt", attempt, "error", err.Error())
+		if attempt < restartServiceStartRetries {
+			time.Sleep(restartServiceStartDelay)
+		}
+	}
+	log.ErrorEvent(logging.EventGeneric, "restart-service: service did not start after retries",
+		"attempts", restartServiceStartRetries, "error", err.Error())
+	return err
 }
 
 func fatalf(format string, args ...any) {

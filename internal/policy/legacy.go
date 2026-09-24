@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"slices"
 	"strings"
 
 	"emlyupdater/internal/config"
@@ -51,8 +52,10 @@ func DefaultsFromConfig(cfg *config.Config, ipc IPCProtocol, consoleDebug bool) 
 		// presence connection. Unlike selfUpdate and installCertificate
 		// there is deliberately no config.ini key to turn it on locally -
 		// the whole point of the switch is that a site controls the
-		// rollout centrally, from a published revision.
-		ClientWS:    Toggle{Enabled: false},
+		// rollout centrally, from a published revision. Commands still
+		// defaults to the read-only allowlist, so a document that only
+		// flips enabled=true does not also have to name them.
+		ClientWS:    ClientWSSettings{Enabled: false, Commands: slices.Clone(DefaultClientWSCommands)},
 		IPCProtocol: ipc,
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
 	"emlyupdater/internal/version"
+	"emlyupdater/internal/wsclient"
 )
 
 // selfUpdate brings the updater itself up to date, and reports whether a setup
@@ -78,12 +79,24 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 		// Decide only gives up on a target it has a record for, but read that
 		// from the record rather than assuming it: a nil here would take the
 		// whole service down over a self-update that had already failed.
+		attempts := decision.Attempt
 		if rec != nil {
 			rec.GaveUp = true
+			attempts = rec.Attempts
 			if err := u.Store.SetSelfUpdate(rec); err != nil {
 				u.Log.Warn("failed to record the abandoned updater release", "error", err.Error())
 			}
 		}
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: running, ToVersion: m.Version,
+			Attempt: attempts, WillRetry: false, // WillRetry = !GiveUp (spec §8.5); this branch is always GiveUp.
+			Error: &wsclient.ErrorBody{Code: "gave_up", Message: decision.Reason}})
+		// reconcileSelfUpdate's OutcomeMissed keeps firing for this same
+		// attempt on every later cycle (Reconcile does not consult
+		// rec.GaveUp - running stays behind rec.Version forever). The give-up
+		// above already told the client channel everything that Missed would;
+		// pre-mark it so it stays silent instead of repeating the same
+		// attempt under a different code.
+		u.markUpdateFailed("updater", m.Version, attempts, "version_mismatch")
 		return false
 	}
 	if !decision.Install {
@@ -96,6 +109,9 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 		"installed", running, "target", m.Version, "attempt", decision.Attempt,
 		"manifestURL", manifestURL, "download", m.Download,
 		"notes", m.Notes(u.Cfg.ResolveEMLyWithChannel(cyc.eff.Doc.Updater.Channel()).Language))
+
+	u.announceUpdate(wsclient.ManifestCheck{Target: "updater", InstalledVersion: running, AvailableVersion: m.Version,
+		UpdateAvailable: true, Decision: "install_next_cycle", CheckedAt: u.clock().UTC().Format(time.RFC3339)})
 
 	return u.applySelfUpdate(ctx, src, m, decision.Attempt)
 }
@@ -127,6 +143,10 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeLanded:
 		u.Log.InfoEvent(logging.EventSelfUpdateApplied, "updater self-update completed",
 			"from", rec.FromVersion, "to", running, "target", rec.Version, "attempts", rec.Attempts)
+		u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "updater", FromVersion: rec.FromVersion, ToVersion: running,
+			Attempt: rec.Attempts})
+		landed := *rec
+		u.selfLanded.Store(&landed)
 		if err := u.Store.ClearSelfUpdate(); err != nil {
 			u.Log.Warn("failed to clear the self-update record", "error", err.Error())
 		}
@@ -142,6 +162,9 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeMissed:
 		u.Log.Warn("a previously launched updater setup did not take effect",
 			"target", rec.Version, "stillRunning", running, "attempts", rec.Attempts)
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: running, ToVersion: rec.Version,
+			Attempt: rec.Attempts, WillRetry: rec.Attempts < selfupdate.MaxAttempts,
+			Error: &wsclient.ErrorBody{Code: "version_mismatch", Message: "the launched setup did not leave the new version running"}})
 	}
 	return rec
 }
@@ -151,8 +174,21 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 // mirror updates from that mirror.
 // It returns the URL that answered alongside the manifest, so the log can name
 // the exact endpoint this machine reached rather than the source it was
-// derived from.
+// derived from. A successful resolution updates the preferred server for the
+// rest of this session (see resolveUpdaterManifestWith).
 func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (source.Source, *manifest.UpdaterManifest, string, error) {
+	return u.resolveUpdaterManifestWith(ctx, cyc, true)
+}
+
+// resolveUpdaterManifestWith is resolveUpdaterManifest with control over
+// whether a successful resolution is allowed to change the preferred server
+// for the rest of this session. notePreferred=false is for read-only
+// diagnostics - the client-channel updater.manifest.check dry run
+// (clientcmd.go) - which must observe the same chain evaluation as a real
+// self-update check without the side effect of pinning the machine to a
+// backup server or waking the presence supervisor (wakeClientWS) as a
+// consequence of a status check.
+func (u *Updater) resolveUpdaterManifestWith(ctx context.Context, cyc *cycleState, notePreferred bool) (source.Source, *manifest.UpdaterManifest, string, error) {
 	resolver := u.newResolver(cyc)
 	resolver.Document = "updater manifest"
 
@@ -163,7 +199,7 @@ func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (
 		}
 		return u.Cfg.UpdaterManifestURL(http.ManifestURL)
 	})
-	if err == nil {
+	if err == nil && notePreferred {
 		u.notePreferredServer(cyc, resolver, src)
 	}
 	return src, m, servedBy, err
@@ -180,16 +216,46 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	if err != nil {
 		u.Log.Warn("failed to download the updater setup, retrying next cycle",
 			"target", m.Version, "error", err.Error())
+		// download.Manager.Ensure wraps both a fetch failure and a checksum
+		// mismatch in plain fmt.Errorf, with no sentinel to tell them apart
+		// (unlike installFailureCode's installer errors) - download_failed
+		// covers both.
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "download_failed", Message: err.Error()}})
 		return false
 	}
 
-	if err := verifySelfSetup(setupPath); err != nil {
+	verify := verifySelfSetup
+	if u.verifySelfSetupFn != nil {
+		verify = u.verifySelfSetupFn
+	}
+	if err := verify(setupPath); err != nil {
 		// A checksum that matched a signature that does not means the manifest
 		// and the file agree with each other but not with us: drop the file so
 		// a re-download cannot be served from cache.
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "refusing to run the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		_ = os.Remove(setupPath)
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "signature_invalid", Message: err.Error()}})
+		return false
+	}
+
+	// Claimed before anything below is done, and nothing below is undone if
+	// it refuses: beginInstall also refuses (false) when a destructive
+	// client command has been committed in the meantime
+	// (service.restart/machine.reboot) - see clientpower.go. Checking this
+	// first, ahead of SetSelfUpdate and retireCache, means a refusal here
+	// leaves neither the self-update attempt record nor the remote-config
+	// cache touched - there would be nothing to undo them with, since
+	// nothing has failed and rolling either back "because a reboot is
+	// coming" would be its own bug. installing is not decremented on
+	// success: the service is about to be stopped by the setup this
+	// launches, so there is nothing left to un-mark - a destructive command
+	// arriving between now and the actual restart is correctly refused as
+	// busy by admitDestructive until this process exits. A failed launch,
+	// below, is the only path that gets to undo it.
+	if !u.beginInstall("updater self-update") {
 		return false
 	}
 
@@ -207,6 +273,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		LaunchedAt:  time.Now().UTC(),
 	}
 	if err := u.Store.SetSelfUpdate(rec); err != nil {
+		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed,
 			"refusing to launch the updater setup: the attempt could not be recorded",
 			"target", m.Version, "error", err.Error())
@@ -224,14 +291,41 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 			"path", u.cachePrevPath())
 	}
 
+	// Emitted right before the launch, not after: the service is about to
+	// stop, so this may be the last message the old build ever manages to
+	// send (spec §8.3 - "the last message the old build gets to send"), and
+	// it is fine for it to still be sitting in the buffer when that happens.
+	// Launch itself is never blocked on it.
+	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+		Attempt: attempt, Trigger: u.cycleTrigger})
+
+	launch := selfupdate.Launch
+	if u.launchFn != nil {
+		launch = u.launchFn
+	}
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
-	if err := selfupdate.Launch(setupPath, logPath); err != nil {
+	if err := launch(setupPath, logPath); err != nil {
+		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		if err := u.restoreCache(); err != nil {
 			u.Log.Warn("could not restore the remote configuration cache after the failed launch",
 				"path", u.cachePath(), "error", err.Error())
 		}
+		// update.started was already emitted above: without this, a launch
+		// failure would leave it dangling until the next cycle's
+		// reconcileSelfUpdate (OutcomeMissed) eventually reports it, several
+		// cooldown minutes later.
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "launch_failed", Message: err.Error()}})
+		// The record persisted above (SetSelfUpdate) is not cleared on a
+		// failed launch, so the next cycle's reconcileSelfUpdate sees the
+		// same attempt and reports OutcomeMissed - the same failure, under
+		// "version_mismatch" instead of "launch_failed". Pre-mark it so
+		// that repeat stays silent (spec §8.5, "each distinct failure once
+		// per process") instead of restating this same attempt a second
+		// time under a different code.
+		u.markUpdateFailed("updater", m.Version, attempt, "version_mismatch")
 		return false
 	}
 

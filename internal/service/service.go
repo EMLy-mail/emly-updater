@@ -26,6 +26,8 @@ import (
 	"emlyupdater/internal/process"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
+	"emlyupdater/internal/winget"
+	"emlyupdater/internal/wsclient"
 )
 
 // Name is the Windows service name (also the Event Log source).
@@ -110,6 +112,218 @@ type Updater struct {
 	// supervisor dials immediately instead of sleeping up to 60s; nil means
 	// the real jittered delay.
 	clientWSInitialDelayFn func() time.Duration
+
+	// sessionChanges carries the SCM's session notifications from the
+	// service control loop to watchSessions (sessionwatch.go). nil disables
+	// the watcher.
+	sessionChanges chan machineinfo.SessionChange
+	// Seams for the session watcher's tests: the WTS resolution, the settle
+	// window (when > 0) and a callback observing each resolved burst.
+	resolveSessionFn func(machineinfo.SessionChange) machineinfo.SessionChange
+	sessionSettle    time.Duration
+	onSessionChange  func(c machineinfo.SessionChange, changed bool)
+
+	// startedAt is when this process's Updater was built (New), used for
+	// service.started's started_at and the boot-window heuristic in
+	// serviceStartedReason.
+	startedAt time.Time
+
+	// wsSession is the live v2 client-channel session, or nil when none is
+	// up - emit and the welcome burst goroutine read/write it from different
+	// goroutines, hence the atomic. All writes go through
+	// storeWSSession/clearWSSession, which serialise on wsSessionMu together
+	// with wsGen so a stale connection's burst can never resurrect it after
+	// runClientWS has already cleared it for a newer one.
+	wsSession   atomic.Pointer[wsclient.Session]
+	wsSessionMu sync.Mutex
+	// wsGen is the current presence-channel connection attempt's generation,
+	// guarded by wsSessionMu. See nextWSGeneration/storeWSSession/clearWSSession.
+	wsGen uint64
+	// eventsMu guards eventBuf, the in-memory buffer emit falls back to
+	// while no v2 session is up (see clientevents.go).
+	eventsMu sync.Mutex
+	eventBuf []bufferedEvent
+	// startedSent marks that service.started has already been sent once for
+	// this process (it must not repeat on a reconnect).
+	startedSent atomic.Bool
+	// serviceStartedOnce/serviceStartedPayload cache service.started's
+	// payload (see cachedServiceStarted): it is built at most once per
+	// process, because building it consumes the pending command ids, and a
+	// retry after a failed send must report the same ids the first attempt
+	// would have.
+	serviceStartedOnce    sync.Once
+	serviceStartedPayload wsclient.ServiceStarted
+	// selfLanded is set by reconcileSelfUpdate on selfupdate.OutcomeLanded
+	// and read once by buildServiceStarted, for service.started's
+	// previous_version/reason=self_update. Written on the poll goroutine,
+	// read on the client-channel goroutine, hence the atomic.
+	selfLanded atomic.Pointer[state.SelfUpdate]
+
+	// emitFn overrides emit in tests, so the session watcher and other
+	// callers can be exercised without a real client-channel session.
+	emitFn func(name string, payload any)
+	// systemFactsFn overrides machineinfo.CollectSystemFacts in tests.
+	systemFactsFn func(time.Time) machineinfo.SystemFacts
+	// netInterfacesFn overrides machineinfo.NetworkInterfaces in tests.
+	netInterfacesFn func() []machineinfo.NetInterface
+	// emlyRunningFn overrides process.IsRunning in tests.
+	emlyRunningFn func() bool
+	// wsSendFn overrides the welcome burst's per-event sender in tests, so a
+	// failed service.started send (and the retry it causes) can be exercised
+	// without a real *wsclient.Session.
+	wsSendFn func(name string, payload any) error
+	// welcomeBurstFn overrides the whole welcome burst in tests, so Welcome's
+	// own contract (it must return immediately) can be exercised without a
+	// real *wsclient.Session.
+	welcomeBurstFn func(gen uint64, s *wsclient.Session)
+
+	// commands is the dedupe ring for the client-channel command executor
+	// (clientcmd.go): a redelivered command id is confirmed, not re-run.
+	commands commandRing
+	// runningMu/running track, per command name, whether an instance of it
+	// is currently executing - so a second delivery of a different command
+	// with the same name is refused busy instead of running concurrently.
+	runningMu sync.Mutex
+	running   map[string]bool
+
+	// listUpgradableFn overrides winget.ListUpgradable in tests.
+	listUpgradableFn func(context.Context) ([]winget.Package, error)
+	// emlyCheckFn/updaterCheckFn override the manifest dry runs in tests, so
+	// their network paths need not be exercised.
+	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck
+	updaterCheckFn func(context.Context, *cycleState) wsclient.ManifestCheck
+	// verifySelfSetupFn overrides applySelfUpdate's Authenticode signature
+	// check in tests - there is no way to produce a file signed by the
+	// embedded 3gIT certificate's private key outside a real release build.
+	// nil means the real verifySelfSetup.
+	verifySelfSetupFn func(string) error
+	// launchFn overrides applySelfUpdate's call to selfupdate.Launch in
+	// tests, so a launch failure (and the update.failed it now emits) can be
+	// exercised without starting a real process. nil means the real
+	// selfupdate.Launch.
+	launchFn func(setupPath, logPath string) error
+
+	// installing counts installs currently in flight: EMLy's own (the whole
+	// of install() - both setup runs, the forced redownload and the
+	// uninstall/reinstall clean-retry, not just runSetupAndVerify, since a
+	// destructive command must not be admitted mid-uninstall either) and
+	// this updater's own (applySelfUpdate, right before Launch). It gates
+	// admitDestructive (clientpower.go), which refuses service.restart and
+	// machine.reboot as busy while it is nonzero. After a successful
+	// self-update launch it intentionally stays >0 for the rest of this
+	// process's life - the service is about to stop, there is nothing left
+	// to un-mark, and refusing destructive commands as busy until the
+	// restart actually happens is the correct behaviour, not a bug.
+	installing atomic.Int32
+	// restartFn/rebootFn are the seams clientpower.go's runDestructive uses
+	// in place of launching restart-service / calling power.Reboot; tests
+	// set them so no test ever restarts the service or reboots the machine.
+	restartFn func() error
+	rebootFn  func(time.Duration) error
+
+	// destructiveMu guards destructivePending, and is also held for the
+	// whole check-then-act step wherever an install is about to start
+	// (beginInstall, used by install() and applySelfUpdate) or a
+	// destructive command is about to be committed (commitDestructive,
+	// used by runDestructive right before restartFn/rebootFn) - see
+	// clientpower.go. Sharing one mutex between both sides is what makes
+	// the check and the act atomic with respect to each other: without it,
+	// an install could start in the gap between admitDestructive's busy
+	// check and runDestructive actually committing to the reboot/restart,
+	// or a destructive command could be committed in the gap between an
+	// install's own busy check and it incrementing installing.
+	destructiveMu sync.Mutex
+	// destructivePending marks that a service.restart or machine.reboot has
+	// been committed for this process: set by commitDestructive right
+	// before restartFn/rebootFn runs, cleared if that call fails. While
+	// set, Cycle skips self-update and the EMLy pending/install path
+	// entirely (logged once per pending episode at Info), and
+	// admitDestructive refuses a second destructive command as busy.
+	destructivePending bool
+	// destructiveDeadline is when destructivePending stops being trusted:
+	// commitDestructive sets it to roughly "when the reboot/restart should
+	// have already happened, plus a safety margin" (see rebootGrace and
+	// serviceRestartGrace in clientpower.go). An aborted shutdown
+	// (`shutdown /a`) or a restart-service child that never brings the
+	// service back (a hung cmdStop, an SCM that refuses the start) would
+	// otherwise leave this flag - and therefore every Cycle and every new
+	// destructive command - stuck for the rest of the process's life, with
+	// no way to recover the host except physically touching it.
+	// destructivePendingLocked is what actually enforces the deadline,
+	// lazily, on whichever check happens to run next.
+	destructiveDeadline time.Time
+	// destructiveCommandID is the msg.ID commitDestructive was called with,
+	// remembered alongside destructiveDeadline so an auto-expiry
+	// (destructivePendingLocked) can also remove that command's
+	// state.json pendingCommands record. Without this, an aborted
+	// reboot/restart whose deadline lapses leaves the record behind, and
+	// the next start's service.started (buildServiceStarted,
+	// clientevents.go) reads it back and reports the aborted command as
+	// completed - reboot always with reason "boot".
+	destructiveCommandID string
+	// destructiveSkipLogged marks that Cycle's "skipping this cycle"
+	// message has already been logged for the destructivePending episode
+	// currently in progress, so a countdown of several minutes does not
+	// repeat the line on every poll. Reset whenever destructivePending
+	// clears, explicitly or by expiry.
+	destructiveSkipLogged bool
+
+	// announced remembers, per target ("emly"/"updater"), the last version
+	// announceUpdate has already sent update.available for - poll goroutine
+	// only, so it needs no locking.
+	announced map[string]string
+	// updateFailed remembers which (target, to_version, attempt, code)
+	// update.failed occurrences have already been reported this process -
+	// poll goroutine only (selfUpdate/applySelfUpdate/install all run on
+	// it), so it needs no locking, same as announced. Without this,
+	// reconcileSelfUpdate would repeat "version_mismatch" every cycle a
+	// launch stays pending (the cooldown, every retry, and forever once
+	// GaveUp is recorded), and a broken mirror would repeat
+	// download_failed/signature_invalid on every cycle since a failed
+	// download never advances the attempt counter. See emitUpdateFailed
+	// (selfupdate.go).
+	updateFailed map[updateFailedKey]bool
+	// wakeReason is set by RunLoop right before a cycle that was triggered by
+	// a notify wake (rather than the poll timer) and read once, at the top of
+	// Cycle, to compute this cycle's trigger for the update.started events it
+	// emits; empty means the ordinary poll ("cycle").
+	wakeReason string
+	// cycleTrigger is the current cycle's trigger ("cycle", "resume", or
+	// whatever wakeReason named it), stashed here rather than threaded
+	// through apply/install's signatures - both run on the poll goroutine, so
+	// this needs no locking either.
+	cycleTrigger string
+
+	// wake carries the reason for an early wake-up of RunLoop, sent by
+	// handleNotify (clientnotify.go) after its jittered delay. Buffered 1:
+	// several notifies before RunLoop's select picks it up collapse into the
+	// one pending wake, so a burst of server pushes never queues more than
+	// one extra cycle. New sets it; a literal Updater built by a test (that
+	// never calls RunLoop) may leave it nil, which is fine for a send
+	// (select/default below) but would block forever on a receive.
+	wake chan string
+	// forceConfig is set by a config.published notify and consumed by
+	// RunLoop's next refreshConfig call (Swap(false)): the notify only knows
+	// a newer document exists, not its content, so the next fetch is made
+	// unconditional rather than waiting for the poll interval to elapse.
+	forceConfig atomic.Bool
+	// jitterFn/afterFunc are scheduleWake's seams: tests pin the jitter to a
+	// deterministic value and run afterFunc's callback synchronously instead
+	// of waiting on a real timer. nil means the real rand.Int64N / time.AfterFunc.
+	jitterFn  func(max time.Duration) time.Duration
+	afterFunc func(time.Duration, func())
+
+	// notifyWakeMu guards lastNotifyWake: handleNotify runs on the presence
+	// connection's own read goroutine (see wsclient.Handler's doc comment),
+	// which - unlike announced/cycleTrigger above - is not the poll
+	// goroutine, so this one does need locking.
+	notifyWakeMu sync.Mutex
+	// lastNotifyWake is when a notify last scheduled an early wake (see
+	// allowNotifyWake, clientnotify.go): at most one per
+	// notifyWakeThrottle, so a burst of release.published/config.published
+	// pushes cannot collapse into a stampede of early cycles. Zero means
+	// none yet this process.
+	lastNotifyWake time.Time
 }
 
 // clock is the time source; tests pin it.
@@ -140,6 +354,13 @@ func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 		ipsFn:        machineinfo.LocalIPv4Addresses,
 		loggedUserFn: machineinfo.LoggedUser,
 		clientWSWake: make(chan struct{}, 1),
+		wake:         make(chan string, 1),
+		startedAt:    time.Now(),
+
+		sessionChanges: make(chan machineinfo.SessionChange, sessionChangeBuffer),
+	}
+	u.Store.OnCorrupt = func(backup string, err error) {
+		log.Warn("state file did not parse; moved aside and rebuilt empty", "backup", backup, "err", err)
 	}
 	u.IPC = ipc.New(cfg, log, func() machineinfo.Info { return u.Machine },
 		assoc.ExePath(cfg.EMLyInstallDir, cfg.EMLyExeName))
@@ -173,6 +394,13 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		"policyRevision", cyc.snap.Revision(),
 		"policySource", cyc.snap.Source.String(),
 	)
+
+	// Seed the command dedupe ring from whatever pending command ids
+	// survived from a previous process (state.json) before the presence
+	// channel below makes its first connection attempt - a server that
+	// re-sends the same service.restart/machine.reboot id after the
+	// reconnect must be told "already seen", not have it executed again.
+	u.seedCommandRing()
 
 	// The presence channel runs for the life of the service, beside the poll
 	// loop rather than inside it: it follows the same server chain beginCycle
@@ -211,8 +439,10 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		if !first {
 			// Every later cycle re-fetches the document when it is due and
 			// re-evaluates the site: a laptop that changed subnet, or a
-			// policy that changed under it, takes effect here.
-			u.refreshConfig(ctx, false)
+			// policy that changed under it, takes effect here. Swap(false)
+			// both reads and clears forceConfig, so a config.published
+			// notify forces exactly the next fetch, not every one after it.
+			u.refreshConfig(ctx, u.forceConfig.Swap(false))
 			cyc = u.beginCycle(ctx, false)
 		}
 		first = false
@@ -220,8 +450,12 @@ func (u *Updater) RunLoop(ctx context.Context) {
 		if err := u.Cycle(ctx, cyc); err != nil && ctx.Err() == nil {
 			u.Log.Error("update cycle failed", "error", err.Error())
 		}
+		u.wakeReason = ""
 		select {
 		case <-time.After(cyc.eff.Doc.Updater.PollInterval()):
+		case reason := <-u.wake:
+			u.wakeReason = reason
+			u.Log.Info("update loop woken early", "reason", reason)
 		case <-ctx.Done():
 			u.Log.Info("update loop stopped")
 			return
@@ -235,6 +469,16 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	if cyc == nil {
 		cyc = u.current()
 	}
+	// This cycle's trigger for the update.started events install() emits
+	// below (spec §8.3): empty wakeReason is the ordinary poll timer, set by
+	// RunLoop otherwise when a notify wakes the loop early. Stashed in a
+	// field rather than threaded through apply/install's signatures - both
+	// run on this same poll goroutine.
+	trigger := u.wakeReason
+	if trigger == "" {
+		trigger = "cycle"
+	}
+	u.cycleTrigger = trigger
 	u.Log.Debug("update cycle starting",
 		"policyRevision", cyc.snap.Revision(), "policySource", cyc.snap.Source.String(),
 		"site", cyc.site, "overrides", len(cyc.eff.Applied))
@@ -248,6 +492,21 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	// un-pause it), still healed the trust store and still serves IPC - but
 	// it downloads and installs nothing, its own release included.
 	if !u.applyControlGate(cyc) {
+		return nil
+	}
+
+	// A service.restart or machine.reboot accepted over the client channel
+	// has already been committed (runDestructive, clientpower.go) - the
+	// service is going to stop on its own within the announced delay.
+	// Starting a self-update or an EMLy install now would either race that
+	// shutdown or, for a forced kill, tear down a setup mid-run because the
+	// user closed EMLy in response to the reboot warning. This is the
+	// coarse, cycle-level skip; install() (below, via beginInstall) is the
+	// authoritative, race-safe checkpoint for a destructive command
+	// admitted after this check passes but before an install actually
+	// starts - e.g. while apply() is waiting on WaitForExit.
+	if u.destructivePendingNow() {
+		u.logDestructiveSkipOnce()
 		return nil
 	}
 
@@ -289,6 +548,7 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 			_ = u.Store.ClearPending()
 		} else {
 			u.Log.Info("resuming pending update", "version", p.Version, "forced", p.Forced)
+			u.cycleTrigger = "resume"
 			return u.apply(ctx, cyc, p, emly)
 		}
 	}
@@ -321,6 +581,16 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	u.Log.InfoEvent(logging.EventUpdateFound, "update available",
 		"installed", emly.InstalledVersion, "target", target.Version,
 		"channel", emly.Channel, "forced", forced, "source", src.Name())
+
+	enabled, _ := cyc.eff.UpdaterEnabled(cyc.host.Now)
+	mc := wsclient.ManifestCheck{Target: "emly", Channel: emly.Channel, AvailableVersion: target.Version,
+		UpdateAvailable: true, Critical: forced, MinRequiredVersion: m.MinRequiredVersion,
+		Decision: emlyDecision(true, forced, u.emlyRunning(), !enabled),
+		Source: u.serverRef(cyc, sourceURL(src)), CheckedAt: u.clock().UTC().Format(time.RFC3339)}
+	if !emly.FreshInstall {
+		mc.InstalledVersion = emly.InstalledVersion
+	}
+	u.announceUpdate(mc)
 
 	setupPath, err := u.Downloads.Ensure(ctx, src, target)
 	if err != nil {
@@ -449,14 +719,28 @@ func (u *Updater) newResolver(cyc *cycleState) *source.Resolver {
 
 // resolveTarget fetches the update manifest from this machine's server chain
 // and resolves it to a channel target. Shared by the normal poll in Cycle and
-// by the forced re-download path in install.
+// by the forced re-download path in install. A successful resolution updates
+// the preferred server for the rest of this session (see resolveTargetWith).
 func (u *Updater) resolveTarget(ctx context.Context, cyc *cycleState, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+	return u.resolveTargetWith(ctx, cyc, channel, true)
+}
+
+// resolveTargetWith is resolveTarget with control over whether a successful
+// resolution is allowed to change the preferred server for the rest of this
+// session. notePreferred=false is for read-only diagnostics - the
+// client-channel emly.manifest.check dry run (clientcmd.go) - which must
+// observe the same chain evaluation as a real cycle without the side effect
+// of pinning the machine to a backup server or waking the presence
+// supervisor (wakeClientWS) as a consequence of a status check.
+func (u *Updater) resolveTargetWith(ctx context.Context, cyc *cycleState, channel string, notePreferred bool) (source.Source, *manifest.Manifest, manifest.Target, error) {
 	resolver := u.newResolver(cyc)
 	src, m, err := resolver.Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
 	}
-	u.notePreferredServer(cyc, resolver, src)
+	if notePreferred {
+		u.notePreferredServer(cyc, resolver, src)
+	}
 
 	target, err := src.ResolveTarget(m, channel)
 	if err != nil {
@@ -469,6 +753,20 @@ func (u *Updater) resolveTarget(ctx context.Context, cyc *cycleState, channel st
 // not running → install now; running and non-forced → wait for exit; running
 // and forced → optional WTS warning, then kill.
 func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
+	// Coarse check, same reasoning as Cycle's own: apply is reached after
+	// resolveTarget/download, which can take a while, so a destructive
+	// command could have been committed since Cycle's own top-level check.
+	// install() (below, via beginInstall) is still the authoritative,
+	// race-safe checkpoint for the non-forced path - but the forced path
+	// kills EMLy before ever reaching install(), so it gets its own check
+	// too, right before the kill (see below): a user closing EMLy because
+	// of an unrelated reboot warning must not have the forced kill run
+	// anyway for an install that is about to be refused.
+	if u.destructivePendingNow() {
+		u.logDestructiveSkipOnce()
+		return nil
+	}
+
 	exe := u.Cfg.EMLyExeName
 
 	if process.IsRunning(exe) {
@@ -489,6 +787,16 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 				} else {
 					u.Log.Info("no active console session, skipping warning")
 				}
+			}
+			// Re-checked here, not just at the top of apply: the warning
+			// countdown above can run for cyc.eff.Doc.Updater.CriticalWarning
+			// .Seconds (default 30s) of real time, long enough for a
+			// destructive command to be admitted and committed while EMLy is
+			// still running and untouched. Killing it now would be for
+			// nothing - install() is about to refuse anyway.
+			if u.destructivePendingNow() {
+				u.logDestructiveSkipOnce()
+				return nil
 			}
 			killed, err := process.TerminateAll(exe)
 			if err != nil {
@@ -539,18 +847,46 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 // only if that re-fetch cannot happen at all (e.g. offline) does the retry
 // fall back to the original local copy.
 func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
+	// Claims installing for the whole of this function - both setup runs,
+	// the forced redownload and the uninstall/reinstall clean-retry, not
+	// just the setup execution itself - so a destructive client command
+	// cannot be admitted mid-uninstall. This is also the checkpoint that
+	// stops a WaitForExit-released install (apply, above) from starting:
+	// the client channel may have accepted a reboot/restart while EMLy was
+	// still running and this cycle was waiting on it.
+	if !u.beginInstall("EMLy install") {
+		return fmt.Errorf("EMLy install skipped: a destructive client command is pending")
+	}
+	defer u.endInstall()
+
+	// from is the version installed before this attempt, omitted (empty) on
+	// a fresh install (spec §8.3): the 0.0.0 sentinel is an internal
+	// comparison value, not a version to report.
+	var from string
+	if !emly.FreshInstall {
+		from = emly.InstalledVersion
+	}
+
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
 		_ = os.Remove(p.SetupPath)
 		_ = u.Store.ClearPending()
+		u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+			WillRetry: true, Error: &wsclient.ErrorBody{Code: "checksum_mismatch", Message: err.Error()}})
 		return fmt.Errorf("refusing to install: %w", err)
 	}
 
+	started := u.clock()
+	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+		Forced: p.Forced, Attempt: 1, Trigger: u.cycleTrigger})
+
+	reinstalled := false
 	if err := u.runSetupAndVerify(p, "running setup"); err != nil {
 		u.Log.WarnEvent(logging.EventInstallFailed,
 			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
 			"version", p.Version, "error", err.Error())
+		reinstalled = true
 
 		if fresh, ferr := u.forceRedownload(ctx, cyc, p, emly.Channel); ferr != nil {
 			u.Log.Warn("could not force a fresh download for the clean-install retry, retrying with the cached copy",
@@ -569,11 +905,20 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 		if err := u.runSetupAndVerify(p, "running setup (clean install)"); err != nil {
 			u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy clean install failed",
 				"version", p.Version, "error", err.Error())
+			u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+				Attempt: 2, WillRetry: true, Error: &wsclient.ErrorBody{Code: installFailureCode(err), Message: err.Error()}})
 			return err // pending kept → retried next cycle
 		}
 	}
 
 	u.Log.InfoEvent(logging.EventInstallOK, "EMLy updated successfully", "version", p.Version)
+
+	attempt := 1
+	if reinstalled {
+		attempt = 2
+	}
+	u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+		Forced: p.Forced, Attempt: attempt, DurationMS: u.clock().Sub(started).Milliseconds(), Reinstalled: reinstalled})
 
 	u.showUpdateToast(p.Version)
 
@@ -643,6 +988,9 @@ func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state
 // runSetupAndVerify runs EMLy's setup for p and confirms config.ini now
 // reports p.Version. label distinguishes the first attempt from the
 // clean-install retry in the logs.
+// installing is claimed by the caller (install, above) for its whole
+// duration - both attempts, plus the redownload/uninstall between them -
+// not by this function per call.
 func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
 	u.Log.Info(label, "path", p.SetupPath, "version", p.Version)
 	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
@@ -772,18 +1120,24 @@ type Handler struct {
 
 // Execute implements svc.Handler: it reports Running, drives the update loop
 // in a goroutine, and translates Stop/Shutdown into context cancellation.
+// Session notifications (console/RDP connect, disconnect, logon, ...) are
+// handed to watchSessions.
 func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
-	const accepted = svc.AcceptStop | svc.AcceptShutdown
+	const accepted = svc.AcceptStop | svc.AcceptShutdown | svc.AcceptSessionChange
 
 	changes <- svc.Status{State: svc.StartPending}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	wg.Add(2)
+	wg.Add(3)
 	go func() {
 		defer wg.Done()
 		h.Updater.RunLoop(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		h.Updater.watchSessions(ctx)
 	}()
 	go func() {
 		defer wg.Done()
@@ -801,6 +1155,12 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 		switch c.Cmd {
 		case svc.Interrogate:
 			changes <- c.CurrentStatus
+		case svc.SessionChange:
+			// Parsed right here: EventData points into memory the SCM only
+			// lends for the duration of its control handler call.
+			if ev, ok := machineinfo.ParseSessionChange(c.EventType, c.EventData, time.Now()); ok {
+				h.Updater.queueSessionChange(ev)
+			}
 		case svc.Stop, svc.Shutdown:
 			changes <- svc.Status{State: svc.StopPending}
 			cancel()

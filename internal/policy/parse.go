@@ -43,12 +43,12 @@ func (ps Problems) Error() string {
 // leaves out (or sets to null). They come from config.ini and from the
 // compiled-in IPC compatibility constants, see DefaultsFromConfig.
 type Defaults struct {
-	Refresh     Refresh         `json:"refresh"`
-	Control     Control         `json:"control"`
-	Updater     UpdaterSettings `json:"updater"`
-	Logging     LoggingSettings `json:"logging"`
-	ClientWS    Toggle          `json:"clientWs"`
-	IPCProtocol IPCProtocol     `json:"ipcProtocol"`
+	Refresh     Refresh          `json:"refresh"`
+	Control     Control          `json:"control"`
+	Updater     UpdaterSettings  `json:"updater"`
+	Logging     LoggingSettings  `json:"logging"`
+	ClientWS    ClientWSSettings `json:"clientWs"`
+	IPCProtocol IPCProtocol      `json:"ipcProtocol"`
 }
 
 // Parsed is a validated document plus what is needed to re-evaluate it for a
@@ -510,6 +510,12 @@ func validateDocument(d *Document, remote bool) Problems {
 	}
 	if lg.Backups < 0 || lg.Backups > 50 {
 		add("/logging/backups", "must be between 0 and 50")
+	}
+
+	for i, name := range d.ClientWS.Commands {
+		if !slices.Contains(knownClientWSCommands, name) {
+			add(fmt.Sprintf("/clientWs/commands/%d", i), fmt.Sprintf("unknown command %q", name))
+		}
 	}
 
 	sort.SliceStable(ps, func(i, j int) bool { return ps[i].Path < ps[j].Path })

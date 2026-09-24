@@ -2,19 +2,28 @@
 // docs/superpowers/specs/2026-09-17-client-presence-ws-design.md: one
 // WebSocket connection to the API's GET /v2/client/ws, held open for the
 // life of the service, whose only job is to let the API answer "is this
-// machine on right now" without guessing from the last poll.
+// machine on right now" without guessing from the last poll. On top of that
+// presence handshake, the connection also carries protocol v2 once welcome
+// negotiates it: server-to-client commands, client-to-server events, and
+// server-to-client notifies (protocol.go's Cmd*/Evt*/Topic* names).
 //
 // It is deliberately pure Go with no Windows API and no dependency on
-// internal/service, so the whole handshake and heartbeat can be exercised
-// against a real listener in an ordinary test - the same reason
-// internal/policy does not import internal/service either. What decides
-// *when* to run a connection (which server, whether the remote document
-// enables the channel at all, what to do when one drops) lives in
-// internal/service/clientws.go.
+// internal/service, so the whole handshake, heartbeat, command dispatch and
+// event/notify plumbing can be exercised against a real listener in an
+// ordinary test - the same reason internal/policy does not import
+// internal/service either. What decides *when* to run a connection (which
+// server, whether the remote document enables the channel at all, what
+// commands are allowed, what to do when one drops) and what a command
+// actually does on this machine lives in internal/service/clientws.go and
+// its clientcmd.go/clientevents.go/clientnotify.go/clientpower.go siblings.
 //
-// The wire protocol's normative reference is the API-side design document,
+// The wire protocol's normative reference is emly-go-api/CLIENT_WS_PROTOCOL.md;
+// the presence-only v1 handshake also has the API-side design document,
 // emly-go-api/docs/superpowers/specs/2026-09-17-client-presence-ws-api-design.md §3.
-// A change to the envelope, the handshake or the heartbeat touches both.
+// A change to the envelope, the handshake, the heartbeat, or a command/event/
+// notify touches both repos: protocol.go and id.go here mirror the API's
+// internal/clientproto by hand - there is no shared Go module between the
+// two repos, so nothing enforces this automatically.
 package wsclient
 
 import (
@@ -47,10 +56,16 @@ const (
 )
 
 // Message is the envelope every frame on this channel carries. Data is
-// omitted for the messages that have no payload (hello, ping, pong).
+// omitted for the messages that have no payload (hello, ping, pong). ID,
+// ReplyTo and TS are v2 additions (spec §4) and stay empty - so omitted from
+// the wire - on a v1 connection, which is what keeps the handshake and
+// heartbeat byte-identical to v1 against a v1 server.
 type Message struct {
-	Type string          `json:"type"`
-	Data json.RawMessage `json:"data,omitempty"`
+	Type    string          `json:"type"`
+	ID      string          `json:"id,omitempty"`
+	ReplyTo string          `json:"reply_to,omitempty"`
+	TS      string          `json:"ts,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 // Identity is the payload of the first message the client sends: the same
@@ -74,6 +89,11 @@ type Identity struct {
 	Product                  string `json:"product,omitempty"`
 	OSVersion                string `json:"os_version,omitempty"`
 	EMLyVersion              string `json:"emly_version,omitempty"`
+
+	// Protocol and Capabilities are the v2 negotiation (spec §4). Zero
+	// Protocol keeps the payload byte-identical to v1.
+	Protocol     int      `json:"protocol,omitempty"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 // Identified reports whether the payload carries enough for the API to know
@@ -135,6 +155,23 @@ const (
 	writeTimeout            = 10 * time.Second
 )
 
+// Handler reacts to the v2 messages a Client's connection receives once the
+// server has switched it to v2 with a welcome. Welcome and Notify are called
+// from the connection's own goroutine (the same one running heartbeat) and
+// must not block for long, or they hold up every other read on the
+// connection, including pongs; Command runs on a fresh goroutine per
+// command, so a slow one never blocks the next.
+type Handler interface {
+	// Welcome is called once, when the server's welcome switches the
+	// connection to v2.
+	Welcome(s *Session, w Welcome)
+	// Command is called for every command frame received after welcome, on
+	// its own goroutine, with a context that ends when Run returns.
+	Command(ctx context.Context, s *Session, msg Message, cmd Command)
+	// Notify is called for every notify frame received after welcome.
+	Notify(s *Session, msg Message, n Notify)
+}
+
 // Client runs one presence connection from dial to close. It is single-use
 // in the sense that Run returns when the connection ends; the supervisor
 // calls it again for the next attempt.
@@ -150,6 +187,10 @@ type Client struct {
 	// Identity is the payload of the first message sent after the server's
 	// hello. Resolved once, by the caller, at the moment of the dial.
 	Identity Identity
+	// Handler receives v2 commands and notifies once the server switches
+	// the connection with a welcome. Nil means v1 behaviour even if the
+	// server sends a welcome - it is ignored (logged) instead of dispatched.
+	Handler Handler
 
 	// IdleTimeout bounds a single read; zero means defaultIdleTimeout.
 	IdleTimeout time.Duration
@@ -228,7 +269,7 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 
 	conn, resp, err := websocket.Dial(ctx, c.URL, &websocket.DialOptions{
-		HTTPClient: c.HTTPClient,
+		HTTPClient: c.httpClientRefusingSchemeDowngrade(),
 		HTTPHeader: header,
 	})
 	if err != nil {
@@ -248,6 +289,46 @@ func (c *Client) dial(ctx context.Context) (*websocket.Conn, error) {
 	}
 	c.logf("presence channel upgrade succeeded, waiting for hello")
 	return conn, nil
+}
+
+// httpClientRefusingSchemeDowngrade returns c.HTTPClient (http.DefaultClient
+// if nil) with a CheckRedirect that fails a redirect from https to a
+// non-https scheme.
+//
+// coder/websocket performs the upgrade with an ordinary http.Client.Do,
+// which follows a 3xx response exactly like any other request - including
+// across schemes, since the standard library's default redirect policy only
+// bounds the hop count. Session.Secure() (session.go) is derived from the
+// URL this Client was configured with (c.URL, from URLFor: wss:// for an
+// https:// server), not from the scheme the connection actually ended up
+// using: without this,
+// a server (or anything sitting in front of it) that redirects the upgrade
+// request from https to a plain http endpoint would leave Secure() reporting
+// true - the condition destructive commands require (spec §12.2) - over a
+// connection that was never actually TLS for the hop that mattered.
+// Refusing the downgrade at dial time is simpler than trying to recompute
+// Secure() from the post-redirect URL: the dial just fails, the same as any
+// other unreachable server.
+func (c *Client) httpClientRefusingSchemeDowngrade() *http.Client {
+	base := c.HTTPClient
+	if base == nil {
+		base = http.DefaultClient
+	}
+	client := *base
+	prevCheck := base.CheckRedirect
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) > 0 {
+			prev := via[len(via)-1].URL
+			if prev.Scheme == "https" && req.URL.Scheme != "https" {
+				return fmt.Errorf("refusing to follow a redirect from %s to %s: TLS scheme downgrade", prev, req.URL)
+			}
+		}
+		if prevCheck != nil {
+			return prevCheck(req, via)
+		}
+		return nil
+	}
+	return &client
 }
 
 // Run holds one presence connection open: dial, wait for the server's hello,
@@ -270,6 +351,7 @@ func (c *Client) Run(ctx context.Context) error {
 		return err
 	}
 	defer conn.CloseNow()
+	conn.SetReadLimit(int64(DefaultLimits.MaxMessageBytes) + 1024)
 
 	if err := c.handshake(ctx, conn); err != nil {
 		return err
@@ -332,6 +414,9 @@ func (c *Client) handshake(ctx context.Context, conn *websocket.Conn) error {
 // perfectly healthy from this side, and only the absence of the pings the
 // server promised every 10 seconds gives it away.
 func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
+	var sess *Session
+	cmdCtx, cancelCmds := context.WithCancel(ctx)
+	defer cancelCmds()
 	for {
 		readCtx, cancel := context.WithTimeout(ctx, c.idleTimeout())
 		var msg Message
@@ -356,6 +441,37 @@ func (c *Client) heartbeat(ctx context.Context, conn *websocket.Conn) error {
 				return fmt.Errorf("presence channel could not answer a ping: %w", err)
 			}
 			c.logf("presence channel answered a ping")
+		case TypeWelcome:
+			if c.Handler == nil || sess != nil {
+				continue
+			}
+			var w Welcome
+			if err := json.Unmarshal(msg.Data, &w); err != nil || w.Protocol < ProtocolV2 {
+				c.logf("presence channel ignoring an unusable welcome: %s", msg.Data)
+				continue
+			}
+			sess = newSession(conn, c.URL, w)
+			c.logf("presence channel switched to protocol v2 (%d capabilities)", len(w.AcceptedCapabilities))
+			c.Handler.Welcome(sess, w)
+		case TypeCommand:
+			if sess == nil {
+				c.logf("presence channel ignoring a command received before welcome")
+				continue
+			}
+			var cmd Command
+			if err := json.Unmarshal(msg.Data, &cmd); err != nil {
+				c.logf("presence channel ignoring a malformed command: %v", err)
+				continue
+			}
+			go c.Handler.Command(cmdCtx, sess, msg, cmd)
+		case TypeNotify:
+			if sess == nil {
+				continue
+			}
+			var n Notify
+			if err := json.Unmarshal(msg.Data, &n); err == nil {
+				c.Handler.Notify(sess, msg, n)
+			}
 		case TypeError:
 			return fmt.Errorf("presence endpoint refused the connection: %s", errorCode(msg.Data))
 		default:

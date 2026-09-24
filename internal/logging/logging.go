@@ -242,6 +242,15 @@ const (
 	EventClientWSLost        = 921 // an established connection went down
 	EventClientWSUnsupported = 922 // this server answered 404 on the upgrade; once per server
 	EventClientWSDisabled    = 923 // the remote document turned the channel off
+
+	EventClientCommand        = 924 // a command received over the client channel was accepted (Event Log only for restart/reboot)
+	EventClientCommandRefused = 925 // a command was refused (policy, transport, validation, busy)
+	// EventClientCommandExpired fires once when a committed service.restart
+	// or machine.reboot did not complete by its recorded deadline (aborted
+	// shutdown, a restart-service child that never brought the service back
+	// up) and the "busy" state it holds the machine in is released on its
+	// own - see destructivePendingLocked in internal/service/clientpower.go.
+	EventClientCommandExpired = 926
 )
 
 // alwaysMirrored reports whether an event id bypasses SetEventLog(false).

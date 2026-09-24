@@ -33,7 +33,7 @@ func clientWSUpdater(t *testing.T, enabled bool) *Updater {
 	u.clientWSWatch = 100 * time.Millisecond
 	u.clientWSInitialDelayFn = func() time.Duration { return 0 }
 	snap := u.Policy.Current()
-	snap.Parsed.Global.ClientWS = policy.Toggle{Enabled: enabled}
+	snap.Parsed.Global.ClientWS = policy.ClientWSSettings{Enabled: enabled, Commands: policy.DefaultClientWSCommands}
 	host := policy.Host{HWID: "HW-1", Hostname: "RM095", DC: "DC-RM2",
 		IPs: []string{"172.16.96.10"}, Now: time.Now()}
 	eff, err := snap.Parsed.Effective(host)
@@ -140,7 +140,7 @@ func clientWSUpdaterWithServer(t *testing.T, name, baseURL string) *Updater {
 	snap.Parsed.Global.Servers = map[string]string{name: baseURL}
 	snap.Parsed.Global.DefaultServer = name
 	snap.Parsed.Global.DCLookupMap = map[string]policy.Site{}
-	snap.Parsed.Global.ClientWS = policy.Toggle{Enabled: true}
+	snap.Parsed.Global.ClientWS = policy.ClientWSSettings{Enabled: true, Commands: policy.DefaultClientWSCommands}
 	storeCycle(t, u, snap)
 	u.Machine = machineinfo.Info{Hostname: "RM095", HWID: "HW-1"}
 	u.loggedUserFn = func() machineinfo.UserSession { return machineinfo.UserSession{} }
@@ -188,7 +188,7 @@ func disableClientWS(t *testing.T, u *Updater) {
 	t.Helper()
 	cur := u.Policy.Current()
 	doc := *cur.Parsed.Global
-	doc.ClientWS = policy.Toggle{Enabled: false}
+	doc.ClientWS = policy.ClientWSSettings{Enabled: false, Commands: policy.DefaultClientWSCommands}
 	parsed := *cur.Parsed
 	parsed.Global = &doc
 	snap := *cur
@@ -541,6 +541,25 @@ func TestRunClientWSRetriesA404dServerAfterTheMarkExpires(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("runClientWS did not return after the context was cancelled")
+	}
+}
+
+// policy cannot import wsclient (wsclient depends on policy indirectly via
+// service), so its own knownClientWSCommands list is a hand-kept mirror of
+// wsclient.CommandNames. This is the one place both are in scope together:
+// pin them equal so a command added to the protocol without adding it to the
+// policy allowlist (or vice versa) fails a test instead of silently going
+// unenforceable/unreachable.
+func TestPolicyKnownCommandsMatchWSClientCommandNames(t *testing.T) {
+	got := policy.KnownClientWSCommands()
+	want := wsclient.CommandNames
+	if len(got) != len(want) {
+		t.Fatalf("policy.KnownClientWSCommands() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("policy.KnownClientWSCommands() = %v, want %v", got, want)
+		}
 	}
 }
 

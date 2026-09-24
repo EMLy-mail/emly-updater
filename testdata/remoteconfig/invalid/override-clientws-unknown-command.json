@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "generatedAt": "2026-09-01T00:00:00Z",
+  "servers": { "srv-a": "https://a.example.com" },
+  "defaultServer": "srv-a",
+  "overrides": [
+    { "id": "o1", "match": { "all": true }, "patch": { "clientWs": { "commands": ["machine.format_disk"] } } }
+  ]
+}

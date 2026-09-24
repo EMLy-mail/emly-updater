@@ -137,6 +137,7 @@ func (u *Updater) beginCycle(ctx context.Context, first bool) *cycleState {
 	if err != nil {
 		u.Log.Warn("effective policy fell back to the global document", "error", err.Error())
 	}
+	eff = ownedEffective(eff)
 	site, chain := eff.Chain(host)
 
 	cyc := &cycleState{snap: snap, host: host, eff: eff, site: site, chain: chain}
@@ -189,6 +190,23 @@ func (u *Updater) current() *cycleState {
 	snap := u.Policy.Current()
 	host := policy.Host{HWID: u.Machine.HWID, Hostname: u.Machine.Hostname, Now: u.clock()}
 	eff, _ := snap.Parsed.Effective(host)
+	eff = ownedEffective(eff)
 	site, chain := eff.Chain(host)
 	return &cycleState{snap: snap, host: host, eff: eff, site: site, chain: chain}
+}
+
+// ownedEffective copies eff's Doc so the cycleState it is stored on owns it
+// outright: policy.Parsed.Effective can return a pointer straight into the
+// policy store's cached document (the no-overrides-matched case), and a
+// caller mutating cyc.eff.Doc - as client-channel command admission tests
+// do to install a fresh clientWs allowlist per cycle - must never corrupt
+// the shared snapshot other cycles and goroutines still read.
+func ownedEffective(eff *policy.Effective) *policy.Effective {
+	if eff == nil || eff.Doc == nil {
+		return eff
+	}
+	doc := *eff.Doc
+	owned := *eff
+	owned.Doc = &doc
+	return &owned
 }

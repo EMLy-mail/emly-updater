@@ -231,11 +231,18 @@ func (u *Updater) runClientWS(ctx context.Context) {
 			connected   bool
 			connectedAt time.Time
 		)
+		identity := u.clientWSIdentity()
+		identity.Protocol = wsclient.ProtocolV2
+		identity.Capabilities = u.capabilities()
+		// gen ties this attempt's Welcome (and the burst goroutine it
+		// starts) to this connection: see storeWSSession/clearWSSession.
+		gen := u.nextWSGeneration()
 		client := &wsclient.Client{
 			URL:       target.url,
 			APIKey:    u.Cfg.APIKey,
 			UserAgent: u.Cfg.UserAgent,
-			Identity:  u.clientWSIdentity(),
+			Identity:  identity,
+			Handler:   clientHandler{u: u, gen: gen},
 			Logf: func(format string, args ...any) {
 				u.Log.Debug(fmt.Sprintf(format, args...))
 			},
@@ -253,6 +260,7 @@ func (u *Updater) runClientWS(ctx context.Context) {
 		}
 
 		err := client.Run(connCtx)
+		u.clearWSSession(gen)
 		// connCtx.Err() must be read now, before cancel() below - once we
 		// cancel it ourselves it is always non-nil, which would make every
 		// outcome (a 404, a lost connection, ...) look like the watcher

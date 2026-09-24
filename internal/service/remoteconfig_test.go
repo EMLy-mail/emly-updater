@@ -432,6 +432,22 @@ func TestCycleStopsAtTheControlGate(t *testing.T) {
 	}
 }
 
+// A destructive client command (service.restart/machine.reboot) already
+// committed for this process must stop Cycle from touching self-update or
+// the EMLy update path at all - both would race the restart/reboot that is
+// already underway (clientpower.go's commitDestructive).
+func TestCycleSkipsWhileDestructivePending(t *testing.T) {
+	u, _ := remoteUpdater(t)
+	u.Store = nil // any attempt to read state would panic: the gate must return first
+	u.initPolicy()
+	u.refreshConfig(context.Background(), true)
+	u.destructivePending = true
+
+	if err := u.Cycle(context.Background(), u.beginCycle(context.Background(), true)); err != nil {
+		t.Fatalf("a cycle skipped for a pending destructive command must be a clean no-op, got %v", err)
+	}
+}
+
 // The logging section is pushed into the running logger, and only when it
 // actually changed.
 func TestApplyLogging(t *testing.T) {

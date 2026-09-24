@@ -249,8 +249,14 @@ func TestConcurrentWritesUnderRace(t *testing.T) {
 	const commands = 20
 	var wg sync.WaitGroup
 
-	// Add N distinct pending commands concurrently...
-	for i := 0; i < commands; i++ {
+	// cmd-A lands first, so the concurrent Remove below always has something
+	// to remove: if it could run before its Add, the Remove would be a no-op
+	// and the count check would flake.
+	if err := s.AddPendingCommand(PendingCommand{ID: "cmd-A", Name: "machine.reboot", AcceptedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	// Add the other N-1 distinct pending commands concurrently...
+	for i := 1; i < commands; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

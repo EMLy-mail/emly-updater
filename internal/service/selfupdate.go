@@ -17,6 +17,7 @@ import (
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
 	"emlyupdater/internal/version"
+	"emlyupdater/internal/wsclient"
 )
 
 // selfUpdate brings the updater itself up to date, and reports whether a setup
@@ -78,12 +79,17 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 		// Decide only gives up on a target it has a record for, but read that
 		// from the record rather than assuming it: a nil here would take the
 		// whole service down over a self-update that had already failed.
+		attempts := decision.Attempt
 		if rec != nil {
 			rec.GaveUp = true
+			attempts = rec.Attempts
 			if err := u.Store.SetSelfUpdate(rec); err != nil {
 				u.Log.Warn("failed to record the abandoned updater release", "error", err.Error())
 			}
 		}
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: running, ToVersion: m.Version,
+			Attempt: attempts, WillRetry: false, // WillRetry = !GiveUp (spec §8.5); this branch is always GiveUp.
+			Error: &wsclient.ErrorBody{Code: "gave_up", Message: decision.Reason}})
 		return false
 	}
 	if !decision.Install {
@@ -96,6 +102,9 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 		"installed", running, "target", m.Version, "attempt", decision.Attempt,
 		"manifestURL", manifestURL, "download", m.Download,
 		"notes", m.Notes(u.Cfg.ResolveEMLyWithChannel(cyc.eff.Doc.Updater.Channel()).Language))
+
+	u.announceUpdate(wsclient.ManifestCheck{Target: "updater", InstalledVersion: running, AvailableVersion: m.Version,
+		UpdateAvailable: true, Decision: "install_next_cycle", CheckedAt: u.clock().UTC().Format(time.RFC3339)})
 
 	return u.applySelfUpdate(ctx, src, m, decision.Attempt)
 }
@@ -127,6 +136,8 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeLanded:
 		u.Log.InfoEvent(logging.EventSelfUpdateApplied, "updater self-update completed",
 			"from", rec.FromVersion, "to", running, "target", rec.Version, "attempts", rec.Attempts)
+		u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "updater", FromVersion: rec.FromVersion, ToVersion: running,
+			Attempt: rec.Attempts})
 		landed := *rec
 		u.selfLanded.Store(&landed)
 		if err := u.Store.ClearSelfUpdate(); err != nil {
@@ -144,6 +155,9 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeMissed:
 		u.Log.Warn("a previously launched updater setup did not take effect",
 			"target", rec.Version, "stillRunning", running, "attempts", rec.Attempts)
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: running, ToVersion: rec.Version,
+			Attempt: rec.Attempts, WillRetry: rec.Attempts < selfupdate.MaxAttempts,
+			Error: &wsclient.ErrorBody{Code: "version_mismatch", Message: "the launched setup did not leave the new version running"}})
 	}
 	return rec
 }
@@ -209,6 +223,8 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "refusing to run the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		_ = os.Remove(setupPath)
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "signature_invalid", Message: err.Error()}})
 		return false
 	}
 
@@ -261,6 +277,14 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		u.Log.Info("remote configuration cache moved aside before the self-update",
 			"path", u.cachePrevPath())
 	}
+
+	// Emitted right before the launch, not after: the service is about to
+	// stop, so this may be the last message the old build ever manages to
+	// send (spec §8.3 - "the last message the old build gets to send"), and
+	// it is fine for it to still be sitting in the buffer when that happens.
+	// Launch itself is never blocked on it.
+	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+		Attempt: attempt, Trigger: "cycle"})
 
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
 	if err := selfupdate.Launch(setupPath, logPath); err != nil {

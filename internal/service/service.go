@@ -253,6 +253,21 @@ type Updater struct {
 	// repeat the line on every poll. Reset whenever destructivePending
 	// clears, explicitly or by expiry.
 	destructiveSkipLogged bool
+
+	// announced remembers, per target ("emly"/"updater"), the last version
+	// announceUpdate has already sent update.available for - poll goroutine
+	// only, so it needs no locking.
+	announced map[string]string
+	// wakeReason is set by RunLoop right before a cycle that was triggered by
+	// a notify wake (rather than the poll timer) and read once, at the top of
+	// Cycle, to compute this cycle's trigger for the update.started events it
+	// emits; empty means the ordinary poll ("cycle").
+	wakeReason string
+	// cycleTrigger is the current cycle's trigger ("cycle", "resume", or
+	// whatever wakeReason named it), stashed here rather than threaded
+	// through apply/install's signatures - both run on the poll goroutine, so
+	// this needs no locking either.
+	cycleTrigger string
 }
 
 // clock is the time source; tests pin it.
@@ -388,6 +403,16 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	if cyc == nil {
 		cyc = u.current()
 	}
+	// This cycle's trigger for the update.started events install() emits
+	// below (spec §8.3): empty wakeReason is the ordinary poll timer, set by
+	// RunLoop otherwise when a notify wakes the loop early. Stashed in a
+	// field rather than threaded through apply/install's signatures - both
+	// run on this same poll goroutine.
+	trigger := u.wakeReason
+	if trigger == "" {
+		trigger = "cycle"
+	}
+	u.cycleTrigger = trigger
 	u.Log.Debug("update cycle starting",
 		"policyRevision", cyc.snap.Revision(), "policySource", cyc.snap.Source.String(),
 		"site", cyc.site, "overrides", len(cyc.eff.Applied))
@@ -457,6 +482,7 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 			_ = u.Store.ClearPending()
 		} else {
 			u.Log.Info("resuming pending update", "version", p.Version, "forced", p.Forced)
+			u.cycleTrigger = "resume"
 			return u.apply(ctx, cyc, p, emly)
 		}
 	}
@@ -489,6 +515,16 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	u.Log.InfoEvent(logging.EventUpdateFound, "update available",
 		"installed", emly.InstalledVersion, "target", target.Version,
 		"channel", emly.Channel, "forced", forced, "source", src.Name())
+
+	enabled, _ := cyc.eff.UpdaterEnabled(cyc.host.Now)
+	mc := wsclient.ManifestCheck{Target: "emly", Channel: emly.Channel, AvailableVersion: target.Version,
+		UpdateAvailable: true, Critical: forced, MinRequiredVersion: m.MinRequiredVersion,
+		Decision: emlyDecision(true, forced, u.emlyRunning(), !enabled),
+		Source: u.serverRef(cyc, sourceURL(src)), CheckedAt: u.clock().UTC().Format(time.RFC3339)}
+	if !emly.FreshInstall {
+		mc.InstalledVersion = emly.InstalledVersion
+	}
+	u.announceUpdate(mc)
 
 	setupPath, err := u.Downloads.Ensure(ctx, src, target)
 	if err != nil {
@@ -757,18 +793,34 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 	}
 	defer u.endInstall()
 
+	// from is the version installed before this attempt, omitted (empty) on
+	// a fresh install (spec §8.3): the 0.0.0 sentinel is an internal
+	// comparison value, not a version to report.
+	var from string
+	if !emly.FreshInstall {
+		from = emly.InstalledVersion
+	}
+
 	// Final integrity gate immediately before execution.
 	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
 		_ = os.Remove(p.SetupPath)
 		_ = u.Store.ClearPending()
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+			WillRetry: true, Error: &wsclient.ErrorBody{Code: "checksum_mismatch", Message: err.Error()}})
 		return fmt.Errorf("refusing to install: %w", err)
 	}
 
+	started := u.clock()
+	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+		Forced: p.Forced, Attempt: 1, Trigger: u.cycleTrigger})
+
+	reinstalled := false
 	if err := u.runSetupAndVerify(p, "running setup"); err != nil {
 		u.Log.WarnEvent(logging.EventInstallFailed,
 			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
 			"version", p.Version, "error", err.Error())
+		reinstalled = true
 
 		if fresh, ferr := u.forceRedownload(ctx, cyc, p, emly.Channel); ferr != nil {
 			u.Log.Warn("could not force a fresh download for the clean-install retry, retrying with the cached copy",
@@ -787,11 +839,20 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 		if err := u.runSetupAndVerify(p, "running setup (clean install)"); err != nil {
 			u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy clean install failed",
 				"version", p.Version, "error", err.Error())
+			u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+				Attempt: 2, WillRetry: true, Error: &wsclient.ErrorBody{Code: installFailureCode(err), Message: err.Error()}})
 			return err // pending kept → retried next cycle
 		}
 	}
 
 	u.Log.InfoEvent(logging.EventInstallOK, "EMLy updated successfully", "version", p.Version)
+
+	attempt := 1
+	if reinstalled {
+		attempt = 2
+	}
+	u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+		Forced: p.Forced, Attempt: attempt, DurationMS: u.clock().Sub(started).Milliseconds(), Reinstalled: reinstalled})
 
 	u.showUpdateToast(p.Version)
 

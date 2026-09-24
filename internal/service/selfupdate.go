@@ -153,8 +153,21 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 // mirror updates from that mirror.
 // It returns the URL that answered alongside the manifest, so the log can name
 // the exact endpoint this machine reached rather than the source it was
-// derived from.
+// derived from. A successful resolution updates the preferred server for the
+// rest of this session (see resolveUpdaterManifestWith).
 func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (source.Source, *manifest.UpdaterManifest, string, error) {
+	return u.resolveUpdaterManifestWith(ctx, cyc, true)
+}
+
+// resolveUpdaterManifestWith is resolveUpdaterManifest with control over
+// whether a successful resolution is allowed to change the preferred server
+// for the rest of this session. notePreferred=false is for read-only
+// diagnostics - the client-channel updater.manifest.check dry run
+// (clientcmd.go) - which must observe the same chain evaluation as a real
+// self-update check without the side effect of pinning the machine to a
+// backup server or waking the presence supervisor (wakeClientWS) as a
+// consequence of a status check.
+func (u *Updater) resolveUpdaterManifestWith(ctx context.Context, cyc *cycleState, notePreferred bool) (source.Source, *manifest.UpdaterManifest, string, error) {
 	resolver := u.newResolver(cyc)
 	resolver.Document = "updater manifest"
 
@@ -165,7 +178,7 @@ func (u *Updater) resolveUpdaterManifest(ctx context.Context, cyc *cycleState) (
 		}
 		return u.Cfg.UpdaterManifestURL(http.ManifestURL)
 	})
-	if err == nil {
+	if err == nil && notePreferred {
 		u.notePreferredServer(cyc, resolver, src)
 	}
 	return src, m, servedBy, err

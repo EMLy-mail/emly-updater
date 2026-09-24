@@ -534,14 +534,28 @@ func (u *Updater) newResolver(cyc *cycleState) *source.Resolver {
 
 // resolveTarget fetches the update manifest from this machine's server chain
 // and resolves it to a channel target. Shared by the normal poll in Cycle and
-// by the forced re-download path in install.
+// by the forced re-download path in install. A successful resolution updates
+// the preferred server for the rest of this session (see resolveTargetWith).
 func (u *Updater) resolveTarget(ctx context.Context, cyc *cycleState, channel string) (source.Source, *manifest.Manifest, manifest.Target, error) {
+	return u.resolveTargetWith(ctx, cyc, channel, true)
+}
+
+// resolveTargetWith is resolveTarget with control over whether a successful
+// resolution is allowed to change the preferred server for the rest of this
+// session. notePreferred=false is for read-only diagnostics - the
+// client-channel emly.manifest.check dry run (clientcmd.go) - which must
+// observe the same chain evaluation as a real cycle without the side effect
+// of pinning the machine to a backup server or waking the presence
+// supervisor (wakeClientWS) as a consequence of a status check.
+func (u *Updater) resolveTargetWith(ctx context.Context, cyc *cycleState, channel string, notePreferred bool) (source.Source, *manifest.Manifest, manifest.Target, error) {
 	resolver := u.newResolver(cyc)
 	src, m, err := resolver.Resolve(ctx)
 	if err != nil {
 		return nil, nil, manifest.Target{}, err
 	}
-	u.notePreferredServer(cyc, resolver, src)
+	if notePreferred {
+		u.notePreferredServer(cyc, resolver, src)
+	}
 
 	target, err := src.ResolveTarget(m, channel)
 	if err != nil {

@@ -162,3 +162,55 @@ func TestClientWSIdleWakesOnPreferenceChange(t *testing.T) {
 		t.Error("idle was not woken")
 	}
 }
+
+// The client-channel manifest dry runs (emly.manifest.check,
+// updater.manifest.check) call resolveTargetWith/resolveUpdaterManifestWith
+// with notePreferred=false: a status check must observe the same chain
+// evaluation a real cycle would (falling through to a working backup when
+// the policy head is unreachable), but it must not have the side effect of
+// pinning the machine to that backup for the rest of the session, nor of
+// waking the presence supervisor - both of which are for a real resolution
+// to decide, not a diagnostic read.
+func TestDryRunResolutionDoesNotChangeThePreferredServer(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v2/updates/manifest", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(testManifest))
+	})
+	mux.HandleFunc("/v2/updates/manifest/updater", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"version":"9.9.9","download":"https://x/setup.exe","sha256":"abc"}`))
+	})
+	ext := httptest.NewServer(mux)
+	t.Cleanup(ext.Close)
+	// The internal (policy head) server is unreachable, so only the external
+	// fallback answers - the same situation TestReachableBackupBecomesPreferredForTheSession
+	// uses to prove the *non*-dry-run path does pin the backup.
+	u := preferredUpdater(t, deadURL(t), ext.URL)
+
+	cyc := u.beginCycle(context.Background(), true)
+
+	if _, _, _, err := u.resolveTargetWith(context.Background(), cyc, "stable", false); err != nil {
+		t.Fatalf("resolveTargetWith: %v", err)
+	}
+	if got := u.preferredServer(); got != "" {
+		t.Errorf("preferred = %q, want none after a dry run emly manifest resolution", got)
+	}
+	select {
+	case <-u.clientWSWake:
+		t.Error("presence supervisor was woken by a dry run emly manifest resolution")
+	default:
+	}
+
+	if _, _, _, err := u.resolveUpdaterManifestWith(context.Background(), cyc, false); err != nil {
+		t.Fatalf("resolveUpdaterManifestWith: %v", err)
+	}
+	if got := u.preferredServer(); got != "" {
+		t.Errorf("preferred = %q, want none after a dry run updater manifest resolution", got)
+	}
+	select {
+	case <-u.clientWSWake:
+		t.Error("presence supervisor was woken by a dry run updater manifest resolution")
+	default:
+	}
+}

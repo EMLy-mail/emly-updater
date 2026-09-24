@@ -234,8 +234,10 @@ func (u *Updater) listUpgradable(ctx context.Context) (any, *wsclient.ErrorBody,
 
 // emlyManifestCheck is the dry run of spec §7.2: the same manifest
 // resolution as a Cycle, stopping before any download. It is read-only
-// (no state.json write, no download, no RunLoop wake-up), which is what
-// makes it safe to run while a Cycle is in progress.
+// (no state.json write, no download, no RunLoop wake-up, and - via
+// resolveTargetWith's notePreferred=false - no change to the preferred
+// server or the presence supervisor either), which is what makes it safe to
+// run while a Cycle is in progress.
 func (u *Updater) emlyManifestCheck(ctx context.Context, cyc *cycleState) wsclient.ManifestCheck {
 	if u.emlyCheckFn != nil {
 		return u.emlyCheckFn(ctx, cyc)
@@ -249,7 +251,7 @@ func (u *Updater) emlyManifestCheck(ctx context.Context, cyc *cycleState) wsclie
 		mc.Pending = &wsclient.PendingInfo{Version: st.Pending.Version, Forced: st.Pending.Forced,
 			DownloadedAt: st.Pending.DownloadedAt.UTC().Format(time.RFC3339)}
 	}
-	src, m, target, err := u.resolveTarget(ctx, cyc, emly.Channel)
+	src, m, target, err := u.resolveTargetWith(ctx, cyc, emly.Channel, false)
 	if err != nil {
 		mc.Decision = "up_to_date"
 		mc.Error = manifestError(err)
@@ -282,7 +284,10 @@ func emlyDecision(newer, forced, running, paused bool) string {
 
 // updaterManifestCheck is the same dry run for the updater itself (§7.3):
 // selfupdate.Decide is evaluated on the raw record - not reconciled, which
-// would log and clear it - and nothing is launched or counted.
+// would log and clear it - and nothing is launched or counted. Like
+// emlyManifestCheck, it resolves via resolveUpdaterManifestWith's
+// notePreferred=false, so a status check cannot pin the machine to a backup
+// server or wake the presence supervisor either.
 func (u *Updater) updaterManifestCheck(ctx context.Context, cyc *cycleState) wsclient.ManifestCheck {
 	if u.updaterCheckFn != nil {
 		return u.updaterCheckFn(ctx, cyc)
@@ -293,7 +298,7 @@ func (u *Updater) updaterManifestCheck(ctx context.Context, cyc *cycleState) wsc
 		mc.Decision = "disabled"
 		return mc
 	}
-	_, m, servedBy, err := u.resolveUpdaterManifest(ctx, cyc)
+	_, m, servedBy, err := u.resolveUpdaterManifestWith(ctx, cyc, false)
 	if err != nil {
 		mc.Decision = "up_to_date"
 		mc.Error = manifestError(err)

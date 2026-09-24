@@ -87,9 +87,16 @@ func (u *Updater) selfUpdate(ctx context.Context, cyc *cycleState) bool {
 				u.Log.Warn("failed to record the abandoned updater release", "error", err.Error())
 			}
 		}
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: running, ToVersion: m.Version,
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: running, ToVersion: m.Version,
 			Attempt: attempts, WillRetry: false, // WillRetry = !GiveUp (spec §8.5); this branch is always GiveUp.
 			Error: &wsclient.ErrorBody{Code: "gave_up", Message: decision.Reason}})
+		// reconcileSelfUpdate's OutcomeMissed keeps firing for this same
+		// attempt on every later cycle (Reconcile does not consult
+		// rec.GaveUp - running stays behind rec.Version forever). The give-up
+		// above already told the client channel everything that Missed would;
+		// pre-mark it so it stays silent instead of repeating the same
+		// attempt under a different code.
+		u.markUpdateFailed("updater", m.Version, attempts, "version_mismatch")
 		return false
 	}
 	if !decision.Install {
@@ -155,7 +162,7 @@ func (u *Updater) reconcileSelfUpdate() *state.SelfUpdate {
 	case selfupdate.OutcomeMissed:
 		u.Log.Warn("a previously launched updater setup did not take effect",
 			"target", rec.Version, "stillRunning", running, "attempts", rec.Attempts)
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: running, ToVersion: rec.Version,
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: running, ToVersion: rec.Version,
 			Attempt: rec.Attempts, WillRetry: rec.Attempts < selfupdate.MaxAttempts,
 			Error: &wsclient.ErrorBody{Code: "version_mismatch", Message: "the launched setup did not leave the new version running"}})
 	}
@@ -213,7 +220,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		// mismatch in plain fmt.Errorf, with no sentinel to tell them apart
 		// (unlike installFailureCode's installer errors) - download_failed
 		// covers both.
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
 			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "download_failed", Message: err.Error()}})
 		return false
 	}
@@ -229,7 +236,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "refusing to run the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
 		_ = os.Remove(setupPath)
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
 			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "signature_invalid", Message: err.Error()}})
 		return false
 	}
@@ -290,7 +297,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	// it is fine for it to still be sitting in the buffer when that happens.
 	// Launch itself is never blocked on it.
 	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
-		Attempt: attempt, Trigger: "cycle"})
+		Attempt: attempt, Trigger: u.cycleTrigger})
 
 	launch := selfupdate.Launch
 	if u.launchFn != nil {
@@ -309,8 +316,16 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		// failure would leave it dangling until the next cycle's
 		// reconcileSelfUpdate (OutcomeMissed) eventually reports it, several
 		// cooldown minutes later.
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+		u.emitUpdateFailed(updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
 			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "launch_failed", Message: err.Error()}})
+		// The record persisted above (SetSelfUpdate) is not cleared on a
+		// failed launch, so the next cycle's reconcileSelfUpdate sees the
+		// same attempt and reports OutcomeMissed - the same failure, under
+		// "version_mismatch" instead of "launch_failed". Pre-mark it so
+		// that repeat stays silent (spec §8.5, "each distinct failure once
+		// per process") instead of restating this same attempt a second
+		// time under a different code.
+		u.markUpdateFailed("updater", m.Version, attempt, "version_mismatch")
 		return false
 	}
 

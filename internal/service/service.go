@@ -263,6 +263,17 @@ type Updater struct {
 	// announceUpdate has already sent update.available for - poll goroutine
 	// only, so it needs no locking.
 	announced map[string]string
+	// updateFailed remembers which (target, to_version, attempt, code)
+	// update.failed occurrences have already been reported this process -
+	// poll goroutine only (selfUpdate/applySelfUpdate/install all run on
+	// it), so it needs no locking, same as announced. Without this,
+	// reconcileSelfUpdate would repeat "version_mismatch" every cycle a
+	// launch stays pending (the cooldown, every retry, and forever once
+	// GaveUp is recorded), and a broken mirror would repeat
+	// download_failed/signature_invalid on every cycle since a failed
+	// download never advances the attempt counter. See emitUpdateFailed
+	// (selfupdate.go).
+	updateFailed map[updateFailedKey]bool
 	// wakeReason is set by RunLoop right before a cycle that was triggered by
 	// a notify wake (rather than the poll timer) and read once, at the top of
 	// Cycle, to compute this cycle's trigger for the update.started events it
@@ -837,7 +848,7 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
 		_ = os.Remove(p.SetupPath)
 		_ = u.Store.ClearPending()
-		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+		u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
 			WillRetry: true, Error: &wsclient.ErrorBody{Code: "checksum_mismatch", Message: err.Error()}})
 		return fmt.Errorf("refusing to install: %w", err)
 	}
@@ -870,7 +881,7 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 		if err := u.runSetupAndVerify(p, "running setup (clean install)"); err != nil {
 			u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy clean install failed",
 				"version", p.Version, "error", err.Error())
-			u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
+			u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
 				Attempt: 2, WillRetry: true, Error: &wsclient.ErrorBody{Code: installFailureCode(err), Message: err.Error()}})
 			return err // pending kept → retried next cycle
 		}

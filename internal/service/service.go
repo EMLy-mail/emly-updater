@@ -197,6 +197,11 @@ type Updater struct {
 	// embedded 3gIT certificate's private key outside a real release build.
 	// nil means the real verifySelfSetup.
 	verifySelfSetupFn func(string) error
+	// launchFn overrides applySelfUpdate's call to selfupdate.Launch in
+	// tests, so a launch failure (and the update.failed it now emits) can be
+	// exercised without starting a real process. nil means the real
+	// selfupdate.Launch.
+	launchFn func(setupPath, logPath string) error
 
 	// installing counts installs currently in flight: EMLy's own (the whole
 	// of install() - both setup runs, the forced redownload and the

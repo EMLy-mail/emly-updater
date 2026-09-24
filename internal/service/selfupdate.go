@@ -209,6 +209,12 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	if err != nil {
 		u.Log.Warn("failed to download the updater setup, retrying next cycle",
 			"target", m.Version, "error", err.Error())
+		// download.Manager.Ensure wraps both a fetch failure and a checksum
+		// mismatch in plain fmt.Errorf, with no sentinel to tell them apart
+		// (unlike installFailureCode's installer errors) - download_failed
+		// covers both.
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "download_failed", Message: err.Error()}})
 		return false
 	}
 
@@ -286,8 +292,12 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
 		Attempt: attempt, Trigger: "cycle"})
 
+	launch := selfupdate.Launch
+	if u.launchFn != nil {
+		launch = u.launchFn
+	}
 	logPath := filepath.Join(config.LogsDir(), fmt.Sprintf("updater-selfinstall-%s.log", m.Version))
-	if err := selfupdate.Launch(setupPath, logPath); err != nil {
+	if err := launch(setupPath, logPath); err != nil {
 		u.endInstall()
 		u.Log.ErrorEvent(logging.EventSelfUpdateFailed, "failed to launch the updater setup",
 			"target", m.Version, "path", setupPath, "error", err.Error())
@@ -295,6 +305,12 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 			u.Log.Warn("could not restore the remote configuration cache after the failed launch",
 				"path", u.cachePath(), "error", err.Error())
 		}
+		// update.started was already emitted above: without this, a launch
+		// failure would leave it dangling until the next cycle's
+		// reconcileSelfUpdate (OutcomeMissed) eventually reports it, several
+		// cooldown minutes later.
+		u.emit(wsclient.EvtUpdateFailed, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
+			Attempt: attempt, WillRetry: true, Error: &wsclient.ErrorBody{Code: "launch_failed", Message: err.Error()}})
 		return false
 	}
 

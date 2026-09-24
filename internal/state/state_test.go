@@ -166,3 +166,26 @@ func TestSaveLeavesNoTempFiles(t *testing.T) {
 		t.Fatalf("unexpected files after save: %v", entries)
 	}
 }
+
+func TestPendingCommandsSurviveAndAreTakenOnce(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if err := s.SetPending(&Pending{Version: "3.5.0"}); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 23, 8, 0, 0, 0, time.UTC)
+	_ = s.AddPendingCommand(PendingCommand{ID: "A", Name: "machine.reboot", AcceptedAt: now})
+	_ = s.AddPendingCommand(PendingCommand{ID: "B", Name: "service.restart", AcceptedAt: now})
+	_ = s.RemovePendingCommand("B")
+
+	got, err := s.TakePendingCommands()
+	if err != nil || len(got) != 1 || got[0].ID != "A" {
+		t.Fatalf("take = %+v, %v", got, err)
+	}
+	if again, _ := s.TakePendingCommands(); len(again) != 0 {
+		t.Fatalf("second take = %+v", again)
+	}
+	st, _ := s.Load()
+	if st.Pending == nil || st.Pending.Version != "3.5.0" {
+		t.Fatalf("pending update lost: %+v", st.Pending)
+	}
+}

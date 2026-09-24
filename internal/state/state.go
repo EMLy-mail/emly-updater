@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -44,11 +45,22 @@ type SelfUpdate struct {
 	LaunchedAt time.Time `json:"launchedAt"`
 }
 
+// PendingCommand is a service.restart or machine.reboot this service
+// accepted over the client channel. Those verbs kill the process that
+// accepted them, so the ID is written here first and reported in
+// service.started by the next start (CLIENT_WS_PROTOCOL.md §8.6).
+type PendingCommand struct {
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	AcceptedAt time.Time `json:"acceptedAt"`
+}
+
 // State is the on-disk document. Kept as a struct (not a bare Pending) so
 // future fields can be added without a format break.
 type State struct {
-	Pending    *Pending    `json:"pending,omitempty"`
-	SelfUpdate *SelfUpdate `json:"selfUpdate,omitempty"`
+	Pending         *Pending         `json:"pending,omitempty"`
+	SelfUpdate      *SelfUpdate      `json:"selfUpdate,omitempty"`
+	PendingCommands []PendingCommand `json:"pendingCommands,omitempty"`
 }
 
 // Store reads and writes the state file.
@@ -128,6 +140,27 @@ func (s *Store) SetSelfUpdate(su *SelfUpdate) error {
 // ClearSelfUpdate removes any self-update record.
 func (s *Store) ClearSelfUpdate() error {
 	return s.update(func(st *State) { st.SelfUpdate = nil })
+}
+
+// AddPendingCommand appends a pending command to the state.
+func (s *Store) AddPendingCommand(c PendingCommand) error {
+	return s.update(func(st *State) { st.PendingCommands = append(st.PendingCommands, c) })
+}
+
+// RemovePendingCommand removes a pending command by ID.
+func (s *Store) RemovePendingCommand(id string) error {
+	return s.update(func(st *State) {
+		st.PendingCommands = slices.DeleteFunc(st.PendingCommands, func(c PendingCommand) bool { return c.ID == id })
+	})
+}
+
+// TakePendingCommands returns the recorded commands and clears them.
+func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
+	var taken []PendingCommand
+	err := s.update(func(st *State) {
+		taken, st.PendingCommands = st.PendingCommands, nil
+	})
+	return taken, err
 }
 
 // update applies mutate to the current state and saves the result.

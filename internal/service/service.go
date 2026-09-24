@@ -26,6 +26,7 @@ import (
 	"emlyupdater/internal/process"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
+	"emlyupdater/internal/winget"
 	"emlyupdater/internal/wsclient"
 )
 
@@ -175,6 +176,22 @@ type Updater struct {
 	// own contract (it must return immediately) can be exercised without a
 	// real *wsclient.Session.
 	welcomeBurstFn func(gen uint64, s *wsclient.Session)
+
+	// commands is the dedupe ring for the client-channel command executor
+	// (clientcmd.go): a redelivered command id is confirmed, not re-run.
+	commands commandRing
+	// runningMu/running track, per command name, whether an instance of it
+	// is currently executing - so a second delivery of a different command
+	// with the same name is refused busy instead of running concurrently.
+	runningMu sync.Mutex
+	running   map[string]bool
+
+	// listUpgradableFn overrides winget.ListUpgradable in tests.
+	listUpgradableFn func(context.Context) ([]winget.Package, error)
+	// emlyCheckFn/updaterCheckFn override the manifest dry runs in tests, so
+	// their network paths need not be exercised.
+	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck
+	updaterCheckFn func(context.Context, *cycleState) wsclient.ManifestCheck
 }
 
 // clock is the time source; tests pin it.

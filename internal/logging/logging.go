@@ -242,6 +242,9 @@ const (
 	EventClientWSLost        = 921 // an established connection went down
 	EventClientWSUnsupported = 922 // this server answered 404 on the upgrade; once per server
 	EventClientWSDisabled    = 923 // the remote document turned the channel off
+
+	EventClientCommand        = 924 // a command received over the client channel was accepted (Event Log only for restart/reboot)
+	EventClientCommandRefused = 925 // a command was refused (policy, transport, validation, busy)
 )
 
 // alwaysMirrored reports whether an event id bypasses SetEventLog(false).

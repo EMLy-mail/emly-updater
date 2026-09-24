@@ -128,9 +128,16 @@ type Updater struct {
 	startedAt time.Time
 
 	// wsSession is the live v2 client-channel session, or nil when none is
-	// up - emit and the Welcome handler read/write it from different
-	// goroutines, hence the atomic.
-	wsSession atomic.Pointer[wsclient.Session]
+	// up - emit and the welcome burst goroutine read/write it from different
+	// goroutines, hence the atomic. All writes go through
+	// storeWSSession/clearWSSession, which serialise on wsSessionMu together
+	// with wsGen so a stale connection's burst can never resurrect it after
+	// runClientWS has already cleared it for a newer one.
+	wsSession   atomic.Pointer[wsclient.Session]
+	wsSessionMu sync.Mutex
+	// wsGen is the current presence-channel connection attempt's generation,
+	// guarded by wsSessionMu. See nextWSGeneration/storeWSSession/clearWSSession.
+	wsGen uint64
 	// eventsMu guards eventBuf, the in-memory buffer emit falls back to
 	// while no v2 session is up (see clientevents.go).
 	eventsMu sync.Mutex
@@ -138,8 +145,15 @@ type Updater struct {
 	// startedSent marks that service.started has already been sent once for
 	// this process (it must not repeat on a reconnect).
 	startedSent atomic.Bool
+	// serviceStartedOnce/serviceStartedPayload cache service.started's
+	// payload (see cachedServiceStarted): it is built at most once per
+	// process, because building it consumes the pending command ids, and a
+	// retry after a failed send must report the same ids the first attempt
+	// would have.
+	serviceStartedOnce    sync.Once
+	serviceStartedPayload wsclient.ServiceStarted
 	// selfLanded is set by reconcileSelfUpdate on selfupdate.OutcomeLanded
-	// and read once by serviceStarted, for service.started's
+	// and read once by buildServiceStarted, for service.started's
 	// previous_version/reason=self_update. Written on the poll goroutine,
 	// read on the client-channel goroutine, hence the atomic.
 	selfLanded atomic.Pointer[state.SelfUpdate]
@@ -153,6 +167,14 @@ type Updater struct {
 	netInterfacesFn func() []machineinfo.NetInterface
 	// emlyRunningFn overrides process.IsRunning in tests.
 	emlyRunningFn func() bool
+	// wsSendFn overrides the welcome burst's per-event sender in tests, so a
+	// failed service.started send (and the retry it causes) can be exercised
+	// without a real *wsclient.Session.
+	wsSendFn func(name string, payload any) error
+	// welcomeBurstFn overrides the whole welcome burst in tests, so Welcome's
+	// own contract (it must return immediately) can be exercised without a
+	// real *wsclient.Session.
+	welcomeBurstFn func(gen uint64, s *wsclient.Session)
 }
 
 // clock is the time source; tests pin it.

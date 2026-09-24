@@ -29,8 +29,22 @@ type bufferedEvent struct {
 // capabilities is what this build implements (spec §4): every command,
 // event and topic of the wire list. Whether a command may run here is the
 // policy's call, answered per command with disabled_by_policy.
+//
+// Deduplicated, order preserved: "machine.info" names both a command and an
+// event, and the wire list must not repeat a capability the server already
+// has in accepted_capabilities.
 func (u *Updater) capabilities() []string {
-	return slices.Concat(wsclient.CommandNames, wsclient.EventNames, wsclient.TopicNames)
+	all := slices.Concat(wsclient.CommandNames, wsclient.EventNames, wsclient.TopicNames)
+	seen := make(map[string]bool, len(all))
+	out := make([]string, 0, len(all))
+	for _, c := range all {
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 // emit sends an event on the current v2 session, or buffers it.
@@ -76,27 +90,25 @@ func (u *Updater) flushEvents(send func(name string, payload any) error) {
 	}
 }
 
-// clientHandler is the service side of wsclient.Handler.
-type clientHandler struct{ u *Updater }
+// clientHandler is the service side of wsclient.Handler. gen ties a
+// connection's Welcome - and the burst goroutine it starts - to the specific
+// connection attempt runClientWS made it for: see storeWSSession /
+// clearWSSession.
+type clientHandler struct {
+	u   *Updater
+	gen uint64
+}
 
+// Welcome must return immediately: it runs on the connection's own read
+// goroutine, the same one that answers the server's pings, and the burst of
+// work a welcome triggers - sending service.started, flushing the buffer,
+// sending machine.info, up to 34 outbound writes plus the WTS/registry/disk
+// reads machineInfo does - can each take up to the per-send 10s timeout,
+// which would starve pongs well past the server's ~20s idle timeout if run
+// synchronously here. The actual work happens in welcomeBurst, on its own
+// goroutine.
 func (h clientHandler) Welcome(s *wsclient.Session, _ wsclient.Welcome) {
-	u := h.u
-	u.wsSession.Store(s)
-	send := func(name string, payload any) error {
-		if !s.Accepted(name) {
-			return nil
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return s.Event(ctx, name, payload)
-	}
-	if u.startedSent.CompareAndSwap(false, true) {
-		if err := send(wsclient.EvtServiceStarted, u.serviceStarted()); err != nil {
-			u.startedSent.Store(false)
-		}
-	}
-	u.flushEvents(send)
-	_ = send(wsclient.EvtMachineInfo, u.machineInfo(nil))
+	go h.u.welcomeBurst(h.gen, s)
 }
 
 func (h clientHandler) Command(ctx context.Context, s *wsclient.Session, msg wsclient.Message, cmd wsclient.Command) {
@@ -107,9 +119,119 @@ func (h clientHandler) Notify(_ *wsclient.Session, _ wsclient.Message, n wsclien
 	h.u.handleNotify(n)
 }
 
-// serviceStarted builds service.started once per process (spec §8.6),
-// consuming the pending restart/reboot command ids.
-func (u *Updater) serviceStarted() wsclient.ServiceStarted {
+// welcomeBurst runs the work Welcome defers to its own goroutine. Tests
+// override it wholesale via welcomeBurstFn to verify Welcome itself never
+// blocks, without needing a real *wsclient.Session.
+func (u *Updater) welcomeBurst(gen uint64, s *wsclient.Session) {
+	if u.welcomeBurstFn != nil {
+		u.welcomeBurstFn(gen, s)
+		return
+	}
+	u.handleWelcomeBurst(gen, s)
+}
+
+// handleWelcomeBurst is the real welcome burst. Order matters: service.started
+// first (so a machine that restarted for a client-channel command reports it
+// before anything else), then the pre-connection buffer, then - only once
+// that first flush is done - the session is published for emit to use, so an
+// event emitted while the burst is still running cannot reach the server
+// ahead of service.started; a second flush then picks up anything emitted
+// during the gap between the two; finally machine.info.
+func (u *Updater) handleWelcomeBurst(gen uint64, s *wsclient.Session) {
+	send := u.wsSend(s)
+	if u.startedSent.CompareAndSwap(false, true) {
+		if err := send(wsclient.EvtServiceStarted, u.cachedServiceStarted()); err != nil {
+			u.startedSent.Store(false)
+		}
+	}
+	u.flushEvents(send)
+	u.storeWSSession(gen, s)
+	u.flushEvents(send)
+	_ = send(wsclient.EvtMachineInfo, u.machineInfo(nil))
+}
+
+// wsSend returns the function that writes one v2 event on s, gated on the
+// server having accepted that capability in welcome, each bounded by a 10s
+// timeout. Tests override the whole thing via wsSendFn, so a failure (and
+// the service.started retry it causes) can be exercised without a real
+// connection.
+func (u *Updater) wsSend(s *wsclient.Session) func(name string, payload any) error {
+	if u.wsSendFn != nil {
+		return u.wsSendFn
+	}
+	return func(name string, payload any) error {
+		if !s.Accepted(name) {
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		return s.Event(ctx, name, payload)
+	}
+}
+
+// nextWSGeneration starts a new presence-channel connection attempt's
+// generation. runClientWS calls it once per attempt, before constructing the
+// wsclient.Client; the value it returns ties that attempt's Welcome (and the
+// burst goroutine it starts) to storeWSSession/clearWSSession below.
+func (u *Updater) nextWSGeneration() uint64 {
+	u.wsSessionMu.Lock()
+	defer u.wsSessionMu.Unlock()
+	u.wsGen++
+	return u.wsGen
+}
+
+// storeWSSession publishes s as the session emit uses, but only if gen is
+// still the current connection attempt.
+//
+// Without this check, a Welcome burst goroutine from a connection
+// runClientWS has already torn down - a dropped connection, or a
+// policy-driven move to a different server - could still be running (e.g.
+// blocked on a slow send) and store a session object for a connection that
+// no longer exists; a later emit would then try to write to it and only
+// fall back to the buffer once that write timed out.
+func (u *Updater) storeWSSession(gen uint64, s *wsclient.Session) {
+	u.wsSessionMu.Lock()
+	defer u.wsSessionMu.Unlock()
+	if u.wsGen == gen {
+		u.wsSession.Store(s)
+	}
+}
+
+// clearWSSession retires gen's connection: it always clears wsSession (the
+// connection really did end), and - if this is still the current generation
+// - also advances it, so a storeWSSession call still in flight from this same
+// connection's Welcome burst is permanently locked out, even during the
+// idle/backoff window before the next attempt calls nextWSGeneration (i.e.
+// before the generation would otherwise change on its own).
+func (u *Updater) clearWSSession(gen uint64) {
+	u.wsSessionMu.Lock()
+	defer u.wsSessionMu.Unlock()
+	if u.wsGen == gen {
+		u.wsGen++
+	}
+	u.wsSession.Store(nil)
+}
+
+// cachedServiceStarted builds service.started (CLIENT_WS_PROTOCOL.md §8.6)
+// at most once per process and returns the same value on every later call.
+//
+// buildServiceStarted's TakePendingCommands is destructive: building the
+// payload twice would report the pending restart/reboot command ids on
+// whichever attempt happened to consume them and nothing on every other one
+// - in particular, the retry after a failed send (see handleWelcomeBurst)
+// would silently report no completed_commands, and possibly a different
+// reason, from the one the first attempt would have sent.
+func (u *Updater) cachedServiceStarted() wsclient.ServiceStarted {
+	u.serviceStartedOnce.Do(func() {
+		u.serviceStartedPayload = u.buildServiceStarted()
+	})
+	return u.serviceStartedPayload
+}
+
+// buildServiceStarted composes service.started, consuming the pending
+// restart/reboot command ids. Only ever called once per process, through
+// cachedServiceStarted's sync.Once.
+func (u *Updater) buildServiceStarted() wsclient.ServiceStarted {
 	now := u.clock()
 	facts := u.systemFacts(now)
 	cmds, err := u.Store.TakePendingCommands()

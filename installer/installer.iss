@@ -16,6 +16,18 @@
 #define WinGetModuleSHA256 '3469e5747eb6b100e51fed3f2057386b5ba60bc8955a6669b5c2eb562e316619'
 #define WinGetModuleURL 'https://www.powershellgallery.com/api/v2/package/' + WinGetModuleName + '/' + WinGetModuleVersion
 
+; PowerShell 7, optional component "pwsh", off by default. Required, not
+; optional, for the module above to work in the service: run as SYSTEM,
+; Get-WinGetPackage refuses Windows PowerShell 5.1
+; (WindowsPowerShellNotSupported), and internal/winget prefers pwsh.exe when
+; it exists. Same pinning rule as the module; to move to a new LTS, change
+; both defines together and take the hash from the release's hashes.sha256:
+;   https://github.com/PowerShell/PowerShell/releases/download/v<ver>/hashes.sha256
+#define PwshVersion '7.6.6'
+#define PwshSHA256 '958838ff55091e1c8705d89efed0cc7e8245a3a6ef6c0ccfae20015227108ad8'
+#define PwshMSI 'PowerShell-' + PwshVersion + '-win-x64.msi'
+#define PwshURL 'https://github.com/PowerShell/PowerShell/releases/download/v' + PwshVersion + '/' + PwshMSI
+
 [Setup]
 AppName={#ApplicationName}
 AppVersion={#ApplicationVersion}
@@ -37,14 +49,16 @@ ArchiveExtraction=full
 
 ; The first type is the default, so a silent install without /COMPONENTS
 ; (the GPO command line) installs the updater alone. Opt in with:
-;   /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COMPONENTS="updater,wingetmodule"
+;   /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COMPONENTS="updater,wingetmodule,pwsh"
+; wingetmodule without pwsh is only useful to an interactive user: the
+; service (SYSTEM) needs both.
 ; /COMPONENTS replaces the selection, so list every component wanted. The
 ; updater's own [Files] carry no Components: parameter and are installed
 ; whatever the selection. Without /COMPONENTS an upgrade (self-update
 ; included) keeps the previous install's choice.
 [Types]
 Name: "compact"; Description: "EMLy Updater only"
-Name: "full"; Description: "EMLy Updater + WinGet PowerShell module"
+Name: "full"; Description: "EMLy Updater + WinGet PowerShell module + PowerShell 7"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
@@ -52,6 +66,7 @@ Name: "updater"; Description: "EMLy Updater service"; Types: compact full custom
 ; ExtraDiskSpaceRequired: the module's extracted size, since nothing in
 ; [Files] accounts for it.
 Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module (downloaded from PowerShell Gallery)"; Types: full; ExtraDiskSpaceRequired: 56025934
+Name: "pwsh"; Description: "PowerShell {#PwshVersion} (downloaded from GitHub, required by the WinGet module under the service)"; Types: full; ExtraDiskSpaceRequired: 250000000
 
 [Files]
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
@@ -152,8 +167,53 @@ begin
   end;
 end;
 
+// Installs PowerShell 7 machine-wide from its MSI, which is where
+// internal/winget looks for pwsh.exe first ({commonpf64}\PowerShell\7).
+//
+// Any pwsh.exe already there is left alone, whatever its version: it is
+// good enough to run the module, it may be managed by another tool
+// (Intune, Microsoft Update, winget), and the MSI would refuse a downgrade
+// anyway. Best-effort for the same reason as InstallWinGetModule, and kept on
+// uninstall for the same reason too. The MSI's log goes next to the
+// updater's own logs so a failed install can be diagnosed on the machine.
+procedure InstallPwsh;
+var
+  Msi, LogFile: String;
+  ResultCode: Integer;
+begin
+  if not WizardIsComponentSelected('pwsh') then
+    Exit;
+
+  if FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe')) then begin
+    Log('PowerShell 7: already installed, left alone');
+    Exit;
+  end;
+
+  try
+    Log('PowerShell 7: downloading {#PwshURL}');
+    // Raises on a network error or a SHA256 mismatch.
+    DownloadTemporaryFile('{#PwshURL}', '{#PwshMSI}', '{#PwshSHA256}', nil);
+    Msi := ExpandConstant('{tmp}\{#PwshMSI}');
+    LogFile := ExpandConstant('{commonappdata}\{#ApplicationName}\logs\pwsh-install-{#PwshVersion}.log');
+    ForceDirectories(ExtractFileDir(LogFile));
+
+    if not Exec(ExpandConstant('{sys}\msiexec.exe'),
+        '/i "' + Msi + '" /qn /norestart ADD_PATH=1 /l*v "' + LogFile + '"',
+        '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+      RaiseException('cannot run msiexec: ' + SysErrorMessage(ResultCode));
+    // 3010: installed, a reboot is needed to finish - pwsh.exe already works.
+    if (ResultCode <> 0) and (ResultCode <> 3010) then
+      RaiseException('msiexec exited with ' + IntToStr(ResultCode) + ', see ' + LogFile);
+    Log('PowerShell 7: installed {#PwshVersion}');
+  except
+    Log('PowerShell 7: NOT installed, the updater is installed without it: ' + GetExceptionMessage);
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
-  if CurStep = ssPostInstall then
+  if CurStep = ssPostInstall then begin
+    InstallPwsh;
     InstallWinGetModule;
+  end;
 end;

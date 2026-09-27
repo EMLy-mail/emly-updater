@@ -246,6 +246,10 @@ func TestListUpgradableErrorsAndTruncation(t *testing.T) {
 	if _, e, _ := u.listUpgradable(context.Background()); e == nil || e.Code != wsclient.ErrPowerShellNotFound {
 		t.Fatalf("powershell -> %+v", e)
 	}
+	u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return nil, winget.ErrPowerShell7Required }
+	if _, e, _ := u.listUpgradable(context.Background()); e == nil || e.Code != wsclient.ErrPowerShellNotFound {
+		t.Fatalf("powershell 7 required -> %+v", e)
+	}
 	many := make([]winget.Package, 2000)
 	for i := range many {
 		many[i] = winget.Package{Name: strings.Repeat("n", 40), ID: "Vendor.App", InstalledVersion: "1.0", Available: "2.0", Source: "winget"}

@@ -294,7 +294,7 @@ func (u *Updater) listUpgradable(ctx context.Context) (any, *wsclient.ErrorBody,
 	switch {
 	case errors.Is(err, winget.ErrModuleNotInstalled):
 		return nil, refuse(wsclient.ErrWingetModuleMissing, err.Error()), false
-	case errors.Is(err, winget.ErrPowerShellNotFound):
+	case errors.Is(err, winget.ErrPowerShellNotFound), errors.Is(err, winget.ErrPowerShell7Required):
 		return nil, refuse(wsclient.ErrPowerShellNotFound, err.Error()), false
 	case ctx.Err() != nil:
 		return nil, refuse(wsclient.ErrTimeout, "winget did not answer in time"), false

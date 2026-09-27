@@ -89,6 +89,15 @@ func TestListUpgradableWith(t *testing.T) {
 				"    + FullyQualifiedErrorId : Microsoft.WinGet.Client.Engine.Exceptions.InvalidSourceException,Microsoft.WinGet.Client.Commands.GetPackageCmdlet"},
 			wantErr: "InvalidSourceException",
 		},
+		{
+			// Exactly what the service logged when run as SYSTEM under
+			// Windows PowerShell 5.1.
+			name: "windows powershell refused",
+			err: &ExitError{Code: 1, Stderr: "Get-WinGetPackage : This cmdlet is not supported in Windows PowerShell.\r\n" +
+				"    + CategoryInfo          : NotSpecified: (:) [Get-WinGetPackage], WindowsPowerShellNotSupported\r\n" +
+				"    + FullyQualifiedErrorId : RuntimeException,Microsoft.WinGet.Client.Commands.GetPackageCmdlet"},
+			wantIs: ErrPowerShell7Required,
+		},
 		{name: "other non-zero exit", err: &ExitError{Code: 1, Stderr: "Access denied"}, wantErr: "code 1: Access denied"},
 		{name: "powershell missing", err: ErrPowerShellNotFound, wantIs: ErrPowerShellNotFound},
 		{name: "runner error passes through", err: boom, wantIs: boom},

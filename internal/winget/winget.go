@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -75,14 +76,24 @@ func (e *ExitError) Error() string {
 var (
 	// ErrPowerShellNotFound means powershell.exe is not on PATH.
 	ErrPowerShellNotFound = errors.New("powershell.exe not found in PATH")
+	// ErrPowerShell7Required means the module refused Windows PowerShell 5.1,
+	// which it does when the caller runs as SYSTEM (the service), and no
+	// pwsh.exe was found to run it under instead.
+	ErrPowerShell7Required = errors.New(`Microsoft.WinGet.Client does not support Windows PowerShell when running as SYSTEM; install PowerShell 7 (pwsh.exe) on this machine`)
 	// ErrModuleNotInstalled means the Microsoft.WinGet.Client module is missing.
 	ErrModuleNotInstalled = errors.New(`PowerShell module Microsoft.WinGet.Client is not installed; install it with: Install-Module Microsoft.WinGet.Client -Scope CurrentUser, or re-run the EMLyUpdater setup with /COMPONENTS="updater,wingetmodule"`)
 )
 
-// PowerShell is the default Runner: powershell.exe with no profile, no
-// prompts and the execution policy bypassed for this process only.
+// PowerShell is the default Runner: PowerShell 7 when installed, Windows
+// PowerShell otherwise, with no profile, no prompts and the execution policy
+// bypassed for this process only.
+//
+// pwsh is not a preference but a requirement for the service: run as SYSTEM,
+// Get-WinGetPackage refuses Windows PowerShell 5.1 outright
+// (WindowsPowerShellNotSupported). powershell.exe stays the fallback because
+// it is fine for an interactive user, e.g. `run` in the foreground.
 func PowerShell(ctx context.Context, script string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "powershell.exe",
+	cmd := exec.CommandContext(ctx, powerShellExe(),
 		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
 	cmd.Env = withoutPSModulePath(os.Environ())
 	var stdout, stderr bytes.Buffer
@@ -106,6 +117,23 @@ func PowerShell(ctx context.Context, script string) ([]byte, error) {
 		return stdout.Bytes(), &ExitError{Code: exitErr.ExitCode(), Stderr: stderr.String()}
 	}
 	return nil, fmt.Errorf("running powershell: %w", err)
+}
+
+// powerShellExe returns pwsh.exe when PowerShell 7 is installed, looked up
+// in its default MSI location first because a service started before the
+// install does not see the PATH entry the MSI adds, and powershell.exe
+// otherwise.
+func powerShellExe() string {
+	if pf := os.Getenv("ProgramFiles"); pf != "" {
+		p := filepath.Join(pf, "PowerShell", "7", "pwsh.exe")
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("pwsh.exe"); err == nil {
+		return p
+	}
+	return "powershell.exe"
 }
 
 // withoutPSModulePath drops PSModulePath from env. Launched from a
@@ -136,8 +164,13 @@ func ListUpgradable(ctx context.Context) ([]Package, error) {
 func ListUpgradableWith(ctx context.Context, run Runner) ([]Package, error) {
 	out, err := run(ctx, Script)
 	if err != nil {
-		if exitErr, ok := errors.AsType[*ExitError](err); ok && isModuleMissing(exitErr.Stderr) {
-			return nil, ErrModuleNotInstalled
+		if exitErr, ok := errors.AsType[*ExitError](err); ok {
+			switch {
+			case isModuleMissing(exitErr.Stderr):
+				return nil, ErrModuleNotInstalled
+			case strings.Contains(exitErr.Stderr, "WindowsPowerShellNotSupported"):
+				return nil, ErrPowerShell7Required
+			}
 		}
 		return nil, err
 	}

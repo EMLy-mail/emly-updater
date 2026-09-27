@@ -37,9 +37,24 @@ type Package struct {
 // non-terminating error, ConvertTo-Json still prints "[]" and the process
 // exits 0 - indistinguishable from "nothing to update".
 // $ProgressPreference keeps the module's progress bar out of the output.
+//
+// When autoloading does not resolve Get-WinGetPackage, the script imports the
+// module by hand from %ProgramFiles%\WindowsPowerShell\Modules - where the
+// installer's wingetmodule component and Install-Module -Scope AllUsers put
+// it - picking the highest version folder rather than a pinned one. A failed
+// Import-Module is terminating and its stderr does not name Get-WinGetPackage,
+// so it surfaces as the real import error instead of ErrModuleNotInstalled; no
+// folder at all falls through to the CommandNotFoundException below.
 const Script = `$ErrorActionPreference = 'Stop';
 $ProgressPreference = 'SilentlyContinue';
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8;
+if (-not (Get-Command Get-WinGetPackage -ErrorAction SilentlyContinue)) {
+  $dir = Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules\Microsoft.WinGet.Client';
+  $ver = Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue |
+    Where-Object { ($_.Name -as [version]) -and (Test-Path -LiteralPath (Join-Path $_.FullName 'Microsoft.WinGet.Client.psd1')) } |
+    Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1;
+  if ($ver) { Import-Module -Name (Join-Path $ver.FullName 'Microsoft.WinGet.Client.psd1') }
+}
 ConvertTo-Json -InputObject @(Get-WinGetPackage | Where-Object IsUpdateAvailable | Select-Object Name, Id, InstalledVersion, @{n='Available';e={$_.AvailableVersions[0]}}, Source)`
 
 // Runner executes a PowerShell script and returns its stdout. A non-zero

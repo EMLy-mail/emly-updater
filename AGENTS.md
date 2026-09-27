@@ -429,6 +429,10 @@ checklist is their verification.
    result carrying the payload.
 2. `apps.list_upgradable` on a machine without Microsoft.WinGet.Client installed →
    `failed` with `winget_module_missing`; with the module present → the package list.
+   The script first imports the module by hand from the highest version folder under
+   `%ProgramFiles%\WindowsPowerShell\Modules\Microsoft.WinGet.Client\` when autoloading
+   does not find `Get-WinGetPackage` (e.g. the service's PSModulePath misses it); a
+   failing `Import-Module` comes back as `internal` with PowerShell's own error.
 3. `service.restart` → the connection closes with 1001, the service actually restarts, and
    the new process's `service.started` has `reason: "command"` listing the command's id;
    the command itself shows `done`.

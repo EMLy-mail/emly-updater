@@ -145,15 +145,17 @@ func ListUpgradableWith(ctx context.Context, run Runner) ([]Package, error) {
 }
 
 // isModuleMissing recognizes the stderr of a run where Get-WinGetPackage
-// could not be resolved: English CommandNotFoundException text or its
+// could not be resolved: its CommandNotFoundException, matched on the
 // fully-qualified error id, which PowerShell does not localize.
+//
+// "Microsoft.WinGet.Client" is deliberately not a signal: every error the
+// cmdlet itself throws carries it in its FullyQualifiedErrorId
+// ("...,Microsoft.WinGet.Client.Commands.GetPackageCmdlet"), so matching on it
+// reported a module that loaded fine and then failed (no source, no winget
+// for SYSTEM, ...) as not installed, and hid the real error.
 func isModuleMissing(stderr string) bool {
-	if !strings.Contains(stderr, "Get-WinGetPackage") {
-		return false
-	}
-	return strings.Contains(stderr, "CommandNotFoundException") ||
-		strings.Contains(stderr, "is not recognized") ||
-		strings.Contains(stderr, "Microsoft.WinGet.Client")
+	return strings.Contains(stderr, "Get-WinGetPackage") &&
+		strings.Contains(stderr, "CommandNotFoundException")
 }
 
 // Parse decodes ConvertTo-Json output into packages. Empty output and "[]"

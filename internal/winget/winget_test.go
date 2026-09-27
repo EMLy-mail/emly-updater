@@ -79,6 +79,16 @@ func TestListUpgradableWith(t *testing.T) {
 				"    + FullyQualifiedErrorId : CommandNotFoundException"},
 			wantIs: ErrModuleNotInstalled,
 		},
+		{
+			// A runtime failure of a module that did load:
+			// the error id names Microsoft.WinGet.Client, but it is not a
+			// missing module and must reach the caller as-is.
+			name: "cmdlet error is not a missing module",
+			err: &ExitError{Code: 1, Stderr: "Get-WinGetPackage : No source matches the given value: winget\r\n" +
+				"    + CategoryInfo          : NotSpecified: (:) [Get-WinGetPackage], InvalidSourceException\r\n" +
+				"    + FullyQualifiedErrorId : Microsoft.WinGet.Client.Engine.Exceptions.InvalidSourceException,Microsoft.WinGet.Client.Commands.GetPackageCmdlet"},
+			wantErr: "InvalidSourceException",
+		},
 		{name: "other non-zero exit", err: &ExitError{Code: 1, Stderr: "Access denied"}, wantErr: "code 1: Access denied"},
 		{name: "powershell missing", err: ErrPowerShellNotFound, wantIs: ErrPowerShellNotFound},
 		{name: "runner error passes through", err: boom, wantIs: boom},

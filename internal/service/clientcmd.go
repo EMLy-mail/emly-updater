@@ -210,6 +210,7 @@ func (u *Updater) executeCommand(ctx context.Context, s commandSession, msg wscl
 	res := wsclient.Result{Status: wsclient.ResultOK, DurationMS: u.clock().Sub(started).Milliseconds(), Truncated: truncated}
 	if e != nil {
 		res.Status, res.Error = wsclient.ResultError, e
+		u.Log.Warn("client command failed", "name", cmd.Name, "id", msg.ID, "code", e.Code, "reason", e.Message)
 	} else if raw, err := json.Marshal(payload); err != nil {
 		res.Status, res.Error = wsclient.ResultError, refuse(wsclient.ErrInternal, err.Error())
 	} else {

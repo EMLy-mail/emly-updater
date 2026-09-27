@@ -66,7 +66,7 @@ Name: "custom"; Description: "Custom"; Flags: iscustom
 Name: "updater"; Description: "EMLy Updater service"; Types: compact full custom; Flags: fixed
 ; ExtraDiskSpaceRequired: the module's extracted size plus PowerShell 7's
 ; installed size (~250 MB), since nothing in [Files] accounts for either.
-Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module + PowerShell {#PwshVersion} (downloaded from PowerShell Gallery and GitHub)"; Types: full; ExtraDiskSpaceRequired: 306025934
+Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module + PowerShell {#PwshVersion} (download)"; Types: full; ExtraDiskSpaceRequired: 306025934
 
 [Files]
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .

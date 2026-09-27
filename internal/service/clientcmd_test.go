@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -252,7 +254,7 @@ func TestListUpgradableErrorsAndTruncation(t *testing.T) {
 	}
 	many := make([]winget.Package, 2000)
 	for i := range many {
-		many[i] = winget.Package{Name: strings.Repeat("n", 40), ID: "Vendor.App", InstalledVersion: "1.0", Available: "2.0", Source: "winget"}
+		many[i] = winget.Package{Name: strings.Repeat("n", 40), ID: fmt.Sprintf("Vendor.App%d", i), InstalledVersion: "1.0", Available: "2.0", Source: "winget"}
 	}
 	u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return many, nil }
 	payload, e, truncated := u.listUpgradable(context.Background())
@@ -260,4 +262,100 @@ func TestListUpgradableErrorsAndTruncation(t *testing.T) {
 	if e != nil || !truncated || len(b) > resultPayloadBudget {
 		t.Fatalf("e=%v truncated=%v size=%d", e, truncated, len(b))
 	}
+}
+
+func TestMergeUpgradable(t *testing.T) {
+	machine := []winget.Package{
+		{Name: "7-Zip", ID: "7zip.7zip", InstalledVersion: "26.02", Available: "26.03", Source: "winget"},
+		{Name: "Temurin 11", ID: "EclipseAdoptium.Temurin.11.JDK", InstalledVersion: "11.0.29.7", Available: "11.0.32", Source: "winget"},
+	}
+	user := []winget.Package{
+		// Machine-wide, seen from the user's session too: stays machine.
+		{Name: "7-Zip 26.02 (x64)", ID: "7ZIP.7zip", InstalledVersion: "26.02", Available: "26.03", Source: "winget"},
+		// Same id, another installed version: a second package.
+		{Name: "Temurin 11", ID: "EclipseAdoptium.Temurin.11.JDK", InstalledVersion: "17.0.13.11", Available: "17.0.16", Source: "winget"},
+		{Name: "Spotify", ID: "Spotify.Spotify", InstalledVersion: "1.2.87", Available: "1.3.1", Source: "winget"},
+		{Name: "Spotify", ID: "Spotify.Spotify", InstalledVersion: "1.2.87", Available: "1.3.1", Source: "winget"},
+	}
+	got := mergeUpgradable(machine, user)
+	want := []struct{ id, installed, scope string }{
+		{"7zip.7zip", "26.02", wsclient.ScopeMachine},
+		{"EclipseAdoptium.Temurin.11.JDK", "11.0.29.7", wsclient.ScopeMachine},
+		{"EclipseAdoptium.Temurin.11.JDK", "17.0.13.11", wsclient.ScopeUser},
+		{"Spotify.Spotify", "1.2.87", wsclient.ScopeUser},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d packages, want %d: %+v", len(got), len(want), got)
+	}
+	for i, w := range want {
+		if got[i].ID != w.id || got[i].InstalledVersion != w.installed || got[i].Scope != w.scope {
+			t.Errorf("[%d] = %s %s %s, want %s %s %s", i, got[i].ID, got[i].InstalledVersion, got[i].Scope, w.id, w.installed, w.scope)
+		}
+	}
+}
+
+func TestListUpgradableUserScope(t *testing.T) {
+	type view struct {
+		Packages       []wsclient.UpgradablePackage `json:"packages"`
+		UserScope      bool                         `json:"user_scope"`
+		User           string                       `json:"user"`
+		UserScopeError string                       `json:"user_scope_error"`
+	}
+	decode := func(t *testing.T, payload any) view {
+		t.Helper()
+		b, _ := json.Marshal(payload)
+		var v view
+		if err := json.Unmarshal(b, &v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	machinePkgs := []winget.Package{{Name: "7-Zip", ID: "7zip.7zip", InstalledVersion: "26.02", Available: "26.03", Source: "winget"}}
+
+	t.Run("user listed", func(t *testing.T) {
+		u := newClientTestUpdater(t)
+		u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return machinePkgs, nil }
+		u.listUserUpgradableFn = func(context.Context) (userUpgradable, error) {
+			return userUpgradable{User: `CORP\foisx`, Pkgs: []winget.Package{{Name: "Zed", ID: "ZedIndustries.Zed", InstalledVersion: "1.18.1", Available: "1.21.0", Source: "winget"}}}, nil
+		}
+		payload, e, _ := u.listUpgradable(context.Background())
+		v := decode(t, payload)
+		if e != nil || !v.UserScope || v.User != `CORP\foisx` || v.UserScopeError != "" || len(v.Packages) != 2 ||
+			v.Packages[0].Scope != wsclient.ScopeMachine || v.Packages[1].Scope != wsclient.ScopeUser {
+			t.Fatalf("e=%v payload=%+v", e, v)
+		}
+	})
+
+	t.Run("nobody logged on", func(t *testing.T) {
+		u := newClientTestUpdater(t)
+		u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return machinePkgs, nil }
+		payload, e, _ := u.listUpgradable(context.Background())
+		v := decode(t, payload)
+		if e != nil || v.UserScope || v.User != "" || v.UserScopeError != errNoInteractiveUser.Error() || len(v.Packages) != 1 {
+			t.Fatalf("e=%v payload=%+v", e, v)
+		}
+	})
+
+	t.Run("user half fails, machine half still answers", func(t *testing.T) {
+		u := newClientTestUpdater(t)
+		u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return machinePkgs, nil }
+		u.listUserUpgradableFn = func(context.Context) (userUpgradable, error) {
+			return userUpgradable{User: `CORP\foisx`}, errors.New(strings.Repeat("x", 5000))
+		}
+		payload, e, _ := u.listUpgradable(context.Background())
+		v := decode(t, payload)
+		if e != nil || v.UserScope || v.User != `CORP\foisx` || len(v.Packages) != 1 ||
+			len(v.UserScopeError) != maxUserScopeError+len("...") {
+			t.Fatalf("e=%v userScope=%v user=%q errLen=%d pkgs=%d", e, v.UserScope, v.User, len(v.UserScopeError), len(v.Packages))
+		}
+	})
+
+	t.Run("machine half fails the command", func(t *testing.T) {
+		u := newClientTestUpdater(t)
+		u.listUpgradableFn = func(context.Context) ([]winget.Package, error) { return nil, winget.ErrModuleNotInstalled }
+		u.listUserUpgradableFn = func(context.Context) (userUpgradable, error) { return userUpgradable{User: "u"}, nil }
+		if _, e, _ := u.listUpgradable(context.Background()); e == nil || e.Code != wsclient.ErrWingetModuleMissing {
+			t.Fatalf("e=%+v", e)
+		}
+	})
 }

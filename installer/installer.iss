@@ -16,12 +16,14 @@
 #define WinGetModuleSHA256 '3469e5747eb6b100e51fed3f2057386b5ba60bc8955a6669b5c2eb562e316619'
 #define WinGetModuleURL 'https://www.powershellgallery.com/api/v2/package/' + WinGetModuleName + '/' + WinGetModuleVersion
 
-; PowerShell 7, optional component "pwsh", off by default. Required, not
-; optional, for the module above to work in the service: run as SYSTEM,
-; Get-WinGetPackage refuses Windows PowerShell 5.1
-; (WindowsPowerShellNotSupported), and internal/winget prefers pwsh.exe when
-; it exists. Same pinning rule as the module; to move to a new LTS, change
-; both defines together and take the hash from the release's hashes.sha256:
+; PowerShell 7, installed together with the module by the same "wingetmodule"
+; component - deliberately not a component of its own: the module does not
+; work in the service without it (run as SYSTEM, Get-WinGetPackage refuses
+; Windows PowerShell 5.1 with WindowsPowerShellNotSupported, and
+; internal/winget prefers pwsh.exe when it exists), so there is no selection
+; in which one without the other makes sense. Same pinning rule as the
+; module; to move to a new LTS, change both defines together and take the
+; hash from the release's hashes.sha256:
 ;   https://github.com/PowerShell/PowerShell/releases/download/v<ver>/hashes.sha256
 #define PwshVersion '7.6.6'
 #define PwshSHA256 '958838ff55091e1c8705d89efed0cc7e8245a3a6ef6c0ccfae20015227108ad8'
@@ -49,24 +51,22 @@ ArchiveExtraction=full
 
 ; The first type is the default, so a silent install without /COMPONENTS
 ; (the GPO command line) installs the updater alone. Opt in with:
-;   /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COMPONENTS="updater,wingetmodule,pwsh"
-; wingetmodule without pwsh is only useful to an interactive user: the
-; service (SYSTEM) needs both.
+;   /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /COMPONENTS="updater,wingetmodule"
+; ("wingetmodule" brings PowerShell 7 along.)
 ; /COMPONENTS replaces the selection, so list every component wanted. The
 ; updater's own [Files] carry no Components: parameter and are installed
 ; whatever the selection. Without /COMPONENTS an upgrade (self-update
 ; included) keeps the previous install's choice.
 [Types]
 Name: "compact"; Description: "EMLy Updater only"
-Name: "full"; Description: "EMLy Updater + WinGet PowerShell module + PowerShell 7"
+Name: "full"; Description: "EMLy Updater + WinGet PowerShell module (with PowerShell 7)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
 Name: "updater"; Description: "EMLy Updater service"; Types: compact full custom; Flags: fixed
-; ExtraDiskSpaceRequired: the module's extracted size, since nothing in
-; [Files] accounts for it.
-Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module (downloaded from PowerShell Gallery)"; Types: full; ExtraDiskSpaceRequired: 56025934
-Name: "pwsh"; Description: "PowerShell {#PwshVersion} (downloaded from GitHub, required by the WinGet module under the service)"; Types: full; ExtraDiskSpaceRequired: 250000000
+; ExtraDiskSpaceRequired: the module's extracted size plus PowerShell 7's
+; installed size (~250 MB), since nothing in [Files] accounts for either.
+Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module + PowerShell {#PwshVersion} (downloaded from PowerShell Gallery and GitHub)"; Types: full; ExtraDiskSpaceRequired: 306025934
 
 [Files]
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
@@ -104,30 +104,100 @@ begin
     Exec(OldExe, 'stop', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// The "wingetmodule" component's downloads (the module, PowerShell 7) run
+// on a download page with a progress bar, right after "Ready to Install" -
+// not from ssPostInstall, where they would sit behind a frozen "Finishing
+// installation" for as long as ~120 MB takes to arrive. It also keeps them
+// ahead of PrepareToInstall, so the service is not left stopped while they
+// download. In a silent install the page is invisible but Setup still
+// simulates the Next click on wpReady, so the same code path runs.
+//
+// Best-effort by design: this runs from [Code] rather than as [Files]
+// "download" entries because a failed [Files] download is a setup error, and
+// under /VERYSILENT /SUPPRESSMSGBOXES that aborts the whole install - an
+// unreachable PowerShell Gallery or GitHub would then block the updater's own
+// upgrade, self-update included. Here every failure (network, SHA256
+// mismatch, the user pressing Abort) is logged (/LOG) and the updater installs
+// anyway, without that component. Each file is downloaded on its own so one
+// failing does not cost the other.
+var
+  DownloadPage: TDownloadWizardPage;
+  WinGetModuleArchiveReady, PwshMsiReady: Boolean;
+
+function WinGetModuleDir: String;
+begin
+  Result := ExpandConstant('{commonpf64}\WindowsPowerShell\Modules\{#WinGetModuleName}\{#WinGetModuleVersion}');
+end;
+
+function WinGetModuleNeeded: Boolean;
+begin
+  Result := WizardIsComponentSelected('wingetmodule') and
+    not FileExists(WinGetModuleDir + '\{#WinGetModuleName}.psd1');
+end;
+
+function PwshNeeded: Boolean;
+begin
+  Result := WizardIsComponentSelected('wingetmodule') and
+    not FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe'));
+end;
+
+// DownloadOne fetches Url into {tmp}\BaseName through the download page,
+// verifying Sha256. False, logged, on any failure.
+function DownloadOne(const What, Url, BaseName, Sha256: String): Boolean;
+begin
+  Result := False;
+  DownloadPage.Clear;
+  DownloadPage.Add(Url, BaseName, Sha256);
+  try
+    Log(What + ': downloading ' + Url);
+    DownloadPage.Download;
+    Result := True;
+  except
+    Log(What + ': download failed, it will NOT be installed: ' + GetExceptionMessage);
+  end;
+end;
+
+procedure InitializeWizard;
+begin
+  DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if (CurPageID <> wpReady) or not (PwshNeeded or WinGetModuleNeeded) then
+    Exit;
+  DownloadPage.Show;
+  try
+    if PwshNeeded then
+      PwshMsiReady := DownloadOne('PowerShell 7', '{#PwshURL}', '{#PwshMSI}', '{#PwshSHA256}');
+    if WinGetModuleNeeded then
+      WinGetModuleArchiveReady := DownloadOne('WinGet module', '{#WinGetModuleURL}', '{#WinGetModuleName}.zip', '{#WinGetModuleSHA256}');
+  finally
+    DownloadPage.Hide;
+  end;
+end;
+
 // Installs Microsoft.WinGet.Client for all users of Windows PowerShell 5.1
 // (the equivalent of Install-Module -Scope AllUsers), where the SYSTEM
-// service can load it too.
-//
-// Best-effort by design: this runs from [Code] rather than as a [Files]
-// "download" entry because a failed [Files] download is a setup error, and
-// under /VERYSILENT /SUPPRESSMSGBOXES that aborts the whole install - an
-// unreachable PowerShell Gallery would then block the updater's own upgrade,
-// self-update included. Here every failure is logged (/LOG) and the updater
-// installs anyway, without the module.
+// service can load it too, from the archive NextButtonClick downloaded.
 //
 // Uninstall deliberately leaves the module in place: another product or an
 // administrator may rely on the same version.
 procedure InstallWinGetModule;
 var
-  ModulesDir, Dest, Staging, Archive: String;
+  Dest, Staging, Archive: String;
 begin
   if not WizardIsComponentSelected('wingetmodule') then
     Exit;
 
-  ModulesDir := ExpandConstant('{commonpf64}\WindowsPowerShell\Modules\{#WinGetModuleName}');
-  Dest := ModulesDir + '\{#WinGetModuleVersion}';
+  Dest := WinGetModuleDir;
   if FileExists(Dest + '\{#WinGetModuleName}.psd1') then begin
     Log('WinGet module: {#WinGetModuleVersion} already installed in ' + Dest);
+    Exit;
+  end;
+  if not WinGetModuleArchiveReady then begin
+    Log('WinGet module: NOT installed, the updater is installed without it: nothing was downloaded');
     Exit;
   end;
 
@@ -136,9 +206,7 @@ begin
   // half-extracted module left behind by an interrupted install.
   Staging := Dest + '.partial';
   try
-    Log('WinGet module: downloading {#WinGetModuleURL}');
-    // Raises on a network error or a SHA256 mismatch.
-    DownloadTemporaryFile('{#WinGetModuleURL}', '{#WinGetModuleName}.zip', '{#WinGetModuleSHA256}', nil);
+    WizardForm.StatusLabel.Caption := 'Installing {#WinGetModuleName} {#WinGetModuleVersion}...';
     Archive := ExpandConstant('{tmp}\{#WinGetModuleName}.zip');
 
     if DirExists(Staging) then
@@ -173,26 +241,28 @@ end;
 // Any pwsh.exe already there is left alone, whatever its version: it is
 // good enough to run the module, it may be managed by another tool
 // (Intune, Microsoft Update, winget), and the MSI would refuse a downgrade
-// anyway. Best-effort for the same reason as InstallWinGetModule, and kept on
-// uninstall for the same reason too. The MSI's log goes next to the
+// anyway. Installed from the MSI NextButtonClick downloaded, and kept on
+// uninstall for the same reason as the module. The MSI's log goes next to the
 // updater's own logs so a failed install can be diagnosed on the machine.
 procedure InstallPwsh;
 var
   Msi, LogFile: String;
   ResultCode: Integer;
 begin
-  if not WizardIsComponentSelected('pwsh') then
+  if not WizardIsComponentSelected('wingetmodule') then
     Exit;
 
   if FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe')) then begin
     Log('PowerShell 7: already installed, left alone');
     Exit;
   end;
+  if not PwshMsiReady then begin
+    Log('PowerShell 7: NOT installed, the updater is installed without it: nothing was downloaded');
+    Exit;
+  end;
 
   try
-    Log('PowerShell 7: downloading {#PwshURL}');
-    // Raises on a network error or a SHA256 mismatch.
-    DownloadTemporaryFile('{#PwshURL}', '{#PwshMSI}', '{#PwshSHA256}', nil);
+    WizardForm.StatusLabel.Caption := 'Installing PowerShell {#PwshVersion}...';
     Msi := ExpandConstant('{tmp}\{#PwshMSI}');
     LogFile := ExpandConstant('{commonappdata}\{#ApplicationName}\logs\pwsh-install-{#PwshVersion}.log');
     ForceDirectories(ExtractFileDir(LogFile));

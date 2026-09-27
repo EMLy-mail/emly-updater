@@ -79,7 +79,7 @@ var (
 	// ErrPowerShell7Required means the module refused Windows PowerShell 5.1,
 	// which it does when the caller runs as SYSTEM (the service), and no
 	// pwsh.exe was found to run it under instead.
-	ErrPowerShell7Required = errors.New(`Microsoft.WinGet.Client does not support Windows PowerShell when running as SYSTEM; install PowerShell 7 (pwsh.exe) on this machine`)
+	ErrPowerShell7Required = errors.New(`Microsoft.WinGet.Client does not support Windows PowerShell when running as SYSTEM; install PowerShell 7 (pwsh.exe) on this machine, or re-run the EMLyUpdater setup with /COMPONENTS="updater,wingetmodule", which installs it`)
 	// ErrModuleNotInstalled means the Microsoft.WinGet.Client module is missing.
 	ErrModuleNotInstalled = errors.New(`PowerShell module Microsoft.WinGet.Client is not installed; install it with: Install-Module Microsoft.WinGet.Client -Scope CurrentUser, or re-run the EMLyUpdater setup with /COMPONENTS="updater,wingetmodule"`)
 )
@@ -93,8 +93,8 @@ var (
 // (WindowsPowerShellNotSupported). powershell.exe stays the fallback because
 // it is fine for an interactive user, e.g. `run` in the foreground.
 func PowerShell(ctx context.Context, script string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, powerShellExe(),
-		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script)
+	argv := Command(script)
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Env = withoutPSModulePath(os.Environ())
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -117,6 +117,13 @@ func PowerShell(ctx context.Context, script string) ([]byte, error) {
 		return stdout.Bytes(), &ExitError{Code: exitErr.ExitCode(), Stderr: stderr.String()}
 	}
 	return nil, fmt.Errorf("running powershell: %w", err)
+}
+
+// Command is the argv PowerShell runs script with, for a Runner that starts
+// the process some other way (as the logged-on user, in their session).
+func Command(script string) []string {
+	return []string{powerShellExe(),
+		"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script}
 }
 
 // powerShellExe returns pwsh.exe when PowerShell 7 is installed, looked up

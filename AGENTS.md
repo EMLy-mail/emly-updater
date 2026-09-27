@@ -69,7 +69,8 @@ internal/
                          state machine and execution (internal/power)
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
-  notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session
+  notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session;
+                         session_exec.go runs a process as a session's user and captures its output (RunInSession)
   toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
   power/                 InitiateSystemShutdownEx for the client channel's machine.reboot command;
@@ -337,6 +338,23 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   and the next cycle tries again - so a long outage nags once, but only once someone is actually
   there to read it.
 - **Singleton guard** - a named kernel mutex `Global\EMLyUpdaterSingleton` prevents `run` (foreground debug) from racing the installed service.
+- **`apps.list_upgradable` asks winget twice: as SYSTEM and as the logged-on user** -
+  LocalSystem sees what is installed for every user (HKLM, provisioned MSIX) but nothing a
+  user installed for themselves alone (HKCU, per-user MSIX), so `listUpgradable`
+  (`internal/service/clientcmd.go`) runs the same script in parallel inside the
+  interactive user's session too, through `notify.RunInSession` (the `LaunchToast` token
+  hop, waited on, stdout/stderr piped back). The session is
+  `machineinfo.InteractiveSession`, the same `pickSession` ranking `X-EMLy-LoggedUser`
+  uses: the active console user first, an RDP user only when nobody is at the console,
+  a disconnected session last. The two lists merge on id (case-insensitive) + installed
+  version - the user's session sees machine-wide packages too - and each package carries
+  `scope` (`machine`/`user`, a wire contract with the API). The machine half decides the
+  outcome, as before; the user half is best-effort and reports itself in `user_scope`,
+  `user` and `user_scope_error`, so a missing user list is never read as "nothing to
+  update". `RunInSession` restricts inheritance to the child's three standard handles
+  with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, like `os/exec`: plain `bInheritHandles`
+  would leak into the child whatever pipes the SYSTEM-side `os/exec` run has made
+  inheritable at that instant.
 - **`state.json` holds three independent lifecycles** - EMLy's pending update, the updater's own
   self-update record, and the client channel's pending destructive commands (see above). Every
   setter goes through `Store.update` (read-modify-write); building a fresh `State` and saving it,
@@ -433,6 +451,15 @@ checklist is their verification.
    `%ProgramFiles%\WindowsPowerShell\Modules\Microsoft.WinGet.Client\` when autoloading
    does not find `Get-WinGetPackage` (e.g. the service's PSModulePath misses it); a
    failing `Import-Module` comes back as `internal` with PowerShell's own error.
+   Without PowerShell 7 → `failed` with `powershell_not_found`: as SYSTEM the module
+   refuses Windows PowerShell 5.1 (`WindowsPowerShellNotSupported`).
+   With a user logged on, the list must also carry that user's own packages
+   (`scope: "user"`, e.g. something installed per-user under `HKCU` or a per-user MSIX
+   app), `user_scope: true` and `user` naming them; log them off (or lock the machine
+   with nobody logged on) and it must come back with `user_scope: false` and
+   `user_scope_error: "no user is logged on"`. Repeat with the console user and an RDP
+   user both logged on: the console user's packages win. `notify.RunInSession` is the
+   part of this that no test covers - it needs SYSTEM's `SeTcbPrivilege`.
 3. `service.restart` → the connection closes with 1001, the service actually restarts, and
    the new process's `service.started` has `reason: "command"` listing the command's id;
    the command itself shows `done`.
@@ -597,7 +624,14 @@ The setup:
 - On upgrade: stops the service first (60 s wait), then replaces the binary
 - Optional component `wingetmodule` (**off by default**): downloads
   `Microsoft.WinGet.Client` from PowerShell Gallery at install time and puts it in
-  `%ProgramFiles%\WindowsPowerShell\Modules` (= `Install-Module -Scope AllUsers`).
+  `%ProgramFiles%\WindowsPowerShell\Modules` (= `Install-Module -Scope AllUsers`),
+  and installs PowerShell 7 from its GitHub MSI unless a `pwsh.exe` is already in
+  `%ProgramFiles%\PowerShell\7`. There is no separate PowerShell component on purpose:
+  the service runs as SYSTEM, where the module refuses Windows PowerShell 5.1, so the
+  module is useless to it without PowerShell 7 (`internal/winget` prefers `pwsh.exe`).
+  Both downloads run on a download page with a progress bar right after "Ready to
+  Install" (`NextButtonClick(wpReady)`, also reached in a silent install), before the
+  service is stopped; only the extract/msiexec steps run in `ssPostInstall`.
   Opt in with `/COMPONENTS="updater,wingetmodule"` (`/COMPONENTS` replaces the
   selection, so list both); without `/COMPONENTS` an upgrade keeps the previous
   choice. Version and SHA256 are pinned by `#define`s in `installer.iss` - change

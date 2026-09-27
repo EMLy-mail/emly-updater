@@ -358,6 +358,7 @@ func newClientTestUpdater(t *testing.T) *Updater {
 	u.systemFactsFn = func(time.Time) machineinfo.SystemFacts { return machineinfo.SystemFacts{Cores: 4} }
 	u.netInterfacesFn = func() []machineinfo.NetInterface { return []machineinfo.NetInterface{{Name: "Ethernet"}} }
 	u.emlyRunningFn = func() bool { return false }
+	u.listUserUpgradableFn = func(context.Context) (userUpgradable, error) { return userUpgradable{}, errNoInteractiveUser }
 	u.startedAt = time.Now()
 	u.cur.Store(u.beginCycle(context.Background(), false))
 	return u

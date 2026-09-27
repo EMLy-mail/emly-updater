@@ -188,6 +188,9 @@ type Updater struct {
 
 	// listUpgradableFn overrides winget.ListUpgradable in tests.
 	listUpgradableFn func(context.Context) ([]winget.Package, error)
+	// listUserUpgradableFn overrides listUserUpgradable (the logged-on
+	// user's half of apps.list_upgradable) in tests.
+	listUserUpgradableFn func(context.Context) (userUpgradable, error)
 	// emlyCheckFn/updaterCheckFn override the manifest dry runs in tests, so
 	// their network paths need not be exercised.
 	emlyCheckFn    func(context.Context, *cycleState) wsclient.ManifestCheck

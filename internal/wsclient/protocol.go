@@ -202,7 +202,20 @@ type UpgradablePackage struct {
 	InstalledVersion string `json:"installed_version"`
 	AvailableVersion string `json:"available_version"`
 	Source           string `json:"source"`
+	// Scope is ScopeMachine or ScopeUser: who can see, and so update, the
+	// package.
+	Scope string `json:"scope"`
 }
+
+// UpgradablePackage.Scope values - a wire contract with the API.
+const (
+	// ScopeMachine: seen by LocalSystem, i.e. installed for every user
+	// (HKLM, provisioned MSIX); updating it needs administrator rights.
+	ScopeMachine = "machine"
+	// ScopeUser: seen only from the logged-on user's session - installed
+	// for that user alone (HKCU, per-user MSIX).
+	ScopeUser = "user"
+)
 
 const (
 	RebootDefaultDelaySeconds = 300

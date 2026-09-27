@@ -76,10 +76,21 @@ type UserSession struct {
 // headers, and no answer is a normal state for a machine sitting at the lock
 // screen.
 func LoggedUser() UserSession {
+	_, us, _ := InteractiveSession()
+	return us
+}
+
+// InteractiveSession is LoggedUser plus the WTS id of the session it picked,
+// for callers that need to reach into that session (a process started as its
+// user) rather than only name it. Using the same pickSession ranking is the
+// point: the user whose programs are inspected is the one the X-EMLy-LoggedUser
+// header reports - the console user when someone is at the machine, an RDP
+// user otherwise. ok is false when nobody is logged on.
+func InteractiveSession() (id uint32, us UserSession, ok bool) {
 	var sessions *windows.WTS_SESSION_INFO
 	var count uint32
 	if err := windows.WTSEnumerateSessions(wtsCurrentServerHandle, 0, 1, &sessions, &count); err != nil {
-		return UserSession{}
+		return 0, UserSession{}, false
 	}
 	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(sessions)))
 
@@ -94,13 +105,13 @@ func LoggedUser() UserSession {
 
 	picked, state, ok := pickSession(entries, windows.WTSGetActiveConsoleSessionId())
 	if !ok {
-		return UserSession{}
+		return 0, UserSession{}, false
 	}
-	us := UserSession{User: picked.User, State: state}
+	us = UserSession{User: picked.User, State: state}
 	if state == SessionDisconnected {
 		us.DisconnectedAt = sessionDisconnectTime(picked.ID)
 	}
-	return us
+	return picked.ID, us, true
 }
 
 // sessionEntry is the part of a WTS session pickSession decides on.

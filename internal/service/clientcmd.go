@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"emlyupdater/internal/logging"
+	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/manifest"
+	"emlyupdater/internal/notify"
 	"emlyupdater/internal/selfupdate"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
@@ -28,6 +31,9 @@ const (
 	resultPayloadBudget = 60000
 	wingetTimeout       = 150 * time.Second
 	checkTimeout        = 50 * time.Second
+	// maxUserScopeError bounds user_scope_error, which can carry a whole
+	// PowerShell stderr, so it cannot eat the packages' share of the frame.
+	maxUserScopeError = 1000
 )
 
 type commandSession interface {
@@ -281,8 +287,23 @@ func (u *Updater) runReadOnly(ctx context.Context, cmd wsclient.Command) (any, *
 	return nil, refuse(wsclient.ErrUnsupportedCommand, cmd.Name), false
 }
 
-// listUpgradable runs winget (Microsoft.WinGet.Client) and fits the result
-// under the frame budget, dropping packages from the end.
+// listUpgradable runs winget (Microsoft.WinGet.Client) twice, in parallel -
+// as LocalSystem and as the logged-on user in their own session - merges the
+// two lists and fits the result under the frame budget, dropping packages
+// from the end.
+//
+// Both halves are needed because neither sees everything. LocalSystem sees
+// what is installed for every user (HKLM, provisioned MSIX) but nothing a
+// user installed for themselves alone (HKCU, per-user MSIX); the user's
+// session sees their own packages. The session asked is the one
+// machineinfo.InteractiveSession picks - the console user when someone is at
+// the machine, an RDP user otherwise - i.e. the user X-EMLy-LoggedUser names.
+//
+// The machine half decides the outcome: its failure fails the command, as it
+// always did. The user half is best-effort - nobody logged on is the normal
+// state of a machine at the lock screen - and its outcome travels in
+// user_scope/user_scope_error, so an absent user list is never mistaken for
+// "that user has nothing to update".
 func (u *Updater) listUpgradable(ctx context.Context) (any, *wsclient.ErrorBody, bool) {
 	ctx, cancel := context.WithTimeout(ctx, wingetTimeout)
 	defer cancel()
@@ -290,25 +311,60 @@ func (u *Updater) listUpgradable(ctx context.Context) (any, *wsclient.ErrorBody,
 	if u.listUpgradableFn != nil {
 		list = u.listUpgradableFn
 	}
+	listUser := listUserUpgradable
+	if u.listUserUpgradableFn != nil {
+		listUser = u.listUserUpgradableFn
+	}
+
+	var (
+		userRes userUpgradable
+		userErr error
+		user    sync.WaitGroup
+	)
+	user.Go(func() { userRes, userErr = listUser(ctx) })
 	pkgs, err := list(ctx)
+	user.Wait()
+
 	switch {
 	case errors.Is(err, winget.ErrModuleNotInstalled):
 		return nil, refuse(wsclient.ErrWingetModuleMissing, err.Error()), false
 	case errors.Is(err, winget.ErrPowerShellNotFound), errors.Is(err, winget.ErrPowerShell7Required):
 		return nil, refuse(wsclient.ErrPowerShellNotFound, err.Error()), false
-	case ctx.Err() != nil:
+	case err != nil && ctx.Err() != nil:
 		return nil, refuse(wsclient.ErrTimeout, "winget did not answer in time"), false
 	case err != nil:
 		return nil, refuse(wsclient.ErrInternal, err.Error()), false
 	}
 	type payload struct {
-		Packages    []wsclient.UpgradablePackage `json:"packages"`
-		CollectedAt string                       `json:"collected_at"`
+		Packages []wsclient.UpgradablePackage `json:"packages"`
+		// UserScope: the logged-on user's own packages are included.
+		UserScope bool `json:"user_scope"`
+		// User is the account whose session was asked, when there was one.
+		User string `json:"user,omitempty"`
+		// UserScopeError says why UserScope is false.
+		UserScopeError string `json:"user_scope_error,omitempty"`
+		CollectedAt    string `json:"collected_at"`
 	}
-	p := payload{Packages: make([]wsclient.UpgradablePackage, 0, len(pkgs)), CollectedAt: u.clock().UTC().Format(time.RFC3339)}
-	for _, k := range pkgs {
-		p.Packages = append(p.Packages, wsclient.UpgradablePackage{Name: k.Name, ID: k.ID,
-			InstalledVersion: k.InstalledVersion, AvailableVersion: k.Available, Source: k.Source})
+	p := payload{
+		Packages:    mergeUpgradable(pkgs, userRes.Pkgs),
+		User:        userRes.User,
+		CollectedAt: u.clock().UTC().Format(time.RFC3339),
+	}
+	switch {
+	case userErr == nil:
+		p.UserScope = true
+	case errors.Is(userErr, errNoInteractiveUser):
+		p.UserScopeError = userErr.Error()
+	default:
+		if ctx.Err() != nil {
+			userErr = errors.New("winget did not answer in time in the user's session")
+		}
+		p.UserScopeError = userErr.Error()
+		if len(p.UserScopeError) > maxUserScopeError {
+			p.UserScopeError = p.UserScopeError[:maxUserScopeError] + "..."
+		}
+		u.Log.Warn("apps.list_upgradable: could not list the logged-on user's packages, returning the machine's only",
+			"user", userRes.User, "error", userErr.Error())
 	}
 	truncated := false
 	for {
@@ -323,6 +379,71 @@ func (u *Updater) listUpgradable(ctx context.Context) (any, *wsclient.ErrorBody,
 		p.Packages, truncated = p.Packages[:len(p.Packages)-cut], true
 	}
 	return p, nil, truncated
+}
+
+// userUpgradable is the logged-on user's half of apps.list_upgradable.
+type userUpgradable struct {
+	// User is DOMAIN\user of the session asked, set even when Pkgs could
+	// not be listed.
+	User string
+	Pkgs []winget.Package
+}
+
+// errNoInteractiveUser: nobody is logged on, so there is no user half.
+var errNoInteractiveUser = errors.New("no user is logged on")
+
+// listUserUpgradable runs the winget query inside the interactive user's
+// session, as that user (see listUpgradable).
+func listUserUpgradable(ctx context.Context) (userUpgradable, error) {
+	id, us, ok := machineinfo.InteractiveSession()
+	if !ok {
+		return userUpgradable{}, errNoInteractiveUser
+	}
+	pkgs, err := winget.ListUpgradableWith(ctx, sessionRunner(id))
+	return userUpgradable{User: us.User, Pkgs: pkgs}, err
+}
+
+// sessionRunner is a winget.Runner that starts PowerShell as the user of
+// session sessionID, with the same command line winget.PowerShell uses.
+func sessionRunner(sessionID uint32) winget.Runner {
+	return func(ctx context.Context, script string) ([]byte, error) {
+		out, err := notify.RunInSession(ctx, sessionID, winget.Command(script))
+		if err != nil {
+			return nil, err
+		}
+		if out.ExitCode != 0 {
+			return out.Stdout, &winget.ExitError{Code: out.ExitCode, Stderr: string(out.Stderr)}
+		}
+		return out.Stdout, nil
+	}
+}
+
+// mergeUpgradable combines the two halves of apps.list_upgradable: every
+// package LocalSystem saw, as ScopeMachine, then those only the user's
+// session saw, as ScopeUser. The user's session also sees machine-wide
+// packages, so a package is the same one when its id (case-insensitively)
+// and installed version match - the version is part of the key because two
+// side-by-side installs of one id (two JDKs, two Python launchers) are two
+// packages to update.
+func mergeUpgradable(machine, user []winget.Package) []wsclient.UpgradablePackage {
+	out := make([]wsclient.UpgradablePackage, 0, len(machine)+len(user))
+	seen := make(map[string]bool, len(machine)+len(user))
+	add := func(k winget.Package, scope string) {
+		key := strings.ToLower(k.ID) + "\x00" + k.InstalledVersion
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, wsclient.UpgradablePackage{Name: k.Name, ID: k.ID,
+			InstalledVersion: k.InstalledVersion, AvailableVersion: k.Available, Source: k.Source, Scope: scope})
+	}
+	for _, k := range machine {
+		add(k, wsclient.ScopeMachine)
+	}
+	for _, k := range user {
+		add(k, wsclient.ScopeUser)
+	}
+	return out
 }
 
 // emlyManifestCheck is the dry run of spec §7.2: the same manifest

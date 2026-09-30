@@ -178,7 +178,7 @@ per-host override can switch off one product without rewriting a list):
 | `installDir` | absolute Windows path (`X:\...`), no `..` | required |
 | `exeName` | file name without separators, ends in `.exe`; the process to wait on or close and the icon source | required |
 | `installWhenAbsent` | install where the product is not found | `false` |
-| `detect` | 1-5 sources, tried in order; `type` is `ini` (`path`, `section`, `key`), `file` (`path`, whole content, first line) or `exe` (`path`, VERSIONINFO); paths are relative to `installDir`, no `..` | required |
+| `detect` | 1-5 sources, tried in order; `type` is `ini` (`path`, `section`, `key`), `file` (`path`, whole content, first line) or `exe` (`path`, VERSIONINFO); paths are relative to `installDir`, no `..`, no `:` (a drive-relative `C:foo` or an NTFS stream `version.txt:x`) | required |
 | `installer.type` | `nsis` or `inno` | required |
 | `installer.cleanReinstall` | on a failed verification, uninstall before the second attempt | `false` |
 

@@ -53,7 +53,8 @@ internal/
                          and LoggedUser, resolved per request; domaincontroller.go finds the nearest DC
   manifest/              JSON manifest parse/compare (go-version for semver); updater.go is the updater's own release manifest
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes. Prefix keeps
-                         EMLy's cache and the updater's own from sweeping each other away;
+                         EMLy's cache and the updater's own from sweeping each other away (other
+                         products get their own `downloads\<slug>\` subdirectory);
                          pacer.go waits out the server's 429s (Retry-After + jitter)
   authenticode/          WinVerifyTrust + signer-thumbprint pinning, for the updater's own setup
   selfupdate/            The self-update rules (Reconcile/Decide, pure) + the detached setup launch
@@ -249,7 +250,12 @@ EMLy is a product it distributes.
     source was missing. `unknown` skips the product (one Warn per session) and
     silences the inventory; it never installs, so a transient read error cannot
     trigger a reinstall over live data. `installWhenAbsent` defaults to false:
-    a product is only updated where it already is.
+    a product is only updated where it already is. A detect `path` must stay
+    inside `installDir`: relative, no `..` segment, and no `:` at all - that
+    rules out drive-relative paths (`C:version.txt` resolves against drive
+    C:'s current directory, not `installDir`) and NTFS streams
+    (`version.txt:x`). Both validators (this repo's `internal/policy` and
+    `emly-go-api`'s `internal/remoteconfig`) enforce it, with a shared fixture.
   - **`enabled` switches updates, not detection.** A disabled product is still
     detected and still in the inventory, so the dashboard keeps showing it.
   - **Not blocking when the app is open.** A generic product whose exe is
@@ -258,6 +264,14 @@ EMLy is a product it distributes.
     when a box was actually shown, so nobody-logged-on retries next cycle) and
     the next cycle installs once the app is closed. A forced update still
     warns and terminates, like EMLy.
+  - **A product's process is matched by name *and* location.** Its `exeName`
+    comes from the document and the service is SYSTEM, so "is it running" and
+    the forced kill (`process.IsRunningUnder` / `TerminateAllUnder`) count only
+    instances whose full image path (`QueryFullProcessImageNameW`) lies inside
+    its `installDir` - case-insensitive, on a separator boundary, so
+    `C:\3gIT\X` does not claim `C:\3gIT\XY\a.exe`. A process whose path
+    cannot be read is not the product's. EMLy keeps the name-only
+    `IsRunning` / `TerminateAll` / `WaitForExit`.
   - **A 404 or an empty release means "nothing for this product", not an
     error**: the product is marked unavailable for 6 hours, in memory, with a
     single Info line. For products the chain gets `defaultServer` appended
@@ -276,9 +290,22 @@ EMLy is a product it distributes.
   - **`state.json` layout**: EMLy's pending entry stays in the historical
     `pending` field, byte-identical to before, so rolling the agent back does
     not lose a downloaded EMLy install; every other product is in `products`,
-    per slug, with `attempts`/`gaveUp`. An older agent ignores `products`.
-  - **Download managers**: one per product in the same `downloads\` directory,
-    distinguished by `Prefix` (`<slug>-`), sharing the single `Pacer`.
+    per slug, with `attempts`/`gaveUp`. Rolling back to an older agent does
+    not merely ignore `products`: its first read-modify-write of `state.json`
+    drops the field, losing the products' pending entries and attempt counts.
+    Harmless - they are re-downloaded, and the count starts over.
+  - **Download managers**: EMLy keeps `downloads\` itself (prefix `EMLy-`);
+    every other product has its own `downloads\<slug>\` subdirectory (prefix
+    `<slug>-`), all sharing the single `Pacer`. A subdirectory and not just a
+    prefix in one directory: slugs may contain `-`, so `a-` is a prefix of
+    `a-b-1.0.0-setup.exe` and product `a`'s cleanup would delete product
+    `a-b`'s pending setup.
+  - **The retry's re-download never wipes before it succeeds** (products
+    only): the cached setup is moved aside, the fresh fetch attempted, and on
+    failure (a 429 from a busy server, offline) the old copy and the pending
+    entry - `attempts` included - stay, so the retry runs the cached copy and
+    the 3-attempt cap keeps counting. Wiping first would reset the count on
+    every refused re-download. EMLy keeps its wipe-then-fetch order.
     `service.Updater.install` is a thin wrapper over `installProduct`
     (`internal/service/product.go`).
 - **The presence channel is off until a document turns it on, and follows the
@@ -587,7 +614,9 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
   URL in use plus an `updater` path segment, so a site's mirror serves both documents and there is no
   second URL to keep in sync. `selfUpdate.manifestURL` overrides it for every source.
 - **A 404 is an answer, not a failure.** `source.ErrNotFound` skips the retries (backing off and
-  asking again cannot change it) but still tries the fallback; when nothing serves the endpoint the
+  asking again cannot change it) but still tries the fallback; `manifest.ErrNoRelease` (a manifest
+  with nothing published) does the same, EMLy's primary server included - there it is still an
+  error, it just is not asked again within the cycle; when nothing serves the endpoint the
   cycle logs it and moves on, which is what lets a mirror that has not been updated yet coexist.
   Nothing in the self-update path ever fails a cycle - keeping EMLy updated is the job, updating
   itself is only how it stays good at it.

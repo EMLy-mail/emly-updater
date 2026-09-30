@@ -228,7 +228,7 @@ Regole di validazione (identiche in Agent e API, con fixture condivise):
 | `installDir` | percorso Windows assoluto (`X:\…`), niente `..` | — (obbligatorio) |
 | `exeName` | nome file senza separatori, termina in `.exe` | — (obbligatorio) |
 | `installWhenAbsent` | bool | `false` |
-| `detect` | 1–5 elementi; `type` ∈ `ini`/`file`/`exe`; `path` relativo, senza `..`, non assoluto; `ini` richiede `section` e `key` | — (obbligatorio) |
+| `detect` | 1–5 elementi; `type` ∈ `ini`/`file`/`exe`; `path` relativo, senza `..`, senza `:` (né `C:foo` relativo al drive né stream NTFS `file:x`), non assoluto; `ini` richiede `section` e `key` | — (obbligatorio) |
 | `installer.type` | `nsis` \| `inno` | — (obbligatorio) |
 | `installer.cleanReinstall` | bool | `false` |
 

@@ -89,6 +89,12 @@ type Identity struct {
 	Product                  string `json:"product,omitempty"`
 	OSVersion                string `json:"os_version,omitempty"`
 	EMLyVersion              string `json:"emly_version,omitempty"`
+	// InstalledProducts is the X-EMLy-InstalledProducts inventory as an
+	// object. It is a pointer because it is the one field where empty and
+	// absent differ: nil omits it ("not reported", the API keeps what it
+	// has), a pointer to an empty map sends {} ("nothing installed").
+	// omitempty on a plain map would collapse the two.
+	InstalledProducts *map[string]string `json:"installed_products,omitempty"`
 
 	// Protocol and Capabilities are the v2 negotiation (spec §4). Zero
 	// Protocol keeps the payload byte-identical to v1.

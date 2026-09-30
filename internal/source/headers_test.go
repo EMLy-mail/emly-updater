@@ -89,3 +89,44 @@ func TestApplyHeadersOmitsEmpty(t *testing.T) {
 		}
 	}
 }
+
+// X-EMLy-InstalledProducts is the one header where empty and absent differ:
+// nil means "unknown" and sends nothing, an empty map means "nothing
+// installed" and sends the header with an empty value, and a populated map
+// goes out sorted so the same inventory always reads the same.
+func TestApplyHeadersInstalledProducts(t *testing.T) {
+	cases := []struct {
+		name       string
+		products   map[string]string
+		wantSent   bool
+		wantHeader string
+	}{
+		{"unknown", nil, false, ""},
+		{"nothing installed", map[string]string{}, true, ""},
+		{"sorted", map[string]string{"foo": "1.2.0", "emly": "3.5.0"}, true, "emly=3.5.0,foo=1.2.0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got http.Header
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Header.Clone()
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"schemaVersion":1,"revision":1}`))
+			}))
+			defer srv.Close()
+
+			s := NewHTTPSource(srv.URL)
+			s.InstalledProducts = tc.products
+			if _, err := s.FetchConfig(context.Background(), srv.URL, "", 5*time.Second, 1<<20); err != nil {
+				t.Fatalf("fetch: %v", err)
+			}
+			values, sent := got["X-Emly-Installedproducts"]
+			if sent != tc.wantSent {
+				t.Fatalf("header sent = %v, want %v (%v)", sent, tc.wantSent, got)
+			}
+			if sent && values[0] != tc.wantHeader {
+				t.Errorf("header = %q, want %q", values[0], tc.wantHeader)
+			}
+		})
+	}
+}

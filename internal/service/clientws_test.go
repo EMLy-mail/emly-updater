@@ -15,6 +15,7 @@ import (
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/policy"
+	"emlyupdater/internal/source"
 	"emlyupdater/internal/wsclient"
 )
 
@@ -126,6 +127,41 @@ func TestClientWSIdentityReportsADisconnectedSession(t *testing.T) {
 	id := u.clientWSIdentity()
 	if id.LoggedUserDisconnectedAt != "2026-09-18T08:12:00Z" {
 		t.Errorf("logged_user_disconnected_at = %q, want %q", id.LoggedUserDisconnectedAt, "2026-09-18T08:12:00Z")
+	}
+}
+
+// installed_products follows X-EMLy-InstalledProducts: absent when the
+// inventory is unknown, {} when nothing is installed - the API drops every
+// product it had on {}, so the two must not collapse into one - and the full
+// slug -> version object otherwise.
+func TestClientWSIdentityCarriesTheInventory(t *testing.T) {
+	cases := []struct {
+		name     string
+		products map[string]string
+		want     string // the installed_products JSON, "" for absent
+	}{
+		{"unknown", nil, ""},
+		{"nothing installed", map[string]string{}, `{}`},
+		{"installed", map[string]string{"emly": "3.5.0"}, `{"emly":"3.5.0"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := source.NewHTTPSource("")
+			s.HWID = "HW-1"
+			s.InstalledProducts = tc.products
+			raw, err := json.Marshal(identityFromSource(s))
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, present := fields["installed_products"]
+			if present != (tc.want != "") || (present && string(got) != tc.want) {
+				t.Errorf("installed_products = %s (present %v), want %q in %s", got, present, tc.want, raw)
+			}
+		})
 	}
 }
 

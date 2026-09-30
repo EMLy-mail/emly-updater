@@ -194,6 +194,21 @@ EMLy is a product it distributes.
   and not a release. An unset value sends **no header at all**, never an empty one: the API
   reads a missing header as "unknown" and keeps what it has, while an empty
   string would erase it.
+  `X-EMLy-InstalledProducts` (`emly=3.5.0,foo=1.2.0`, sorted by slug) is the
+  **one exception** to that rule, because the API treats it as the complete
+  inventory and decides from it which dashboard users see the machine: nil
+  sends no header ("unknown"), an empty non-nil map sends an **empty header**
+  ("nothing installed", every product dropped). `Updater.installedProducts`
+  builds it from the same `config.ini` read as `X-EMLy-AppVersion`, through
+  `Cfg.DetectEMLy`, which - unlike `ResolveEMLy` - tells "config.ini does not
+  exist" (EMLy absent, `{}`) apart from "exists but unreadable / no
+  `GUI_SEMVER`" (unknown, nil). Never collapse the two: an empty inventory sent
+  by mistake removes the machine from its owners' dashboard. EMLy is listed
+  under slug `emly` with its `GUI_SEMVER`, never `0.0.0`. The WS `identity`
+  carries the same inventory as `installed_products`, a `*map[string]string`
+  so `{}` survives `omitempty`. Not to be confused with `X-EMLy-Product`
+  (firmware SKU). Updating products other than EMLy (`/v2/updates/{slug}/…`)
+  is not implemented yet: the agent only knows how to detect and install EMLy.
 - **The presence channel is off until a document turns it on, and follows the
   same server the poll does** — `internal/wsclient` holds one WebSocket open
   to `GET /v2/client/ws` on `cyc.chain[0]`, the very server `beginCycle`

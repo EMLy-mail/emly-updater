@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"time"
 
 	"emlyupdater/internal/manifest"
@@ -50,6 +53,15 @@ type HTTPSource struct {
 	// client, sent as X-EMLy-LoggedUserDisconnectedAt (RFC 3339, UTC) when
 	// non-zero. Zero for any session that is not disconnected.
 	LoggedUserDisconnectedAt time.Time
+	// InstalledProducts is the complete inventory of the products installed
+	// on this machine (slug -> version), sent as X-EMLy-InstalledProducts.
+	// Unlike every other field here, empty and unset mean different things
+	// on the wire: nil sends no header ("inventory unknown", the API leaves
+	// what it has), while a non-nil empty map sends an empty header ("nothing
+	// installed", the API drops every product it had). A caller whose
+	// detection failed must leave it nil - an empty inventory sent by mistake
+	// removes the machine from the dashboard.
+	InstalledProducts map[string]string
 
 	// setupIdleTimeout overrides SetupIdleTimeout; tests shrink it. Zero
 	// means SetupIdleTimeout.
@@ -145,6 +157,21 @@ func (s *HTTPSource) applyHeaders(req *http.Request) {
 	if !s.LoggedUserDisconnectedAt.IsZero() {
 		req.Header.Set("X-EMLy-LoggedUserDisconnectedAt", s.LoggedUserDisconnectedAt.UTC().Format(time.RFC3339))
 	}
+	if s.InstalledProducts != nil {
+		req.Header.Set("X-EMLy-InstalledProducts", FormatInstalledProducts(s.InstalledProducts))
+	}
+}
+
+// FormatInstalledProducts renders an inventory as the X-EMLy-InstalledProducts
+// value: `slug=version` pairs joined by commas, sorted by slug so the same
+// inventory always produces the same header.
+func FormatInstalledProducts(products map[string]string) string {
+	slugs := slices.Sorted(maps.Keys(products))
+	pairs := make([]string, 0, len(slugs))
+	for _, slug := range slugs {
+		pairs = append(pairs, slug+"="+products[slug])
+	}
+	return strings.Join(pairs, ",")
 }
 
 // getJSON fetches a manifest document from url with this source's headers

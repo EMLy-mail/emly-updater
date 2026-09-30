@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math/rand/v2"
 	"time"
 
@@ -105,6 +106,10 @@ func identityFromSource(s *source.HTTPSource) wsclient.Identity {
 	}
 	if !s.LoggedUserDisconnectedAt.IsZero() {
 		id.LoggedUserDisconnectedAt = s.LoggedUserDisconnectedAt.UTC().Format(time.RFC3339)
+	}
+	if s.InstalledProducts != nil {
+		products := maps.Clone(s.InstalledProducts)
+		id.InstalledProducts = &products
 	}
 	return id
 }

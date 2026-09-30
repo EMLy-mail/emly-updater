@@ -83,3 +83,25 @@ func (c *Config) ResolveEMLyWithChannel(channelOverride string) EMLyInfo {
 	}
 	return info
 }
+
+// DetectEMLy tells the three states the product inventory needs apart, which
+// ResolveEMLy folds into one:
+//
+//   - installed: config.ini parses and carries GUI_SEMVER; version is that value.
+//   - not installed: config.ini does not exist; version is "" and err is nil.
+//   - unknown: config.ini exists but cannot be stat'ed, parsed, or has no
+//     GUI_SEMVER; err is non-nil.
+//
+// The distinction matters because the API reads an inventory without EMLy as
+// "EMLy was uninstalled" and drops the machine from the dashboard of every
+// user who only owns EMLy. A broken read has to stay "unknown" instead.
+func (c *Config) DetectEMLy() (version string, err error) {
+	if _, statErr := os.Stat(c.EMLyConfigFile); errors.Is(statErr, os.ErrNotExist) {
+		return "", nil
+	}
+	info, err := ReadEMLyConfig(c.EMLyConfigFile)
+	if err != nil {
+		return "", err
+	}
+	return info.InstalledVersion, nil
+}

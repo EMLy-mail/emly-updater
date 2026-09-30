@@ -652,6 +652,8 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 // lookup is a WTS enumeration, so it costs no process spawn. X-EMLy-AppVersion
 // is re-read here for the same reason: a setup this updater just ran changes
 // the installed release, and the header has to report what is on disk now.
+// X-EMLy-InstalledProducts comes from the same read, so the two cannot
+// disagree about EMLy.
 func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc := source.NewHTTPSource(manifestURL)
 	httpSrc.UserAgent = u.Cfg.UserAgent
@@ -663,7 +665,7 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	httpSrc.OSVersion = u.Machine.OSVersion
 	httpSrc.Serial = u.Machine.Serial
 	httpSrc.Product = u.Machine.Product
-	httpSrc.EMLyVersion = u.emlyVersion()
+	httpSrc.EMLyVersion, httpSrc.InstalledProducts = u.installedProducts()
 	session := u.loggedUser()
 	httpSrc.LoggedUser = session.User
 	httpSrc.LoggedUserState = string(session.State)
@@ -671,18 +673,35 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 	return httpSrc
 }
 
-// emlyVersion reads the installed EMLy release from EMLy's config.ini for the
-// X-EMLy-AppVersion header, and returns "" when EMLy is not installed: the
-// 0.0.0 fresh-install sentinel is the updater's own convention for comparing
-// versions, not a release the API should record as installed. A missing
-// header leaves the inventory's stored value untouched.
-func (u *Updater) emlyVersion() string {
-	info := u.Cfg.ResolveEMLy()
-	if info.FreshInstall {
-		return ""
+// installedProducts reads what is installed on this machine, for the
+// X-EMLy-AppVersion and X-EMLy-InstalledProducts headers.
+//
+// emlyVersion is "" when EMLy is not installed or cannot be read: the 0.0.0
+// fresh-install sentinel is the updater's own convention for comparing
+// versions, not a release the API should record as installed, and a missing
+// header leaves the stored value untouched.
+//
+// inventory is the complete product list, today EMLy only. It is nil - no
+// header - when detection failed, and an empty non-nil map only when EMLy is
+// positively absent (its config.ini does not exist): the API treats the
+// inventory as authoritative and an empty one sent by mistake drops the
+// machine from the dashboard. EMLy is listed with the same GUI_SEMVER value
+// X-EMLy-AppVersion carries, never as 0.0.0.
+func (u *Updater) installedProducts() (emlyVersion string, inventory map[string]string) {
+	version, err := u.Cfg.DetectEMLy()
+	if err != nil {
+		return "", nil
 	}
-	return info.InstalledVersion
+	inventory = map[string]string{}
+	if version != "" {
+		inventory[ProductEMLy] = version
+	}
+	return version, inventory
 }
+
+// ProductEMLy is EMLy's product slug, the one the API uses in
+// /v2/updates/{slug}/... and in the installed-products inventory.
+const ProductEMLy = "emly"
 
 // loggedUser resolves the interactive user and their session state for the
 // X-EMLy-LoggedUser* headers, through the seam the tests pin.

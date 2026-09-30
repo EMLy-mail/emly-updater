@@ -113,11 +113,12 @@ func SendNotifyBox(msg Message, seconds int) bool {
 
 // CriticalUpdateProductMessage is the critical-update countdown warning for a
 // product other than EMLy. Italian only, like the progress window. %d is the
-// countdown in seconds.
+// countdown in seconds. The name comes from the remote-configuration
+// document, so any '%' in it is escaped: the body is a format string.
 func CriticalUpdateProductMessage(name string) Message {
 	return Message{
 		Title: name + " - Aggiornamento critico",
-		Body:  name + " verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
+		Body:  strings.ReplaceAll(name, "%", "%%") + " verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
 	}
 }
 

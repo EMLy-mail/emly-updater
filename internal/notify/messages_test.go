@@ -41,3 +41,16 @@ func TestFormatBodyWithoutVerbIsUnchanged(t *testing.T) {
 		t.Errorf("formatBody = %q", got)
 	}
 }
+
+// The body is a format string: a '%' in the product's name must reach the
+// user as a '%', not as a formatting directive.
+func TestCriticalUpdateProductMessageEscapesPercentInName(t *testing.T) {
+	msg := CriticalUpdateProductMessage("100% Chat")
+	body := formatBody(msg.Body, 30)
+	if !strings.HasPrefix(body, "100% Chat verrà chiuso tra 30 secondi") || strings.Contains(body, "%!") {
+		t.Errorf("body = %q", body)
+	}
+	if msg.Title != "100% Chat - Aggiornamento critico" {
+		t.Errorf("title = %q", msg.Title)
+	}
+}

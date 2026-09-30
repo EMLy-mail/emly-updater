@@ -42,6 +42,22 @@ A queued update survives reboots: the pending entry lives in
 checksum-re-verified before any resumed install. A setup whose SHA256 does not
 match the manifest is **never** executed.
 
+The server caps how many installer downloads run at once (one pool shared by
+EMLy's setups and the updater's own) and refuses the rest with `429` plus
+`Retry-After`. The service waits that long plus 0–30s of jitter before
+asking again - never sooner, across cycles too - and gives up for the cycle
+after 5 refusals in a row, or at once when the wait exceeds 5 minutes. A full
+queue (`"error": "download queue full"`) is logged at info level and is not
+an update failure; any other `429` is waited out the same way but logged as a
+warning.
+
+The download itself has no total time limit on the client side: the server
+enforces its own maximum duration (10 minutes by default, configurable up to
+24 hours), and a slow line is never cut off by the updater. It gives up only
+on a download that has stalled - no data at all for 2 minutes. A download cut
+short after its `200` (the server's time limit, or an admin freeing the slot)
+fails its `Content-Length` and checksum checks and is discarded, never run.
+
 ## Remote configuration
 
 Everything operational - which servers exist, which subnets belong to which

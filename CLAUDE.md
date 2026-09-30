@@ -81,6 +81,16 @@ load-bearing — each one is commented with why it sits where it does:
 Everything downstream reads from the effective policy snapshot, never from `config.ini`
 directly. `config.ini` is bootstrap only and is never written at runtime.
 
+## There are no mirror servers
+
+One VM runs `emly-go-api`, its MySQL and the self-hosted S3 holding the setup binaries.
+Every `baseServer` / `backupServer` / `defaultServer` in the remote configuration is just
+another IP or hostname for **that same machine**. They add reachability, not capacity, and
+"mirror" in the code and README is legacy wording. About 350 clients at 3 sites, plus
+home PCs, all reach it over the same narrow MPLS link (home PCs included), and a fleet-wide 5–10 MB download saturates that
+link. Anything that makes the fleet act at once must be paced by the server. See AGENTS.md §
+*Deployment topology*.
+
 ## Documentation map
 
 | File | What it holds |

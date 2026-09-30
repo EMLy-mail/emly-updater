@@ -11,6 +11,7 @@ import (
 	"emlyupdater/internal/authenticode"
 	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
+	"emlyupdater/internal/download"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/manifest"
 	"emlyupdater/internal/selfupdate"
@@ -214,6 +215,14 @@ func (u *Updater) resolveUpdaterManifestWith(ctx context.Context, cyc *cycleStat
 func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *manifest.UpdaterManifest, attempt int) bool {
 	setupPath, err := u.SelfDownloads.Ensure(ctx, src, m.Target())
 	if err != nil {
+		// A full download queue is not a failure (see download.IsQueueFull),
+		// so no update.failed either - the attempt counter is untouched
+		// anyway, it is only written right before a launch.
+		if download.IsQueueFull(err) {
+			u.Log.Info("server download queue full, updater setup download retried next cycle",
+				"target", m.Version)
+			return false
+		}
 		u.Log.Warn("failed to download the updater setup, retrying next cycle",
 			"target", m.Version, "error", err.Error())
 		// download.Manager.Ensure wraps both a fetch failure and a checksum

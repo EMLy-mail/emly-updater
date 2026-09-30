@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
@@ -343,8 +344,10 @@ func TestLoadRemoteConfigDefaults(t *testing.T) {
 	if !cfg.RemoteConfigEnabled {
 		t.Error("default remoteConfig.enabled = false, want true")
 	}
-	if len(cfg.RemoteConfigEndpoints) != 1 || cfg.RemoteConfigEndpoints[0] != "https://api.emly.ffois.it" {
-		t.Errorf("default endpoints = %v", cfg.RemoteConfigEndpoints)
+	// Same order as the [source] chain: internal, backup internal, external.
+	wantEndpoints := []string{"http://172.16.33.72:8080", "http://172.23.85.160:8080", "https://api.emly.ffois.it"}
+	if !slices.Equal(cfg.RemoteConfigEndpoints, wantEndpoints) {
+		t.Errorf("default endpoints = %v, want %v", cfg.RemoteConfigEndpoints, wantEndpoints)
 	}
 	if cfg.RemoteConfigRoute != "/v2/config" {
 		t.Errorf("default configPath = %q, want /v2/config (the same prefix as the manifest)", cfg.RemoteConfigRoute)

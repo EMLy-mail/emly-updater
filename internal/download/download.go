@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"emlyupdater/internal/manifest"
 	"emlyupdater/internal/source"
@@ -28,6 +29,21 @@ type Manager struct {
 	// CleanupExcept will delete - so two managers can share a tree without
 	// either sweeping away the other's cache. Empty means DefaultPrefix.
 	Prefix string
+
+	// Pacer holds back fetches the server has refused with HTTP 429 (see
+	// fetch, pacer.go). The EMLy and updater managers must share one: the
+	// server's download slots are a single pool for both products. nil means
+	// no pacing at all - a 429 is then an ordinary fetch error.
+	Pacer *Pacer
+	// Log receives the 429 progress lines. Optional.
+	Log Logger
+
+	// now/sleep/jitter are fetch's seams: tests pin the clock and the jitter
+	// and record the waits instead of sleeping. nil means time.Now, a
+	// context-aware timer and rand.N.
+	now    func() time.Time
+	sleep  func(ctx context.Context, d time.Duration) error
+	jitter func(max time.Duration) time.Duration
 }
 
 func (m *Manager) prefix() string {
@@ -46,6 +62,10 @@ func (m *Manager) SetupPath(version string) string {
 // A cached file with a valid checksum is reused; otherwise the setup is
 // fetched from src into a .partial file, verified, and renamed into place so
 // a crashed download can never be mistaken for a complete one.
+//
+// A server that refuses the download with HTTP 429 is waited out, never
+// hammered - see fetch (pacer.go). The error then wraps a
+// *source.RetryLaterError.
 func (m *Manager) Ensure(ctx context.Context, src source.Source, t manifest.Target) (string, error) {
 	if err := os.MkdirAll(m.Dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create downloads dir: %w", err)
@@ -61,7 +81,7 @@ func (m *Manager) Ensure(ctx context.Context, src source.Source, t manifest.Targ
 	partial := dest + ".partial"
 	defer os.Remove(partial) // no-op after a successful rename
 
-	if err := src.FetchSetup(ctx, t, partial); err != nil {
+	if err := m.fetch(ctx, src, t, partial); err != nil {
 		return "", fmt.Errorf("fetch from %s failed: %w", src.Name(), err)
 	}
 	if err := VerifyFile(partial, t.SHA256); err != nil {

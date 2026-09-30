@@ -2,6 +2,7 @@ package source
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -49,17 +50,54 @@ type HTTPSource struct {
 	// client, sent as X-EMLy-LoggedUserDisconnectedAt (RFC 3339, UTC) when
 	// non-zero. Zero for any session that is not disconnected.
 	LoggedUserDisconnectedAt time.Time
+
+	// setupIdleTimeout overrides SetupIdleTimeout; tests shrink it. Zero
+	// means SetupIdleTimeout.
+	setupIdleTimeout time.Duration
 }
 
-// NewHTTPSource builds an HTTPSource with a sensibly timeouted client.
-// The overall request timeout is generous because the setup download (tens of
-// MB) goes through the same client; connection establishment is bounded
-// separately by the transport defaults.
+// NewHTTPSource builds an HTTPSource whose client has no overall timeout.
+// Every request bounds itself instead: the manifests (getJSON) and the
+// configuration (FetchConfig) with a short context deadline, the setup
+// download (FetchSetup) with an inactivity timeout - see SetupIdleTimeout for
+// why a total cap would be wrong there.
 func NewHTTPSource(manifestURL string) *HTTPSource {
 	return &HTTPSource{
 		ManifestURL: manifestURL,
-		Client:      &http.Client{Timeout: 10 * time.Minute},
+		Client:      &http.Client{},
 	}
+}
+
+// SetupIdleTimeout is how long FetchSetup waits without receiving a single
+// byte - to connect, for the response headers, or between body reads - before
+// giving the download up as stalled.
+//
+// It is deliberately not a cap on the whole download. The server bounds a
+// download's total duration itself (10 minutes by default, raisable from the
+// dashboard up to 24 hours) and a client cap shorter than the server's would
+// make the updater truncate the very slow-but-alive downloads a saturated MPLS
+// link produces - which is what the old 10-minute http.Client.Timeout did.
+// An inactivity timeout never penalises a slow line and still catches a dead
+// one.
+const SetupIdleTimeout = 2 * time.Minute
+
+// ErrSetupStalled is what FetchSetup returns (wrapped) when its inactivity
+// watchdog gives the download up.
+var ErrSetupStalled = errors.New("setup download stalled")
+
+// idleReader re-arms a watchdog timer on every read that returns data.
+type idleReader struct {
+	r     io.Reader
+	timer *time.Timer
+	idle  time.Duration
+}
+
+func (ir *idleReader) Read(p []byte) (int, error) {
+	n, err := ir.r.Read(p)
+	if n > 0 {
+		ir.timer.Reset(ir.idle)
+	}
+	return n, err
 }
 
 func (s *HTTPSource) Name() string {
@@ -183,6 +221,27 @@ func (s *HTTPSource) ResolveTarget(m *manifest.Manifest, channel string) (manife
 }
 
 func (s *HTTPSource) FetchSetup(ctx context.Context, t manifest.Target, destPath string) error {
+	// The watchdog runs from before the dial to the last body byte, so a
+	// server that never answers, never sends headers or stops mid-body is
+	// caught the same way - see SetupIdleTimeout.
+	idle := s.setupIdleTimeout
+	if idle <= 0 {
+		idle = SetupIdleTimeout
+	}
+	stalled := fmt.Errorf("%w: no data received for %s", ErrSetupStalled, idle)
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	watchdog := time.AfterFunc(idle, func() { cancel(stalled) })
+	defer watchdog.Stop()
+	// A cancellation this function caused reports its cause, not a bare
+	// "context canceled"; the caller's own cancellation is passed through.
+	failed := func(msg string, err error) error {
+		if cause := context.Cause(ctx); errors.Is(cause, ErrSetupStalled) {
+			return cause
+		}
+		return fmt.Errorf("%s: %w", msg, err)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, t.DownloadRef, nil)
 	if err != nil {
 		return fmt.Errorf("invalid download URL %q: %w", t.DownloadRef, err)
@@ -191,10 +250,13 @@ func (s *HTTPSource) FetchSetup(ctx context.Context, t manifest.Target, destPath
 
 	resp, err := s.Client.Do(req)
 	if err != nil {
-		return fmt.Errorf("setup download failed: %w", err)
+		return failed("setup download failed", err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return retryLaterFrom(resp)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("setup download returned HTTP %d", resp.StatusCode)
 	}
@@ -205,8 +267,19 @@ func (s *HTTPSource) FetchSetup(ctx context.Context, t manifest.Target, destPath
 	}
 	defer dest.Close()
 
-	if _, err := io.Copy(dest, resp.Body); err != nil {
-		return fmt.Errorf("setup download interrupted: %w", err)
+	watchdog.Reset(idle) // the headers arrived: count from here
+	n, err := io.Copy(dest, &idleReader{r: resp.Body, timer: watchdog, idle: idle})
+	if err != nil {
+		return failed("setup download interrupted", err)
+	}
+	// The transport already fails a body cut short of its Content-Length
+	// (io.ErrUnexpectedEOF, above) - an admin aborting the download from the
+	// dashboard to free its slot, or the server's own maximum download
+	// duration running out. This states it outright rather than
+	// leaving it to the transport; the SHA-256 check in download.Ensure is
+	// the last line either way.
+	if resp.ContentLength >= 0 && n != resp.ContentLength {
+		return fmt.Errorf("setup download truncated: got %d of %d bytes", n, resp.ContentLength)
 	}
 	return dest.Close()
 }

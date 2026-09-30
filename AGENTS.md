@@ -52,7 +52,8 @@ internal/
                          and LoggedUser, resolved per request; domaincontroller.go finds the nearest DC
   manifest/              JSON manifest parse/compare (go-version for semver); updater.go is the updater's own release manifest
   download/              Download manager: Ensure = fetch+SHA256 verify; atomic writes. Prefix keeps
-                         EMLy's cache and the updater's own from sweeping each other away
+                         EMLy's cache and the updater's own from sweeping each other away;
+                         pacer.go waits out the server's 429s (Retry-After + jitter)
   authenticode/          WinVerifyTrust + signer-thumbprint pinning, for the updater's own setup
   selfupdate/            The self-update rules (Reconcile/Decide, pure) + the detached setup launch
   installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
@@ -84,6 +85,31 @@ internal/
 ```
 
 See [README.md](README.md) for the full update-state-machine table and update-sources description.
+
+## Deployment topology — there are no mirrors
+
+Read this before designing anything that moves bytes over the network.
+
+- **There is exactly one server.** `emly-go-api`, its MySQL database and the self-hosted S3
+  that stores the setup binaries all run on the **same VM**, at one site. The `baseServer`, `backupServer` and
+  `defaultServer` entries in the remote configuration are **different addresses (IPs/hostnames)
+  of that same machine**, not independent mirrors. They are reachability alternatives: a
+  different route or name when one fails. They give no extra capacity, no data redundancy
+  and no per-site cache. Fetching "from a fallback" still loads the same box and the same link.
+- **"Mirror" in code, comments and README is legacy wording.** It describes what the source
+  chain *could* support. It is not what is deployed. Do not propose "let each site's mirror
+  serve it" as a fix: that mirror does not exist.
+- **The bottleneck is the MPLS link, and everything crosses it.** About 350 clients across 3
+  sites, plus PCs working from home, all reach that one server over MPLS; home PCs come in over
+  MPLS too, not over a separate internet path. Treat the whole fleet as one shared pipe, and
+  do not assume any client group has a cheaper route. A
+  fleet-wide download of a 5–10 MB setup (EMLy or EMLyUpdater) saturates it: per-client
+  throughput has been seen dropping to ~200 KB/s.
+- **Consequence for design:** anything that makes many machines act at once must be paced
+  centrally by the server. That includes downloads after a release, notify-triggered wake-ups
+  and config fetches. Client-side jitter alone does not bound concurrency on a shared link.
+  Updates can be urgent and must install as soon as the link allows, so "download days early,
+  install later" is not an acceptable answer.
 
 ## Key Conventions
 
@@ -321,12 +347,39 @@ See [README.md](README.md) for the full update-state-machine table and update-so
   `DC-RM2:...`, and every site after the first would look "not configured" with nothing in the
   log to explain why - `Load`'s comments live on their own line, never after a value on the same
   line, so this is safe for the whole file, not just this one key.
-- **A dead site mirror doesn't fail the cycle** - `source.Resolver`
+- **An unreachable primary address doesn't fail the cycle** - `source.Resolver`
   (`internal/source/resolver.go`) takes an ordered `Fallbacks` list, each tried once (no
   retries) after `Primary` exhausts its attempts. `Updater.newResolver` fills it from the
-  site's `backupServer` list: the site match can be correct while that site's mirror is down,
-  misconfigured or firewalled. A fallback is used for that fetch only and never changes the
+  site's `backupServer` list: the site match can be correct while the site's primary address
+  is unroutable, misresolved or firewalled. (In the real deployment every entry is the same
+  machine; see *Deployment topology*.) A fallback is used for that fetch only and never changes the
   policy, so the next cycle still tries the site's own server first.
+- **A setup download refused with 429 is waited out, never retried early** - the API caps
+  concurrent installer downloads with one pool of slots shared by EMLy and the updater
+  (`emly-go-api` `internal/downloadqueue`, spec `2026-09-30-download-queue-updater-spec.md`
+  there) and answers the overflow `429` + `Retry-After` + `{"error":"download queue full",...}`.
+  `HTTPSource.FetchSetup` turns that into a `*source.RetryLaterError` (wait: header → body
+  `retry_after` → 60s; non-positive/non-numeric skipped). `download.Manager.fetch`
+  (`internal/download/pacer.go`) then waits `Retry-After` + 0–30s jitter and retries, at most
+  `MaxRetryLater` (5) requests per `Ensure`, and returns at once when the wait exceeds
+  `MaxInCycleWait` (5 min) rather than stalling the poll loop. The deadline is kept in a
+  `download.Pacer` that both managers share, in memory only: a later cycle, a notify wake-up
+  or the other product's download does not ask before it has passed. `download.IsQueueFull`
+  is what `Cycle` and `applySelfUpdate` check to log at **info** and report nothing - no
+  `update cycle failed`, no `update.failed` - because a full queue is the server pacing the
+  fleet over the MPLS, not a failure. A 429 without that body (the API's per-IP rate
+  limiters) is paced the same way but still ends as an ordinary download failure.
+- **The setup download has an inactivity timeout, never a total one** - the API bounds a
+  download's total duration itself (10 min by default, raisable from the dashboard up to 24 h),
+  so a client cap shorter than that would truncate exactly the slow-but-alive downloads a
+  saturated MPLS produces. `NewHTTPSource` therefore builds its `http.Client` with **no**
+  `Timeout`. Every request bounds itself instead: `getJSON` (30 s) and `FetchConfig` with a
+  context deadline, and `FetchSetup` with a watchdog that cancels after `SetupIdleTimeout`
+  (2 min) without a single byte (connecting, awaiting the headers, or between body reads),
+  reported as `ErrSetupStalled`. Do not put a `Timeout` back on the shared client, and give
+  any new request on it its own deadline. A download the server cuts short (its own limit, or
+  an admin freeing the slot) arrives as a `200` with a short body: `FetchSetup` fails it on
+  `Content-Length` and `Ensure` on SHA-256, so it is discarded and fetched again next cycle.
 - **No update source reachable at all → toast + event, once per outage** - when `resolveTarget`
   still fails (primary exhausted, fallback also failed or unconfigured), `Cycle`
   (`internal/service/service.go`) logs event 101 (`EventSourcesUnreachable`, every cycle) and
@@ -679,10 +732,11 @@ land; the `selfUpdate` record left in `state.json` says which version was attemp
 
 ## Common Pitfalls
 
+- **Building a `download.Manager` without the shared `Pacer`**: a nil `Pacer` turns off 429 pacing entirely (the 429 comes straight back as an error, retried only next cycle). `service.New` gives `Downloads` and `SelfDownloads` the *same* `Pacer` because the server's slots are one pool; giving each its own lets the EMLy download hit the server right after the self-update download was told to wait.
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs). Upgrades pick it up for free — `config.Reset` rewrites the file from the embedded defaults, so a new key arrives with its default and its comment (and any per-machine edit is discarded).
 - **Rotating the code-signing certificate now also gates self-update**: `internal/authenticode` pins the signer to whatever `cert.Embedded()` holds, so a release signed with the *new* certificate cannot be self-installed by machines still running a build that embeds only the old one. Ship the new certificate in a release signed with the old one first, let the fleet take it, and only then start signing with the new one.
 - **Editing `proto/updateripc.proto`**: copy the change verbatim to `emly/proto/updateripc.proto` and regenerate both repos' `ipcpb` packages. The two repos share no Go module, so nothing enforces this automatically — a one-sided edit silently desyncs the wire protocol.
-- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/version/version_generated.go` and rewrites the version token in `installer/installer.iss` (`ApplicationVersion`) — no other file should ever hardcode the version string by hand again. (`config.default.ini` is deliberately *not* patched any more: its `userAgent` carries a `{{VERSION}}` placeholder resolved at runtime.) Then publish the release to the updater manifest — the signed installer plus its SHA256 on `/v2/updates/manifest/updater`, on the public API **and** on every site's internal mirror — or no machine will pick it up by itself. Then update the **EMLyUpdater max** column of the compatibility matrix atop `proto/updateripc.proto` to the version being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the matrix silently goes stale. (That file is manually synced with the `emly` repo, so copy the edit there too.) Do **not** touch `MaxCompatibleEMLyVersion` here: despite living in this repo it tracks *EMLy's* releases, not this one's, and bumping it for an EMLyUpdater release would claim compatibility with an EMLy build that may not exist. Bump it — and the matrix's EMLy max column — when *EMLy* cuts a release. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
+- **Cutting an EMLyUpdater release**: bump `versioninfo.json`'s `StringFileInfo.FileVersion`/`ProductVersion` (the single source of truth for the version string — see `tools/genversion`) and run `go generate ./...`. That regenerates `internal/version/version_generated.go` and rewrites the version token in `installer/installer.iss` (`ApplicationVersion`) — no other file should ever hardcode the version string by hand again. (`config.default.ini` is deliberately *not* patched any more: its `userAgent` carries a `{{VERSION}}` placeholder resolved at runtime.) Then publish the release to the updater manifest — the signed installer plus its SHA256 on `/v2/updates/manifest/updater`, on the server (one machine; every address in the policy reaches it, see *Deployment topology*) — or no machine will pick it up by itself. Then update the **EMLyUpdater max** column of the compatibility matrix atop `proto/updateripc.proto` to the version being shipped, even if the release doesn't touch `internal/ipc` at all — otherwise the matrix silently goes stale. (That file is manually synced with the `emly` repo, so copy the edit there too.) Do **not** touch `MaxCompatibleEMLyVersion` here: despite living in this repo it tracks *EMLy's* releases, not this one's, and bumping it for an EMLyUpdater release would claim compatibility with an EMLy build that may not exist. Bump it — and the matrix's EMLy max column — when *EMLy* cuts a release. Bump `MinCompatibleEMLyVersion` only when this release genuinely requires a newer EMLy build. Mirror `MaxCompatibleUpdaterVersion` on the `emly` side the same way when *that* repo cuts a release.
 - **Rotating the code-signing certificate**: replace **both**
   `certs/3GITInnovation.cer` (the source of record) and
   `internal/cert/3GITInnovation.cer` (the embedded copy — `//go:embed` cannot

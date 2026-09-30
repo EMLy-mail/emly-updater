@@ -342,14 +342,20 @@ func (u *Updater) clock() time.Time {
 // config.ini keeps the foreground `run` mode at debug level.
 func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
 	machine := machineinfo.Collect()
+	// One Pacer for both download managers: the server's download slots are
+	// a single pool shared by EMLy's setups and the updater's own, so a 429
+	// on one must hold back the other too.
+	pacer := &download.Pacer{}
 	u := &Updater{
 		Cfg:       cfg,
 		Log:       log,
 		Store:     &state.Store{Path: config.StatePath()},
-		Downloads: &download.Manager{Dir: config.DownloadsDir()},
+		Downloads: &download.Manager{Dir: config.DownloadsDir(), Pacer: pacer, Log: log},
 		SelfDownloads: &download.Manager{
 			Dir:    config.SelfDownloadsDir(),
 			Prefix: "EMLyUpdater-",
+			Pacer:  pacer,
+			Log:    log,
 		},
 		Machine:      machine,
 		consoleDebug: consoleDebug,
@@ -597,6 +603,14 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 
 	setupPath, err := u.Downloads.Ensure(ctx, src, target)
 	if err != nil {
+		// A full download queue is the server pacing the fleet, not a
+		// failure: Ensure has already waited out what it could and logged
+		// each refusal, and the next cycle tries again.
+		if download.IsQueueFull(err) {
+			u.Log.Info("server download queue full, EMLy setup download retried next cycle",
+				"target", target.Version)
+			return nil
+		}
 		return fmt.Errorf("download/verification failed: %w", err)
 	}
 

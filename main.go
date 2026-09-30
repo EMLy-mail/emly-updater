@@ -127,7 +127,7 @@ func main() {
 }
 
 func usage() {
-	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run\n", os.Args[0])
+	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run|products [--check]\n", os.Args[0])
 	if err != nil {
 		return
 	}

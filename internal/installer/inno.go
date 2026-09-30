@@ -30,6 +30,9 @@ func (d inno) Uninstall() error {
 	if len(matches) == 0 {
 		return nil
 	}
+	if err := CheckNotUserWritable(d.s.InstallDir, matches[0]); err != nil {
+		return fmt.Errorf("not running %s: %w", matches[0], err)
+	}
 	logPath := filepath.Join(d.s.LogsDir, fmt.Sprintf("%s-uninstall-%d.log", d.s.Slug, time.Now().Unix()))
 	return runSilent(exec.Command(matches[0], innoUninstallArgs(logPath)...), logPath)
 }

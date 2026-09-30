@@ -43,6 +43,8 @@ type Spec struct {
 // what EMLy - the only definition not coming from the document - uses.
 func For(s Spec) Driver {
 	switch s.Type {
+	case "nsis":
+		return nsis{s}
 	default:
 		return inno{s}
 	}

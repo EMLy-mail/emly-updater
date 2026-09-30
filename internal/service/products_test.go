@@ -21,6 +21,7 @@ import (
 	"emlyupdater/internal/policy"
 	"emlyupdater/internal/product"
 	"emlyupdater/internal/state"
+	"emlyupdater/internal/wsclient"
 )
 
 const rcSlug = "3g-rocketchat"
@@ -35,19 +36,41 @@ type productServer struct {
 	rcManifest      string
 	rcManifestCalls atomic.Int32
 	emlyVersion     string
+	// emlySetup, when set, makes EMLy's manifest point at a real setup with
+	// its true checksum (an EMLy update that can actually be downloaded).
+	emlySetup []byte
+	// onRequest, when set, sees every request path before it is served.
+	onRequest func(path string)
 }
 
 func newProductServer(t *testing.T) *productServer {
 	ps := &productServer{emlyVersion: "2.0.0"}
 	sum := sha256.Sum256(rcSetup)
 	ps.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if ps.onRequest != nil {
+			ps.onRequest(r.URL.Path)
+		}
 		ps.mu.Lock()
 		defer ps.mu.Unlock()
 		switch r.URL.Path {
 		case "/v2/updates/manifest":
+			emlySum := "00"
+			if ps.emlySetup != nil {
+				s := sha256.Sum256(ps.emlySetup)
+				emlySum = hex.EncodeToString(s[:])
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"stableVersion":"` + ps.emlyVersion + `","stableDownload":"` + ps.URL +
-				`/v2/updates/releases/x/download","sha256Checksums":{"` + ps.emlyVersion + `":"00"}}`))
+				`/v2/updates/releases/x/download","sha256Checksums":{"` + ps.emlyVersion + `":"` + emlySum + `"}}`))
+		case "/v2/updates/releases/x/download":
+			if ps.emlySetup == nil {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = w.Write(ps.emlySetup)
+		case "/v2/updates/zzz/manifest":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(ps.rcManifest))
 		case "/v2/updates/" + rcSlug + "/manifest":
 			ps.rcManifestCalls.Add(1)
 			if ps.rcManifest == "" {
@@ -268,7 +291,8 @@ func TestFailingProductGivesUpAfterThreeAttempts(t *testing.T) {
 	}
 }
 
-// A destructive command committed mid-round stops the products after it.
+// A destructive command already committed when the cycle starts stops it
+// before the round (Cycle's pre-round gate).
 func TestDestructivePendingStopsTheRound(t *testing.T) {
 	srv := newProductServer(t)
 	h := newProductHarness(t, srv)
@@ -322,5 +346,93 @@ func TestNotifyWaitingOnlyCountsAShownBox(t *testing.T) {
 	}
 	if attempts != 2 || shown != 1 {
 		t.Fatalf("attempts = %d, shown = %d; want 2 attempts (first unseen) and 1 shown", attempts, shown)
+	}
+}
+
+// A destructive command committed while one product is being handled stops
+// the round before the next product: rcSlug sorts before "zzz", and
+// rcSlug's manifest request is where the command lands.
+func TestDestructiveCommittedMidRoundStopsTheNextProduct(t *testing.T) {
+	srv := newProductServer(t)
+	h := newProductHarness(t, srv)
+	snap := h.u.Policy.Current()
+	snap.Parsed.Global.Products["zzz"] = snap.Parsed.Global.Products[rcSlug]
+	var zzzAsked atomic.Int32
+	srv.onRequest = func(path string) {
+		switch path {
+		case "/v2/updates/zzz/manifest":
+			zzzAsked.Add(1)
+		case "/v2/updates/" + rcSlug + "/manifest":
+			h.u.destructiveMu.Lock()
+			h.u.destructivePending = true
+			h.u.destructiveDeadline = time.Now().Add(time.Hour)
+			h.u.destructiveMu.Unlock()
+		}
+	}
+	if err := h.cycle(t); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if srv.rcManifestCalls.Load() == 0 {
+		t.Fatalf("the first product of the round was never polled")
+	}
+	if n := zzzAsked.Load(); n != 0 {
+		t.Fatalf("product after the destructive command polled %d times", n)
+	}
+	if len(h.driver.installs) != 0 {
+		t.Fatalf("setup ran after the destructive command: %v", h.driver.installs)
+	}
+}
+
+// emlyConfigDriver fakes EMLy's setup: it writes config.ini's GUI_SEMVER.
+type emlyConfigDriver struct{ configFile string }
+
+func (d emlyConfigDriver) Install(_ string, version string) error {
+	return os.WriteFile(d.configFile, []byte("[EMLy]\nGUI_SEMVER="+version+"\n"), 0o644)
+}
+func (emlyConfigDriver) Uninstall() error { return nil }
+
+// A product resuming its pending entry earlier in the round must not hand
+// its "resume" trigger to EMLy's update.started in the same cycle.
+func TestProductResumeDoesNotLeakTriggerIntoEMLy(t *testing.T) {
+	srv := newProductServer(t)
+	srv.emlySetup = []byte("emly-setup-bytes")
+	h := newProductHarness(t, srv)
+	h.u.Cfg.EMLyInstallDir = t.TempDir() // no EMLy.exe: association repair stays off the real registry
+	h.u.driverFn = func(p *product.Product) installer.Driver {
+		if p.Legacy {
+			return emlyConfigDriver{configFile: h.u.Cfg.EMLyConfigFile}
+		}
+		return h.driver
+	}
+	h.running["3g-RocketChat.exe"] = true
+
+	// Cycle 1: EMLy is current; RocketChat downloads and is deferred, which
+	// leaves a pending entry to resume.
+	if err := h.cycle(t); err != nil {
+		t.Fatalf("cycle 1: %v", err)
+	}
+	if p, _ := h.u.Store.PendingFor(rcSlug); p == nil {
+		t.Fatalf("no RocketChat pending entry to resume")
+	}
+
+	// Cycle 2: RocketChat resumes (and is deferred again), then EMLy updates.
+	_ = os.WriteFile(h.u.Cfg.EMLyConfigFile, []byte("[EMLy]\nGUI_SEMVER=1.0.0\n"), 0o644)
+	var started []updateEvent
+	h.u.emitFn = func(name string, p any) {
+		if ev, ok := p.(updateEvent); ok && name == wsclient.EvtUpdateStarted {
+			started = append(started, ev)
+		}
+	}
+	if err := h.cycle(t); err != nil {
+		t.Fatalf("cycle 2: %v", err)
+	}
+	if len(started) != 1 || started[0].Target != "emly" {
+		t.Fatalf("update.started events = %+v, want one for emly", started)
+	}
+	if started[0].Trigger != "cycle" {
+		t.Fatalf("EMLy update.started trigger = %q, want %q", started[0].Trigger, "cycle")
+	}
+	if len(h.driver.installs) != 0 {
+		t.Fatalf("RocketChat installed while running: %v", h.driver.installs)
 	}
 }

@@ -562,6 +562,10 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 			u.logDestructiveSkipOnce()
 			return nil
 		}
+		// Each product starts from the cycle's own trigger: a product that
+		// resumed a pending entry ("resume") must not hand it to the next
+		// product's update.started - EMLy's included.
+		u.cycleTrigger = trigger
 		if err := u.productCycle(ctx, cyc, p); err != nil {
 			if p.Legacy {
 				return err // EMLy is last: its error stays the cycle's, as before

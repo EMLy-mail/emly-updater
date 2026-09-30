@@ -12,7 +12,7 @@ import (
 )
 
 // ProgressWindow is the service's end of a progress window running in the
-// console user's session (see internal/progresswin). Every method is safe on
+// session of the user at the machine (console or RDP) (see internal/progresswin). Every method is safe on
 // a nil *ProgressWindow and never blocks the caller: a window is a courtesy,
 // and neither a download nor an install may ever wait on one.
 type ProgressWindow struct {
@@ -38,18 +38,18 @@ type ProgressWindowOptions struct {
 	WaitPID     uint32
 }
 
-// OpenProgressWindow starts the window in the active console session.
-// It returns nil, nil when nobody is logged on at the console.
+// OpenProgressWindow starts the window in the user's session, at the console
+// or over RDP (viewerSession). It returns nil, nil when there is none.
 func OpenProgressWindow(o ProgressWindowOptions) (*ProgressWindow, error) {
-	session, _, _ := procActiveConsole.Call()
-	if uint32(session) == noConsoleSession {
+	session, ok := viewerSession()
+	if !ok {
 		return nil, nil
 	}
 	argv := []string{o.SelfExe, "show-progress", "--title", o.Title, "--icon", o.IconPath}
 	if o.WaitService != "" {
 		argv = append(argv, "--wait-service", o.WaitService, "--wait-pid", strconv.FormatUint(uint64(o.WaitPID), 10))
 	}
-	stdin, err := startWithStdin(uint32(session), argv)
+	stdin, err := startWithStdin(session, argv)
 	if err != nil {
 		return nil, err
 	}

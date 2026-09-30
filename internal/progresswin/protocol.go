@@ -3,7 +3,7 @@
 // non-closable dialog with a heading, a detail line and a progress bar, whose
 // title-bar icon is taken from an executable (EMLy.exe for EMLy's updates).
 //
-// Like internal/toast it runs in the console user's session, in a helper
+// Like internal/toast it runs in the session of the user at the machine (console or RDP), in a helper
 // process the SYSTEM service starts there with the "show-progress"
 // subcommand (internal/notify.OpenProgressWindow). The service drives it
 // through the helper's stdin, one JSON Message per line, and the window never

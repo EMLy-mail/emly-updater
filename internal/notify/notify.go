@@ -1,7 +1,7 @@
 // Package notify shows the pre-kill warning for critical updates via
 // WTSSendMessageW. Called from the SYSTEM service, the message box renders
-// inside the active console user's session - no helper process, no toast
-// registration.
+// inside the session of the user at the machine, at the console or over RDP
+// (see viewerSession) - no helper process, no toast registration.
 package notify
 
 import (
@@ -50,17 +50,17 @@ var messages = map[string]Message{
 	},
 }
 
-// WarnCriticalUpdate shows the countdown warning in the active console
-// session and returns true when a box was actually displayed. It does NOT
+// WarnCriticalUpdate shows the countdown warning in the user's session
+// (viewerSession) and returns true when a box was actually displayed. It does NOT
 // sleep: the box is sent with bWait=FALSE and auto-dismisses after `seconds`,
 // while the caller owns the full countdown - that way the promised N seconds
 // elapse even if the user clicks OK immediately.
 //
-// Returns false (warn skipped) when no console session is active: nobody is
+// Returns false (warn skipped) when no user session is active: nobody is
 // looking, so the caller may kill immediately.
 func WarnCriticalUpdate(lang string, seconds int) bool {
-	session, _, _ := procActiveConsole.Call()
-	if uint32(session) == noConsoleSession {
+	session, ok := viewerSession()
+	if !ok {
 		return false
 	}
 
@@ -90,7 +90,7 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 	// bWait=FALSE: return immediately; Timeout still auto-dismisses the box.
 	ret, _, _ := procWTSSendMessage.Call(
 		wtsCurrentServerHandle,
-		session,
+		uintptr(session),
 		uintptr(unsafe.Pointer(&titleU16[0])),
 		uintptr((len(titleU16)-1)*2),
 		uintptr(unsafe.Pointer(&bodyU16[0])),
@@ -104,8 +104,8 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 }
 
 func SendNotifyBox(msg Message, seconds int) bool {
-	session, _, _ := procActiveConsole.Call()
-	if uint32(session) == noConsoleSession {
+	session, ok := viewerSession()
+	if !ok {
 		return false
 	}
 
@@ -126,7 +126,7 @@ func SendNotifyBox(msg Message, seconds int) bool {
 	// bWait=FALSE: return immediately; Timeout still auto-dismisses the box.
 	ret, _, _ := procWTSSendMessage.Call(
 		wtsCurrentServerHandle,
-		session,
+		uintptr(session),
 		uintptr(unsafe.Pointer(&titleU16[0])),
 		uintptr((len(titleU16)-1)*2),
 		uintptr(unsafe.Pointer(&bodyU16[0])),

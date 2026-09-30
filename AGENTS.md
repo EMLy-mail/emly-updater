@@ -585,7 +585,7 @@ checklist is their verification.
 | `enabled` | `[certificate]` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher` (machine + console user) |
 | `enabled` | `[selfUpdate]` | `true` | Keep the updater itself up to date |
 | `manifestURL` | `[selfUpdate]` | _(empty)_ | Empty = derived from the manifest URL in use (`.../manifest` → `.../manifest/updater`); set only to point at a different host, in which case it applies to every source with no fallback |
-| `enabled` | `[progressWindow]` | `true` | Progress window for the console user while EMLy or the agent is downloaded/installed. **Local only**: deliberately absent from the remote document - see "Progress window" below |
+| `enabled` | `[progressWindow]` | `true` | Progress window for the user at the machine (console or RDP) while EMLy or the agent is downloaded/installed. **Local only**: deliberately absent from the remote document - see "Progress window" below |
 
 ## IPC (EMLyUpdater ⇄ EMLy)
 
@@ -668,7 +668,7 @@ publisher instead of "Unknown publisher".
 ### Progress window
 
 `internal/progresswin` + `service/progress.go`. While an update of EMLy or of
-the agent itself is downloaded and installed, the console user sees a
+the agent itself is downloaded and installed, the user at the machine sees a
 fixed-size, non-closable window (no close/minimize, Alt+F4 ignored) with
 EMLy's icon, a heading, a detail line and a progress bar. Its text is
 **Italian only**, by request - unlike the toasts and the critical-update
@@ -696,7 +696,8 @@ warning, it does not follow EMLy's `LANGUAGE`.
   without a `close` message is what tells the two cases apart.
 - **It never blocks an update**: nil-safe everywhere, writes go through a
   goroutine that keeps only the latest message, and a window that cannot be
-  opened (no console user, token errors) is a log line.
+  opened (nobody logged on, token errors) is a log line.
+- **Console or RDP**: see "UI goes to the viewer session" in Common Pitfalls.
 - **Z-order**: a process started by a service cannot take the foreground, and
   its window would land behind the user's. It is shown with
   `SW_SHOWNOACTIVATE` and passed through `HWND_TOPMOST` → `HWND_NOTOPMOST`:
@@ -715,7 +716,7 @@ warning, it does not follow EMLy's `LANGUAGE`.
    `'{"heading":"Download di EMLy 1.8.0 in corso","detail":"...","percent":40}' | build\EMLyUpdater.exe show-progress --title "EMLy - Aggiornamento" --icon C:\3gIT\EMLy\EMLy.exe`
    (the window closes when stdin ends).
 3. End to end: the local E2E recipe in README.md with a new version in
-   `version.json`, logged on at the console.
+   `version.json`, logged on at the console - then again over RDP.
 
 ### Certificate manual verification (admin required)
 
@@ -836,4 +837,13 @@ land; the `selfUpdate` record left in `state.json` says which version was attemp
 - **HTTP headers**: set them in `HTTPSource` only - the `Resolver` itself is header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.
-- **Update-complete toast**: shown via `internal/toast.Show`, which must run inside the console user's desktop session (session 0, where the SYSTEM service lives, has none). `internal/notify.LaunchToast` does the SYSTEM -> user-session hop with `WTSQueryUserToken` + `CreateProcessAsUser`, re-launching the updater's own exe with the hidden `show-toast` subcommand. The icon shown is extracted at runtime from the installed `EMLy.exe` (`ExtractIconEx`) - there is nothing to keep in sync when EMLy's icon changes. Toast failures (no console session, token/privilege errors, missing icon) are always best-effort/logged, never fail the (already-successful) update.
+- **UI goes to the viewer session, not the console session**: every notifier in
+  `internal/notify` (toast, progress window, critical warning, pending box) picks
+  its session with `viewerSession()` (`notify/session.go`), which reuses
+  `machineinfo.InteractiveSession`: the active console session when someone is
+  logged on there, otherwise an active RDP session; a disconnected session is
+  skipped (nobody would see it). Never go back to `WTSGetActiveConsoleSessionId`
+  for UI: it only names the physical console, so a user on RDP - whose console
+  sits at the login screen - saw none of it. `ConsoleUserSID` (per-user
+  certificate stores) still uses the console session.
+- **Update-complete toast**: shown via `internal/toast.Show`, which must run inside the user's desktop session (session 0, where the SYSTEM service lives, has none). `internal/notify.LaunchToast` does the SYSTEM -> user-session hop with `WTSQueryUserToken` + `CreateProcessAsUser`, re-launching the updater's own exe with the hidden `show-toast` subcommand. The icon shown is extracted at runtime from the installed `EMLy.exe` (`ExtractIconEx`) - there is nothing to keep in sync when EMLy's icon changes. Toast failures (no active user session, token/privilege errors, missing icon) are always best-effort/logged, never fail the (already-successful) update.

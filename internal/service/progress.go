@@ -111,7 +111,7 @@ func (p *progressUI) open() {
 		p.u.Log.Warn("progress window could not be opened, the update continues without it",
 			"product", p.product, "error", err.Error())
 	case win == nil:
-		p.u.Log.Debug("progress window skipped: no active console session", "product", p.product)
+		p.u.Log.Debug("progress window skipped: no active user session (console or RDP)", "product", p.product)
 	default:
 		p.u.Log.Info("progress window opened", "product", p.product, "version", p.version)
 	}

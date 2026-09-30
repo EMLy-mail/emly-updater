@@ -44,21 +44,21 @@ func SourcesUnreachableMessage(lang string) Message {
 	}
 }
 
-// LaunchToast shows the update-complete toast in the active console user's
-// session. Session 0, where this SYSTEM service lives, has no desktop to
-// draw a notification-area icon on - so this re-launches updaterExePath as
-// the console user (WTSQueryUserToken + CreateProcessAsUser, the standard
-// SYSTEM-service -> interactive-session hop) with the "show-toast"
-// subcommand, whose handler (internal/toast.Show) does the actual drawing
-// inside that session.
+// LaunchToast shows the update-complete toast in the session of the user at
+// the machine, at the console or over RDP (viewerSession). Session 0, where
+// this SYSTEM service lives, has no desktop to draw a notification-area icon
+// on - so this re-launches updaterExePath as that user (WTSQueryUserToken +
+// CreateProcessAsUser, the standard SYSTEM-service -> interactive-session
+// hop) with the "show-toast" subcommand, whose handler (internal/toast.Show)
+// does the actual drawing inside that session.
 //
-// Returns false (skipped, not an error) when there is no active console
+// Returns false (skipped, not an error) when there is no active user
 // session - nobody is there to see it - mirroring WarnCriticalUpdate. Every
 // failure path is best-effort: a toast is a courtesy notification, never
 // something the update itself should fail over.
 func LaunchToast(updaterExePath, emlyExePath, title, body string) bool {
-	session, _, _ := procActiveConsole.Call()
-	if uint32(session) == noConsoleSession {
+	session, ok := viewerSession()
+	if !ok {
 		return false
 	}
 
@@ -70,7 +70,7 @@ func LaunchToast(updaterExePath, emlyExePath, title, body string) bool {
 	}
 
 	var userToken windows.Token
-	if err := windows.WTSQueryUserToken(uint32(session), &userToken); err != nil {
+	if err := windows.WTSQueryUserToken(session, &userToken); err != nil {
 		return false
 	}
 	defer userToken.Close()

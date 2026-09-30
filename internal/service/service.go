@@ -816,7 +816,7 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 						return ctx.Err()
 					}
 				} else {
-					u.Log.Info("no active console session, skipping warning")
+					u.Log.Info("no active user session (console or RDP), skipping warning")
 				}
 			}
 			// Re-checked here, not just at the top of apply: the warning
@@ -1089,9 +1089,10 @@ func (u *Updater) ensureCertificate(cyc *cycleState) {
 	}
 }
 
-// showUpdateToast announces a completed update in the active console user's
-// session. Best-effort and non-fatal: EMLy is already updated by this point,
-// so a toast failure (no console session, WTS/token errors, ...) is only
+// showUpdateToast announces a completed update in the session of the user at
+// the machine, at the console or over RDP. Best-effort and non-fatal: EMLy is
+// already updated by this point, so a toast failure (no active user session,
+// WTS/token errors, ...) is only
 // ever logged, never returned as an install error. Channel/language are
 // re-read post-install so the notification reflects EMLy's actual current
 // config rather than the pre-update snapshot.
@@ -1109,17 +1110,17 @@ func (u *Updater) showUpdateToast(version string) {
 	if notify.LaunchToast(self, emlyExe, msg.Title, msg.Body) {
 		u.Log.Info("update-complete toast shown", "version", version)
 	} else {
-		u.Log.Info("update-complete toast skipped (no active console session)", "version", version)
+		u.Log.Info("update-complete toast skipped (no active user session, console or RDP)", "version", version)
 	}
 }
 
-// notifySourcesUnreachable warns the console user that this poll cycle could
+// notifySourcesUnreachable warns the user at the machine (console or RDP) that this poll cycle could
 // not reach any update source (primary retries exhausted, and the fallback -
 // when wired in - failed too), pointing them at their IT department. It is
 // logged (event 101) every time regardless, but the toast itself is shown at
 // most once per outage: sourcesUnreachableNotified is only set once the toast
 // actually launches, and Cycle clears it as soon as resolveTarget next
-// succeeds. Never fatal - a missing console session just means nobody was
+// succeeds. Never fatal - no active user session just means nobody was
 // there to see it, and the next cycle tries again.
 func (u *Updater) notifySourcesUnreachable() {
 	u.Log.WarnEvent(logging.EventSourcesUnreachable,
@@ -1143,7 +1144,7 @@ func (u *Updater) notifySourcesUnreachable() {
 		u.Log.Info("update-source-unreachable toast shown")
 		u.sourcesUnreachableNotified = true
 	} else {
-		u.Log.Info("update-source-unreachable toast skipped (no active console session)")
+		u.Log.Info("update-source-unreachable toast skipped (no active user session, console or RDP)")
 	}
 }
 

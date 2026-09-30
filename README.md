@@ -40,10 +40,16 @@ HKLM file associations (+ `SHChangeNotify`), and shows a Windows notification
 in the active user's session announcing the new version and channel (e.g.
 "EMLy has been updated to version 1.4.2 (beta)."), carrying EMLy's own icon.
 This is a courtesy notification only: it is skipped silently when nobody is
-logged in at the console, and never affects update success/failure.
+there to see it, and never affects update success/failure.
+
+Everything shown to the user - this toast, the progress window below, the
+critical-update warning and the "update pending" box - goes to the user at
+the machine **whether at the console or over RDP**: the active console session
+when someone is logged on there, otherwise an active RDP session. A
+disconnected session (RDP window closed without signing out) gets nothing.
 
 While a setup is downloaded and installed - EMLy's or the agent's own - the
-console user also sees a progress window with EMLy's icon (percentage during
+user also sees a progress window with EMLy's icon (percentage during
 the download, a moving bar during the install). It cannot be closed by the
 user and disappears on its own, including before any wait for EMLy to be
 closed. It is controlled **only** by `[progressWindow] enabled` in
@@ -165,8 +171,8 @@ stall a cycle on a doomed retry. A machine that is not domain-joined skips the
 retry entirely: there the failure is the answer.
 
 When a poll cycle still cannot reach any source (primary exhausted, fallback
-also failed or not configured), a Windows notification tells the active
-console user to contact their IT department ("EMLy Updater non riesce a
+also failed or not configured), a Windows notification tells the user at
+the machine to contact their IT department ("AryxD Agent non riesce a
 contattare il server degli aggiornamenti. Contattare il proprio IT." / the
 English equivalent), carrying EMLy's own icon like every other toast this
 service shows. It fires at most once per outage - shown once, then suppressed
@@ -319,7 +325,7 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Show the console user a progress window while EMLy or AryxD Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
+| `enabled` | `true` | Show the user at the machine (console or RDP) a progress window while EMLy or AryxD Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
 
 ### `[fileAssociations]`
 

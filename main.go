@@ -110,6 +110,8 @@ func main() {
 		err = cmdShowToast(os.Args[2:])
 	case "show-progress":
 		err = cmdShowProgress(os.Args[2:])
+	case "products":
+		err = cmdProducts(os.Args[2:])
 	case "restart-service":
 		// Internal: launched detached by the service itself for the client
 		// channel's service.restart command. cmdStop waits for the service
@@ -533,4 +535,22 @@ func cmdStop() error {
 	}
 	fmt.Printf("service %s stopped\n", service.Name)
 	return nil
+}
+
+// cmdProducts prints what the agent knows about each product on this
+// machine. Read-only, so it runs beside an installed service (no singleton
+// mutex); its own log goes to a temp directory, never to the service's.
+func cmdProducts(args []string) error {
+	fs := flag.NewFlagSet("products", flag.ContinueOnError)
+	check := fs.Bool("check", false, "also ask the server which version each manifest offers")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(config.ConfigPath())
+	if err != nil {
+		return err
+	}
+	log := logging.New(filepath.Join(os.TempDir(), "emly-updater-products"), "", false)
+	u := service.New(cfg, log, false)
+	return u.ReportProducts(context.Background(), os.Stdout, *check)
 }

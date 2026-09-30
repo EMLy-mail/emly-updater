@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "revision": 1,
+  "generatedAt": "2026-09-30T00:00:00Z",
+  "servers": { "srv-a": "https://a.example.com" },
+  "defaultServer": "srv-a",
+  "products": {
+    "3g-rocketchat": {
+      "enabled": true,
+      "name": "3g-RocketChat",
+      "channel": "stable",
+      "installDir": "C:\\3gIT\\3g-RocketChat",
+      "exeName": "3g-RocketChat.exe",
+      "installWhenAbsent": false,
+      "detect": [
+        { "type": "file", "path": "version.txt" },
+        { "type": "ini", "path": "config.ini", "section": "app", "key": "version" },
+        { "type": "exe", "path": "3g-RocketChat.exe" }
+      ],
+      "installer": { "type": "nsis", "cleanReinstall": false }
+    }
+  }
+}

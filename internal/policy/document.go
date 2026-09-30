@@ -57,7 +57,18 @@ type Document struct {
 	//
 	// Commands (ClientWSSettings.Commands) further restricts what a
 	// connected channel is allowed to execute; see ClientWSSettings.
-	ClientWS  ClientWSSettings `json:"clientWs"`
+	ClientWS ClientWSSettings `json:"clientWs"`
+
+	// Products lists the products other than EMLy this agent updates, keyed
+	// by slug (spec 2026-09-30-multi-product-agent-design.md §4). EMLy is
+	// built in and may not appear here. An object, not an array, so an
+	// override can merge-patch one product.
+	//
+	// Agents <= 1.7.x reject a document whose override patches "products"
+	// (not a patchable section for them): no override may touch it until the
+	// whole fleet runs >= 1.8.0. A global "products" is ignored by them.
+	Products map[string]ProductSettings `json:"products"`
+
 	Overrides []Override       `json:"overrides"`
 }
 
@@ -258,7 +269,7 @@ type Host struct {
 
 // PatchableSections are the only top-level keys an override's patch may
 // touch. Anything else rejects the whole document.
-var PatchableSections = []string{"control", "updater", "logging", "defaultServer", "clientWs"}
+var PatchableSections = []string{"control", "updater", "logging", "defaultServer", "clientWs", "products"}
 
 // Duration helpers, so callers do not re-derive units from field names.
 

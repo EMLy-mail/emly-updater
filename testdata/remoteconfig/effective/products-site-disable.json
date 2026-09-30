@@ -1,0 +1,48 @@
+{
+  "document": {
+    "schemaVersion": 1,
+    "revision": 2,
+    "generatedAt": "2026-09-30T00:00:00Z",
+    "servers": { "srv-cb": "http://172.16.96.73:8080" },
+    "defaultServer": "srv-cb",
+    "dcLookupMap": {
+      "DC-RM2": { "internalSubnets": ["172.16.96.0/24"], "baseServer": "srv-cb" }
+    },
+    "products": {
+      "3g-rocketchat": {
+        "enabled": true,
+        "name": "3g-RocketChat",
+        "installDir": "C:\\3gIT\\3g-RocketChat",
+        "exeName": "3g-RocketChat.exe",
+        "detect": [{ "type": "file", "path": "version.txt" }],
+        "installer": { "type": "nsis" }
+      }
+    },
+    "overrides": [
+      {
+        "id": "rm2-no-rocketchat",
+        "match": { "dcs": ["DC-RM2"] },
+        "patch": { "products": { "3g-rocketchat": { "enabled": false } } }
+      }
+    ]
+  },
+  "host": {
+    "hwid": "9A3F1C77-0000-0000-0000-000000000001",
+    "hostname": "RM095",
+    "dc": "DC-RM2",
+    "ips": ["172.16.96.41"],
+    "domain": "tregcc.local",
+    "now": "2026-09-30T09:00:00Z"
+  },
+  "expect": {
+    "applied": ["rm2-no-rocketchat"],
+    "site": "DC-RM2",
+    "chain": ["srv-cb"],
+    "updaterEnabled": true,
+    "pollIntervalMinutes": 15,
+    "channelOverride": "",
+    "loggingLevel": "info",
+    "whitelisted": false,
+    "productsEnabled": { "3g-rocketchat": false }
+  }
+}

@@ -145,7 +145,7 @@ func (p *Parsed) build(global map[string]any) (*Document, Problems) {
 // value), the merged sections are layered over the defaults.
 func complete(defaults, raw map[string]any) map[string]any {
 	out := map[string]any{}
-	for _, k := range []string{"schemaVersion", "revision", "generatedAt", "servers", "defaultServer", "dcLookupMap", "hostIntegrity"} {
+	for _, k := range []string{"schemaVersion", "revision", "generatedAt", "servers", "defaultServer", "dcLookupMap", "hostIntegrity", "products"} {
 		if v, ok := raw[k]; ok && v != nil {
 			out[k] = cloneValue(v)
 		}
@@ -518,6 +518,7 @@ func validateDocument(d *Document, remote bool) Problems {
 		}
 	}
 
+	validateProducts(d.Products, add)
 	sort.SliceStable(ps, func(i, j int) bool { return ps[i].Path < ps[j].Path })
 	return ps
 }

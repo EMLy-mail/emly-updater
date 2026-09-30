@@ -127,6 +127,7 @@ type effectiveFixture struct {
 		ChannelOverride     string   `json:"channelOverride"`
 		LoggingLevel        string   `json:"loggingLevel"`
 		Whitelisted         bool     `json:"whitelisted"`
+		ProductsEnabled     map[string]bool `json:"productsEnabled"`
 	} `json:"expect"`
 }
 
@@ -177,6 +178,11 @@ func TestEffectiveFixtures(t *testing.T) {
 			}
 			if got := eff.IsWhitelisted(h); got != fx.Expect.Whitelisted {
 				t.Errorf("whitelisted = %v, want %v", got, fx.Expect.Whitelisted)
+			}
+			for slug, want := range fx.Expect.ProductsEnabled {
+				if got := eff.Doc.Products[slug].Enabled; got != want {
+					t.Errorf("products[%s].enabled = %v, want %v", slug, got, want)
+				}
 			}
 		})
 	}

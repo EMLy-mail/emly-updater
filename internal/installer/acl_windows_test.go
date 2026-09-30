@@ -43,11 +43,11 @@ func grantEveryoneWrite(t *testing.T, path string) {
 	}
 }
 
-// A per-user temp directory grants write only to its owner, SYSTEM and
-// Administrators.
-func TestCheckNotUserWritableAcceptsAPrivateDirectory(t *testing.T) {
-	if err := CheckNotUserWritable(t.TempDir()); err != nil {
-		t.Fatalf("CheckNotUserWritable = %v", err)
+// A t.TempDir() is owned by the (non-admin) test user: its owner could
+// rewrite the DACL, so it must be refused.
+func TestCheckNotUserWritableRejectsAUserOwnedDirectory(t *testing.T) {
+	if err := CheckNotUserWritable(t.TempDir()); !errors.Is(err, ErrUserWritable) {
+		t.Fatalf("CheckNotUserWritable = %v, want ErrUserWritable", err)
 	}
 }
 
@@ -56,5 +56,32 @@ func TestCheckNotUserWritableRejectsEveryoneWrite(t *testing.T) {
 	grantEveryoneWrite(t, dir)
 	if err := CheckNotUserWritable(dir); !errors.Is(err, ErrUserWritable) {
 		t.Fatalf("CheckNotUserWritable = %v, want ErrUserWritable", err)
+	}
+}
+
+func TestCheckSecurityDescriptor(t *testing.T) {
+	cases := []struct {
+		name, sddl string
+		refused    bool
+	}{
+		{"system owner, users read only", "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)", false},
+		{"admin owner", "O:BAG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;0x1200a9;;;BU)", false},
+		{"user owner", "O:S-1-5-21-1-2-3-1001G:SYD:P(A;;FA;;;SY)", true},
+		{"single user write grant", "O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;S-1-5-21-1-2-3-1001)", true},
+		{"authenticated users write", "O:SYG:SYD:P(A;;FA;;;SY)(A;;0x1301bf;;;AU)", true},
+		{"inherit-only creator owner", "O:SYG:SYD:P(A;;FA;;;SY)(A;OICIIO;GA;;;CO)", false},
+		{"null dacl", "O:SYG:SYD:NO_ACCESS_CONTROL", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sd, err := windows.SecurityDescriptorFromString(c.sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = checkSecurityDescriptor(sd)
+			if c.refused != errors.Is(err, ErrUserWritable) || (!c.refused && err != nil) {
+				t.Fatalf("checkSecurityDescriptor = %v, refused want %v", err, c.refused)
+			}
+		})
 	}
 }

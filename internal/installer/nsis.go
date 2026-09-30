@@ -18,6 +18,9 @@ type nsis struct{ s Spec }
 // own; the exit code is all there is, and the verification that follows is
 // what decides.
 func (d nsis) Install(setupPath, _ string) error {
+	if d.s.InstallDir == "" {
+		return errors.New("no install directory configured for the NSIS setup")
+	}
 	return runSilent(rawCommand(setupPath, "/S /D="+d.s.InstallDir), "")
 }
 
@@ -27,6 +30,9 @@ func (d nsis) Install(setupPath, _ string) error {
 // running. With it, the uninstaller runs in place and is not deleted - the
 // reinstall overwrites it.
 func (d nsis) Uninstall() error {
+	if d.s.InstallDir == "" {
+		return errors.New("no install directory configured for the NSIS uninstaller")
+	}
 	exe := filepath.Join(d.s.InstallDir, "uninstall.exe")
 	if _, err := os.Stat(exe); errors.Is(err, fs.ErrNotExist) {
 		return nil

@@ -37,7 +37,9 @@ func TestNSISUninstallWithoutUninstallerIsNoop(t *testing.T) {
 // An uninstaller in a directory users can write to is never run as SYSTEM.
 func TestNSISUninstallRefusesAUserWritableDirectory(t *testing.T) {
 	dir := t.TempDir()
-	_ = os.WriteFile(filepath.Join(dir, "uninstall.exe"), []byte("not really"), 0o644)
+	if err := os.WriteFile(filepath.Join(dir, "uninstall.exe"), []byte("not really"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	grantEveryoneWrite(t, dir)
 	err := For(Spec{Type: "nsis", InstallDir: dir}).Uninstall()
 	if !errorsIs(err, ErrUserWritable) {

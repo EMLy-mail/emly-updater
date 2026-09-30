@@ -17,6 +17,9 @@
 //	show-toast  display the update-complete notification (internal use: the
 //	            SYSTEM service re-launches itself with this subcommand inside
 //	            the console user's session, see internal/notify.LaunchToast)
+//	show-progress  display the download/install progress window (internal
+//	            use: started by the service in the console user's session,
+//	            driven through its stdin, see internal/notify.OpenProgressWindow)
 //	restart-service  stop then start the service (internal use: launched
 //	            detached by the service itself for the client channel's
 //	            service.restart command)
@@ -45,6 +48,7 @@ import (
 	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
+	"emlyupdater/internal/progresswin"
 	"emlyupdater/internal/service"
 	"emlyupdater/internal/toast"
 	"emlyupdater/internal/version"
@@ -56,7 +60,7 @@ const (
 	// exe and installer file names, User-Agent - keeps "EMLyUpdater": the
 	// emly and emly-go-api repos and already-installed machines depend on
 	// them (AGENTS.md § "Product name vs. technical identifiers").
-	productName = "AryxD Agent"
+	productName = version.ProductName
 	displayName = productName + " Service"
 	description = "AryxD Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. " +
 		"Distribuisce e mantiene aggiornato EMLy (il visualizzatore EML/MSG di 3gIT), " +
@@ -107,6 +111,8 @@ func main() {
 		err = cmdRun()
 	case "show-toast":
 		err = cmdShowToast(os.Args[2:])
+	case "show-progress":
+		err = cmdShowProgress(os.Args[2:])
 	case "restart-service":
 		// Internal: launched detached by the service itself for the client
 		// channel's service.restart command. cmdStop waits for the service
@@ -141,6 +147,26 @@ func cmdShowToast(args []string) error {
 		return err
 	}
 	return toast.Show(*exe, *title, *body)
+}
+
+// cmdShowProgress shows the update progress window until the service, on
+// the other end of stdin, closes it. Not meant to be invoked directly - see
+// internal/progresswin.
+func cmdShowProgress(args []string) error {
+	fs := flag.NewFlagSet("show-progress", flag.ContinueOnError)
+	title := fs.String("title", productName, "window title")
+	icon := fs.String("icon", "", "executable whose icon the window shows")
+	waitService := fs.String("wait-service", "", "on EOF, stay up until this service runs under a new process")
+	waitPID := fs.Uint("wait-pid", 0, "the service's process ID when the window was opened")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	return progresswin.Run(progresswin.Options{
+		Title:       *title,
+		IconPath:    *icon,
+		WaitService: *waitService,
+		WaitPID:     uint32(*waitPID),
+	}, os.Stdin)
 }
 
 // restartServiceStartRetries/Delay bound cmdRestartService's cmdStart

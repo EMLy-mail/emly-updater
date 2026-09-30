@@ -48,6 +48,12 @@ $env:EMLY_AUTHENTICODE_TEST_THUMBPRINT="<hex>"   # optional: also assert the sig
 go test ./internal/authenticode/ -run Live -v
 ```
 
+The progress window (`internal/progresswin`) has a third one, which needs a desktop:
+
+```powershell
+$env:EMLY_PROGRESS_WINDOW_TEST=1; go test ./internal/progresswin/ -run Live -v
+```
+
 Regenerating protobuf (`go generate ./internal/ipc/ipcpb`) needs `protoc` + `protoc-gen-go`.
 The generated file is committed, so neither is needed for a build, `go test ./...`, or CI.
 

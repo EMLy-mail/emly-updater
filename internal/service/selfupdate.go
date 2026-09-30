@@ -213,7 +213,13 @@ func (u *Updater) resolveUpdaterManifestWith(ctx context.Context, cyc *cycleStat
 // so none of them is fatal - but none of them may lead to running the setup
 // either: the file is executed as LocalSystem and replaces this very binary.
 func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *manifest.UpdaterManifest, attempt int) bool {
-	setupPath, err := u.SelfDownloads.Ensure(ctx, src, m.Target())
+	// Closed on every way out but a successful launch, which detaches it
+	// instead (below): the window then outlives this process until the new
+	// build is running.
+	ui := u.newProgressUI(true, m.Version)
+	defer ui.close()
+
+	setupPath, err := u.SelfDownloads.Ensure(ui.watch(ctx), src, m.Target())
 	if err != nil {
 		// A full download queue is not a failure (see download.IsQueueFull),
 		// so no update.failed either - the attempt counter is untouched
@@ -308,6 +314,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "updater", FromVersion: version.Version, ToVersion: m.Version,
 		Attempt: attempt, Trigger: u.cycleTrigger})
 
+	ui.installing()
 	launch := selfupdate.Launch
 	if u.launchFn != nil {
 		launch = u.launchFn
@@ -338,6 +345,7 @@ func (u *Updater) applySelfUpdate(ctx context.Context, src source.Source, m *man
 		return false
 	}
 
+	ui.detach()
 	u.Log.Info("updater setup launched, this service will now be stopped and replaced",
 		"target", m.Version, "attempt", attempt, "log", logPath)
 	return true

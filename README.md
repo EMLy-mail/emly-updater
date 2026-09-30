@@ -42,6 +42,13 @@ in the active user's session announcing the new version and channel (e.g.
 This is a courtesy notification only: it is skipped silently when nobody is
 logged in at the console, and never affects update success/failure.
 
+While a setup is downloaded and installed - EMLy's or the agent's own - the
+console user also sees a progress window with EMLy's icon (percentage during
+the download, a moving bar during the install). It cannot be closed by the
+user and disappears on its own, including before any wait for EMLy to be
+closed. It is controlled **only** by `[progressWindow] enabled` in
+`config.ini`, never by the remote configuration.
+
 A queued update survives reboots: the pending entry lives in
 `C:\ProgramData\EMLyUpdater\state.json` (written atomically) and its setup is
 checksum-re-verified before any resumed install. A setup whose SHA256 does not
@@ -307,6 +314,12 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 | Key | Default | Description |
 |---|---|---|
 | `enabled` | `true` | *(legacy)* Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher`, for the machine and for the console user. Makes EMLy's setup elevate as a verified publisher instead of "Unknown publisher". Re-checked every cycle; idempotent → `updater.installCertificate.enabled` |
+
+### `[progressWindow]`
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `true` | Show the console user a progress window while EMLy or AryxD Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
 
 ### `[fileAssociations]`
 

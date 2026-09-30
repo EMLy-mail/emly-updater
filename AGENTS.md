@@ -73,6 +73,9 @@ internal/
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session;
                          session_exec.go runs a process as a session's user and captures its output (RunInSession)
   toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
+  progresswin/           Download/install progress window (raw Win32, EMLy's icon, not closable); runs inside the user session,
+                         launched via `show-progress` by notify.OpenProgressWindow and driven through its stdin (JSON lines);
+                         service/progress.go decides when it opens/closes. Gated ONLY by config.ini [progressWindow] enabled
   process/               Kernel wait on EMLy process handle + TerminateProcess for forced updates
   power/                 InitiateSystemShutdownEx for the client channel's machine.reboot command;
                          Windows' own countdown to logged-on users, not a dialog of our own; not
@@ -582,6 +585,7 @@ checklist is their verification.
 | `enabled` | `[certificate]` | `true` | Install the 3gIT code-signing certificate into `Root` + `TrustedPublisher` (machine + console user) |
 | `enabled` | `[selfUpdate]` | `true` | Keep the updater itself up to date |
 | `manifestURL` | `[selfUpdate]` | _(empty)_ | Empty = derived from the manifest URL in use (`.../manifest` → `.../manifest/updater`); set only to point at a different host, in which case it applies to every source with no fallback |
+| `enabled` | `[progressWindow]` | `true` | Progress window for the console user while EMLy or the agent is downloaded/installed. **Local only**: deliberately absent from the remote document - see "Progress window" below |
 
 ## IPC (EMLyUpdater ⇄ EMLy)
 
@@ -660,6 +664,57 @@ publisher instead of "Unknown publisher".
 - **SmartScreen is explicitly not addressed** — it is a cloud reputation service
   and does not consult local trust stores. Only a publicly-issued OV/EV
   certificate changes its behaviour.
+
+### Progress window
+
+`internal/progresswin` + `service/progress.go`. While an update of EMLy or of
+the agent itself is downloaded and installed, the console user sees a
+fixed-size, non-closable window (no close/minimize, Alt+F4 ignored) with
+EMLy's icon, a heading, a detail line and a progress bar, localized it/en
+from EMLy's `LANGUAGE`.
+
+- **Only `config.ini` decides** (`[progressWindow] enabled`). There is no
+  counterpart in the remote document and there must not be one: the user asked
+  for it to be a local decision. Remember that `config.ini` is rewritten from
+  the embedded defaults on every install, so the default in
+  `config.default.ini` is what the fleet actually runs.
+- **Opened lazily**, on the first thing worth showing: the first byte of a
+  download the server accepted (`source.WithProgress` carries the callback in
+  the context, so neither `download.Manager` nor the `Source` interface knows
+  about it), or the start of a setup. A cached setup, a `429`-queued download
+  and an update waiting for EMLy to close never flash an empty window.
+- **Closed before any wait on the user**: `apply` closes it as soon as EMLy is
+  found running (countdown, or waiting for exit - possibly hours), and
+  `install` reopens it. It is also closed before the update-complete toast.
+- **Install phase is a marquee**: Inno Setup `/VERYSILENT` reports nothing
+  until it exits, so there is no percentage to show.
+- **Self-update**: the setup stops this service, so the service's end of the
+  pipe closes mid-install. The service *detaches* instead of closing, and the
+  helper (`--wait-service EMLyUpdater --wait-pid <old pid>`) stays up until the
+  SCM reports the service running under a new process, 3 minutes at most. EOF
+  without a `close` message is what tells the two cases apart.
+- **It never blocks an update**: nil-safe everywhere, writes go through a
+  goroutine that keeps only the latest message, and a window that cannot be
+  opened (no console user, token errors) is a log line.
+- **Z-order**: a process started by a service cannot take the foreground, and
+  its window would land behind the user's. It is shown with
+  `SW_SHOWNOACTIVATE` and passed through `HWND_TOPMOST` → `HWND_NOTOPMOST`:
+  on top, without stealing the keyboard focus.
+- **Needs the manifest** (`app.manifest`, embedded via `versioninfo.json`
+  `ManifestPath`): Common Controls 6 for the modern bar and `PBS_MARQUEE`,
+  `dpiAware` for crisp scaling. Without it the bar is the classic one and the
+  install phase shows a full bar.
+
+### Progress window manual verification
+
+1. `$env:EMLY_PROGRESS_WINDOW_TEST=1; go test ./internal/progresswin/ -run Live -v`
+   shows the window for ~10s (download to 100%, then install, then close).
+   A test binary has no manifest: expect the classic bar.
+2. For the real look, feed the built exe by hand:
+   `'{"heading":"Download di EMLy 1.8.0 in corso","detail":"...","percent":40}' | build\EMLyUpdater.exe show-progress --title "EMLy - Aggiornamento" --icon C:\3gIT\EMLy\EMLy.exe`
+   (the window closes when stdin ends).
+3. End to end: the local E2E recipe in README.md with a new version in
+   `version.json`, logged on at the console.
 
 ### Certificate manual verification (admin required)
 

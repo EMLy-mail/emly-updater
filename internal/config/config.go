@@ -92,6 +92,12 @@ type Config struct {
 	// [certificate]
 	CertificateEnabled bool
 
+	// [progressWindow] - whether the console user sees a progress window
+	// while an update of EMLy or of the agent is downloaded and installed.
+	// Local-only on purpose: the remote configuration document has no
+	// counterpart, so only whoever can edit this file decides.
+	ProgressWindowEnabled bool
+
 	// [remoteConfig] - the bootstrap for the remote configuration document
 	// (GET /v2/config). Everything operational lives in that document and in
 	// its on-disk cache; these keys only say how to reach it. See
@@ -182,6 +188,7 @@ func Load(path string) (*Config, error) {
 	crit := f.Section("criticalUpdate")
 	ipcSec := f.Section("ipc")
 	certSec := f.Section("certificate")
+	pwSec := f.Section("progressWindow")
 	selfSec := f.Section("selfUpdate")
 	rcSec := f.Section("remoteConfig")
 
@@ -209,6 +216,8 @@ func Load(path string) (*Config, error) {
 		IPCPipeName: strings.TrimSpace(ipcSec.Key("pipeName").MustString("EMLyUpdater")),
 
 		CertificateEnabled: certSec.Key("enabled").MustBool(true),
+
+		ProgressWindowEnabled: pwSec.Key("enabled").MustBool(true),
 
 		SelfUpdateEnabled:     selfSec.Key("enabled").MustBool(true),
 		SelfUpdateManifestURL: strings.TrimSpace(selfSec.Key("manifestURL").String()),

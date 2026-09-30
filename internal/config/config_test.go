@@ -413,3 +413,21 @@ func TestRemoteConfigDisabledSkipsValidation(t *testing.T) {
 		t.Error("remoteConfig.enabled = true, want false")
 	}
 }
+
+func TestLoadProgressWindow(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.ini"))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.ProgressWindowEnabled {
+		t.Error("progress window should default to enabled")
+	}
+
+	cfg, err = Load(writeConfig(t, "[source]\nprimary = external\nexternalManifestURL = https://x\n\n[progressWindow]\nenabled = false\n"))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.ProgressWindowEnabled {
+		t.Error("progressWindow.enabled = false was not honoured")
+	}
+}

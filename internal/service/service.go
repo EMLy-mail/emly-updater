@@ -64,6 +64,12 @@ type Updater struct {
 	// outage keeps trying every cycle until someone is there to see it.
 	sourcesUnreachableNotified bool
 
+	// progress is the progress window of the EMLy update in flight, nil
+	// outside one or when [progressWindow] is disabled. Like the field above,
+	// it belongs to Cycle's single goroutine. Cycle sets it and closes it on
+	// the way out; apply, install and forceRedownload drive it.
+	progress *progressUI
+
 	// cur is the state the last beginCycle produced: the snapshot, this
 	// machine's facts and the server chain they select. Read by the IPC
 	// server on its own goroutines, hence the atomic.
@@ -558,6 +564,8 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 		} else {
 			u.Log.Info("resuming pending update", "version", p.Version, "forced", p.Forced)
 			u.cycleTrigger = "resume"
+			u.progress = u.newProgressUI(false, p.Version)
+			defer u.endProgress()
 			return u.apply(ctx, cyc, p, emly)
 		}
 	}
@@ -601,7 +609,9 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	}
 	u.announceUpdate(mc)
 
-	setupPath, err := u.Downloads.Ensure(ctx, src, target)
+	u.progress = u.newProgressUI(false, target.Version)
+	defer u.endProgress()
+	setupPath, err := u.Downloads.Ensure(u.progress.watch(ctx), src, target)
 	if err != nil {
 		// A full download queue is the server pacing the fleet, not a
 		// failure: Ensure has already waited out what it could and logged
@@ -787,6 +797,10 @@ func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, 
 	exe := u.Cfg.EMLyExeName
 
 	if process.IsRunning(exe) {
+		// The download is done and what follows - a countdown, or waiting
+		// for the user to close EMLy, possibly for hours - is no time to keep
+		// a window up that cannot be closed. install opens it again.
+		u.progress.close()
 		if p.Forced {
 			warning := cyc.eff.Doc.Updater.CriticalWarning
 			if warning.Enabled {
@@ -897,6 +911,7 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 	started := u.clock()
 	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
 		Forced: p.Forced, Attempt: 1, Trigger: u.cycleTrigger})
+	u.progress.installing()
 
 	reinstalled := false
 	if err := u.runSetupAndVerify(p, "running setup"); err != nil {
@@ -912,6 +927,7 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 			p = fresh
 		}
 
+		u.progress.installing() // back from the re-download's progress
 		if uerr := installer.Uninstall(u.Cfg.EMLyInstallDir, config.LogsDir()); uerr != nil {
 			// Best-effort: a failed cleanup is not itself a reason to give up
 			// on the reinstall (e.g. no uninstaller present at all).
@@ -937,6 +953,7 @@ func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending
 	u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
 		Forced: p.Forced, Attempt: attempt, DurationMS: u.clock().Sub(started).Milliseconds(), Reinstalled: reinstalled})
 
+	u.progress.close() // before the toast, which says the same thing is over
 	u.showUpdateToast(p.Version)
 
 	if err := u.Store.ClearPending(); err != nil {
@@ -983,7 +1000,7 @@ func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state
 		return nil, err
 	}
 
-	setupPath, err := u.Downloads.Ensure(ctx, src, target)
+	setupPath, err := u.Downloads.Ensure(u.progress.watch(ctx), src, target)
 	if err != nil {
 		return nil, fmt.Errorf("re-download failed: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 	"unsafe"
@@ -186,7 +187,8 @@ func inheritablePipe(sa *windows.SecurityAttributes) (r, w windows.Handle, err e
 }
 
 // createInSession starts argv with token, its stdin/stdout/stderr set to
-// std[0..2], which are also the only handles it inherits.
+// std[0..2], which are also the only handles it inherits. The same handle may
+// fill more than one slot (NUL for both stdout and stderr).
 func createInSession(token windows.Token, env *uint16, argv []string, std []windows.Handle) (windows.ProcessInformation, error) {
 	var pi windows.ProcessInformation
 	cmdLine, err := windows.UTF16PtrFromString(windows.ComposeCommandLine(argv))
@@ -198,13 +200,20 @@ func createInSession(token windows.Token, env *uint16, argv []string, std []wind
 		return pi, err
 	}
 
+	// PROC_THREAD_ATTRIBUTE_HANDLE_LIST refuses duplicates.
+	inherit := make([]windows.Handle, 0, len(std))
+	for _, h := range std {
+		if !slices.Contains(inherit, h) {
+			inherit = append(inherit, h)
+		}
+	}
 	attrs, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
 		return pi, fmt.Errorf("NewProcThreadAttributeList: %w", err)
 	}
 	defer attrs.Delete()
 	if err := attrs.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
-		unsafe.Pointer(&std[0]), uintptr(len(std))*unsafe.Sizeof(std[0])); err != nil {
+		unsafe.Pointer(&inherit[0]), uintptr(len(inherit))*unsafe.Sizeof(inherit[0])); err != nil {
 		return pi, fmt.Errorf("UpdateProcThreadAttribute: %w", err)
 	}
 

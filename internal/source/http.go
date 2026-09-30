@@ -268,7 +268,12 @@ func (s *HTTPSource) FetchSetup(ctx context.Context, t manifest.Target, destPath
 	defer dest.Close()
 
 	watchdog.Reset(idle) // the headers arrived: count from here
-	n, err := io.Copy(dest, &idleReader{r: resp.Body, timer: watchdog, idle: idle})
+	var body io.Reader = &idleReader{r: resp.Body, timer: watchdog, idle: idle}
+	if report := progressFrom(ctx); report != nil {
+		report(0, resp.ContentLength)
+		body = &progressReader{r: body, fn: report, total: resp.ContentLength}
+	}
+	n, err := io.Copy(dest, body)
 	if err != nil {
 		return failed("setup download interrupted", err)
 	}

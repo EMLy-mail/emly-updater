@@ -1,7 +1,7 @@
 {
   "FixedFileInfo": {
-    "FileVersion": { "Major": 1, "Minor": 7, "Patch": 3, "Build": 0 },
-    "ProductVersion": { "Major": 1, "Minor": 7, "Patch": 3, "Build": 0 },
+    "FileVersion": { "Major": 1, "Minor": 7, "Patch": 2, "Build": 0 },
+    "ProductVersion": { "Major": 1, "Minor": 7, "Patch": 2, "Build": 0 },
     "FileFlagsMask": "63",
     "FileFlags": "0",
     "FileOS": "4",
@@ -12,15 +12,14 @@
     "Comments": "AryxD Agent distribuisce, monitora e gestisce i prodotti supportati da 3gIT.",
     "CompanyName": "3gIT",
     "FileDescription": "AryxD Agent - Agente di distribuzione, monitoraggio e gestione di 3gIT",
-    "FileVersion": "1.7.3",
+    "FileVersion": "1.7.2",
     "InternalName": "EMLyUpdater.exe",
     "OriginalFilename": "EMLyUpdater.exe",
     "ProductName": "AryxD Agent",
-    "ProductVersion": "1.7.3"
+    "ProductVersion": "1.7.2"
   },
   "VarFileInfo": {
     "Translation": { "LangID": 1040, "Charset": 1200 }
   },
-  "IconPath": "installer/appicon.ico",
-  "ManifestPath": "app.manifest"
+  "icon_path": "installer/appicon.ico"
 }

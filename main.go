@@ -62,10 +62,7 @@ const (
 	// them (AGENTS.md § "Product name vs. technical identifiers").
 	productName = version.ProductName
 	displayName = productName + " Service"
-	description = "AryxD Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. " +
-		"Distribuisce e mantiene aggiornato EMLy (il visualizzatore EML/MSG di 3gIT), " +
-		"riporta lo stato della postazione al server centrale ed esegue i comandi di gestione remota. " +
-		"Se questo servizio viene arrestato, EMLy non riceve più aggiornamenti."
+	description = "AryxD Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. "
 
 	// supportedProducts are the products this agent distributes, logged at
 	// startup so a log read in isolation says what the agent is for.

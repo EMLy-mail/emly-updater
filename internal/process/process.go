@@ -6,6 +6,7 @@ package process
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -133,7 +134,11 @@ func TerminateAll(exeName string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	return terminatePIDs(pids)
+}
 
+// terminatePIDs force-kills pids and waits briefly for each to disappear.
+func terminatePIDs(pids []uint32) (int, error) {
 	killed := 0
 	var firstErr error
 	for _, pid := range pids {
@@ -158,4 +163,80 @@ func TerminateAll(exeName string) (int, error) {
 		killed++
 	}
 	return killed, firstErr
+}
+
+// The *Under variants below are for products other than EMLy. Their exeName
+// comes from the remote-configuration document and the service runs as
+// SYSTEM, so a name match alone could reach any process on the machine that
+// happens to share it. They consider only instances whose image lives inside
+// the product's installDir.
+
+// ListPIDsUnder is ListPIDs restricted to processes whose full image path is
+// inside dir. A process whose image path cannot be read (gone, protected) is
+// left out: it cannot be shown to be the product's.
+func ListPIDsUnder(exeName, dir string) ([]uint32, error) {
+	pids, err := ListPIDs(exeName)
+	if err != nil {
+		return nil, err
+	}
+	var out []uint32
+	for _, pid := range pids {
+		path, err := imagePath(pid)
+		if err != nil {
+			continue
+		}
+		if pathUnder(path, dir) {
+			out = append(out, pid)
+		}
+	}
+	return out, nil
+}
+
+// IsRunningUnder is IsRunning restricted to instances inside dir. Snapshot
+// errors still count as "running" (the conservative path).
+func IsRunningUnder(exeName, dir string) bool {
+	pids, err := ListPIDsUnder(exeName, dir)
+	if err != nil {
+		return true
+	}
+	return len(pids) > 0
+}
+
+// TerminateAllUnder is TerminateAll restricted to instances inside dir.
+func TerminateAllUnder(exeName, dir string) (int, error) {
+	pids, err := ListPIDsUnder(exeName, dir)
+	if err != nil {
+		return 0, err
+	}
+	return terminatePIDs(pids)
+}
+
+// imagePath returns the full Win32 path of pid's executable.
+func imagePath(pid uint32) (string, error) {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return "", err
+	}
+	defer windows.CloseHandle(h)
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
+		return "", err
+	}
+	return windows.UTF16ToString(buf[:size]), nil
+}
+
+// pathUnder reports whether path lies inside dir: case-insensitive, and on a
+// separator boundary, so C:\3gIT\X does not contain C:\3gIT\XY\a.exe. An
+// empty or relative dir contains nothing.
+func pathUnder(path, dir string) bool {
+	if dir == "" || !filepath.IsAbs(dir) {
+		return false
+	}
+	dir = strings.TrimRight(filepath.Clean(dir), `\`)
+	path = filepath.Clean(path)
+	if len(path) <= len(dir)+1 || !strings.EqualFold(path[:len(dir)], dir) {
+		return false
+	}
+	return path[len(dir)] == '\\'
 }

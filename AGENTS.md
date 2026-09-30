@@ -207,8 +207,10 @@ EMLy is a product it distributes.
   under slug `emly` with its `GUI_SEMVER`, never `0.0.0`. The WS `identity`
   carries the same inventory as `installed_products`, a `*map[string]string`
   so `{}` survives `omitempty`. Not to be confused with `X-EMLy-Product`
-  (firmware SKU). Updating products other than EMLy (`/v2/updates/{slug}/…`)
-  is not implemented yet: the agent only knows how to detect and install EMLy.
+  (firmware SKU). Products other than EMLy (`/v2/updates/{slug}/…`) are
+  updated in `Cycle`'s sequential round (`cycleProducts`, `products.go`):
+  enabled document products by slug, EMLy always last because it can block
+  on `WaitForExit`; only EMLy's error fails the cycle.
 - **The presence channel is off until a document turns it on, and follows the
   same server the poll does** — `internal/wsclient` holds one WebSocket open
   to `GET /v2/client/ws` on `cyc.chain[0]`, the very server `beginCycle`

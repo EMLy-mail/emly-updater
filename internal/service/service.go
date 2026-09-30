@@ -192,6 +192,9 @@ type Updater struct {
 	productDownloads map[string]*download.Manager
 	detectWarned     map[string]bool
 	waitNotified     map[string]string
+	// unavailableUntil backs off products whose manifest had nothing
+	// (markUnavailable). Poll goroutine only.
+	unavailableUntil map[string]time.Time
 	// wsSendFn overrides the welcome burst's per-event sender in tests, so a
 	// failed service.started send (and the retry it causes) can be exercised
 	// without a real *wsclient.Session.
@@ -552,7 +555,21 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 		return nil
 	}
 
-	return u.productCycle(ctx, cyc, u.emlyProduct(cyc))
+	// One product at a time, EMLy last: never two downloads or two setups
+	// at once on this machine (MPLS, and beginInstall).
+	for _, p := range u.cycleProducts(cyc) {
+		if u.destructivePendingNow() {
+			u.logDestructiveSkipOnce()
+			return nil
+		}
+		if err := u.productCycle(ctx, cyc, p); err != nil {
+			if p.Legacy {
+				return err // EMLy is last: its error stays the cycle's, as before
+			}
+			u.Log.Warn("product update failed this cycle", "product", p.Slug, "error", err.Error())
+		}
+	}
+	return nil
 }
 
 // newHTTPSource builds an HTTPSource for manifestURL with this machine's

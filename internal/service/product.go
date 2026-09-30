@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"emlyupdater/internal/assoc"
@@ -171,6 +172,13 @@ func (u *Updater) newProductResolver(cyc *cycleState, p *product.Product) *sourc
 			urls = append(urls, base+p.ManifestPath())
 		}
 	}
+	// A site mirror older than multi-product answers 404 to slug routes
+	// (spec §5.3): the document's defaultServer is always asked too.
+	if def := cyc.eff.Doc.DefaultServer; !slices.Contains(u.preferredChain(cyc), def) {
+		if base := cyc.eff.BaseURL(def); base != "" {
+			urls = append(urls, base+p.ManifestPath())
+		}
+	}
 	if len(urls) == 0 {
 		urls = append(urls, "")
 	}
@@ -202,6 +210,9 @@ func (u *Updater) productCycle(ctx context.Context, cyc *cycleState, p *product.
 			"assumedVersion", ps.Installed, "channel", ps.Channel)
 	}
 	if ps.Fresh && !p.InstallWhenAbsent {
+		return nil
+	}
+	if !p.Legacy && u.unavailable(p) {
 		return nil
 	}
 	dl := u.downloadsFor(p)
@@ -239,6 +250,9 @@ func (u *Updater) productCycle(ctx context.Context, cyc *cycleState, p *product.
 	// 2) Normal poll: manifest via this machine's server chain.
 	src, m, target, err := u.resolveProductTarget(ctx, cyc, p, ps.Channel)
 	if err != nil {
+		if !p.Legacy && u.markUnavailable(p, err) {
+			return nil
+		}
 		if p.Legacy {
 			u.notifySourcesUnreachable()
 		}
@@ -246,6 +260,14 @@ func (u *Updater) productCycle(ctx context.Context, cyc *cycleState, p *product.
 	}
 	if p.Legacy {
 		u.sourcesUnreachableNotified = false
+	}
+	if pend != nil && pend.GaveUp {
+		if pend.Version == target.Version {
+			return nil // this release already failed maxProductAttempts times
+		}
+		u.Log.Info("a different release is offered, retrying after an earlier give-up",
+			"product", p.Slug, "gaveUpOn", pend.Version, "target", target.Version)
+		_ = u.Store.ClearPendingFor(p.Slug)
 	}
 
 	needUpdate, err := manifest.Less(ps.Installed, target.Version)
@@ -420,8 +442,11 @@ func (u *Updater) notifyWaitingOnce(p *product.Product, version string) {
 	if u.waitNotified[p.Slug] == version {
 		return
 	}
-	u.waitNotified[p.Slug] = version
-	u.notifyBox(notify.ProductWaitingMessage(p.Name), 60)
+	// Recorded only when a user session actually saw the box: with nobody at
+	// the machine, the next cycle tries again.
+	if u.notifyBox(notify.ProductWaitingMessage(p.Name), 60) {
+		u.waitNotified[p.Slug] = version
+	}
 }
 
 // installProduct runs the setup and the post-install steps. The pending
@@ -519,6 +544,9 @@ func (u *Updater) installProduct(ctx context.Context, cyc *cycleState, p *produc
 			if p.Legacy {
 				u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: pend.Version,
 					Attempt: 2, WillRetry: true, Error: &wsclient.ErrorBody{Code: installFailureCode(err), Message: err.Error()}})
+			}
+			if !p.Legacy {
+				u.recordFailedAttempt(p, pend)
 			}
 			return err // pending kept → retried next cycle
 		}

@@ -103,8 +103,11 @@ func (u *Updater) resolveProductState(p *product.Product) (productState, bool) {
 }
 
 // downloadsFor is the download cache of p: EMLy keeps u.Downloads (prefix
-// "EMLy-"), every other product gets its own prefix in the same directory and
-// the same Pacer - the server's download slots are one pool.
+// "EMLy-"), every other product gets its own subdirectory named after its
+// slug (and the slug as prefix) and the same Pacer - the server's download
+// slots are one pool. A subdirectory, not just a prefix: slugs may contain
+// '-', so "a-" is a prefix of "a-b-1.0.0-setup.exe" and product a's
+// CleanupExcept would sweep away product a-b's pending setup.
 func (u *Updater) downloadsFor(p *product.Product) *download.Manager {
 	if p.Legacy {
 		return u.Downloads
@@ -115,7 +118,7 @@ func (u *Updater) downloadsFor(p *product.Product) *download.Manager {
 	if u.productDownloads == nil {
 		u.productDownloads = map[string]*download.Manager{}
 	}
-	m := &download.Manager{Dir: u.Downloads.Dir, Prefix: p.Slug + "-", Pacer: u.Downloads.Pacer, Log: u.Downloads.Log}
+	m := &download.Manager{Dir: filepath.Join(u.Downloads.Dir, p.Slug), Prefix: p.Slug + "-", Pacer: u.Downloads.Pacer, Log: u.Downloads.Log}
 	u.productDownloads[p.Slug] = m
 	return m
 }
@@ -130,11 +133,26 @@ func (u *Updater) driverFor(p *product.Product) installer.Driver {
 		LogsDir: config.LogsDir(), ForceUpgrade: p.Legacy})
 }
 
-func (u *Updater) isRunning(exe string) bool {
+// isRunning reports whether p's app is running. EMLy matches by image name
+// as it always has; any other product only by instances whose image lives
+// inside its installDir (process.IsRunningUnder): the document names the
+// exe, and a name alone could match an unrelated process.
+func (u *Updater) isRunning(p *product.Product) bool {
 	if u.runningFn != nil {
-		return u.runningFn(exe)
+		return u.runningFn(p.ExeName)
 	}
-	return process.IsRunning(exe)
+	if p.Legacy {
+		return process.IsRunning(p.ExeName)
+	}
+	return process.IsRunningUnder(p.ExeName, p.InstallDir)
+}
+
+// terminate force-kills p's instances, scoped like isRunning.
+func terminate(p *product.Product) (int, error) {
+	if p.Legacy {
+		return process.TerminateAll(p.ExeName)
+	}
+	return process.TerminateAllUnder(p.ExeName, p.InstallDir)
 }
 
 func (u *Updater) notifyBox(msg notify.Message, seconds int) bool {
@@ -355,7 +373,7 @@ func (u *Updater) applyProduct(ctx context.Context, cyc *cycleState, p *product.
 
 	exe := p.ExeName
 
-	if u.isRunning(exe) {
+	if u.isRunning(p) {
 		// The download is done and what follows - a countdown, or waiting
 		// for the user to close the app, possibly for hours - is no time to
 		// keep a window up that cannot be closed. install opens it again.
@@ -394,7 +412,7 @@ func (u *Updater) applyProduct(ctx context.Context, cyc *cycleState, p *product.
 				u.logDestructiveSkipOnce()
 				return nil
 			}
-			killed, err := process.TerminateAll(exe)
+			killed, err := terminate(p)
 			if err != nil {
 				u.Log.Warn(fmt.Sprintf("terminating %s reported errors", p.Name), "killed", killed, "error", err.Error())
 			}
@@ -539,7 +557,11 @@ func (u *Updater) installProduct(ctx context.Context, cyc *cycleState, p *produc
 		}
 
 		if err := u.runSetupAndVerifyProduct(p, pend, label); err != nil {
-			u.Log.ErrorEvent(logging.EventInstallFailed, fmt.Sprintf("%s clean install failed", p.Name),
+			failed := "%s clean install failed"
+			if !p.Installer.CleanReinstall {
+				failed = "%s retry failed"
+			}
+			u.Log.ErrorEvent(logging.EventInstallFailed, fmt.Sprintf(failed, p.Name),
 				"version", pend.Version, "error", err.Error())
 			if p.Legacy {
 				u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: pend.Version,
@@ -597,8 +619,18 @@ func (u *Updater) installProduct(ctx context.Context, cyc *cycleState, p *produc
 // briefly having pointed at a bad build), so nothing short of a full wipe +
 // fresh pull from the API guarantees clean bits. Returns the new, persisted
 // pending entry, which keeps pend's Forced and Attempts.
+//
+// Any product other than EMLy downloads first and cleans up after: if the
+// re-download fails (a 429 from a busy server, offline), its cached setup and
+// its pending entry - Attempts included - stay as they were, so the retry
+// runs the cached copy and recordFailedAttempt keeps counting. Wiping first
+// would reset Attempts on every failed re-download and let a broken release
+// bypass maxProductAttempts forever.
 func (u *Updater) forceRedownloadProduct(ctx context.Context, cyc *cycleState, p *product.Product, pend *state.Pending, channel string) (*state.Pending, error) {
 	dl := u.downloadsFor(p)
+	if !p.Legacy {
+		return u.redownloadThenCleanup(ctx, cyc, p, dl, pend, channel)
+	}
 	if err := dl.CleanupExcept(""); err != nil {
 		u.Log.Warn("failed to fully clear the downloads cache before forcing a re-download",
 			"product", p.Slug, "error", err.Error())
@@ -688,4 +720,47 @@ func (u *Updater) showProductToast(p *product.Product, version string) {
 	} else {
 		u.Log.Info("update-complete toast skipped (no active user session, console or RDP)", "product", p.Slug, "version", version)
 	}
+}
+
+// redownloadThenCleanup is forceRedownloadProduct for a product other than
+// EMLy. The cached copy of the target is moved aside (not deleted) before
+// Ensure - Ensure would otherwise hand the same bits back from the cache -
+// and moved back if the download fails, so the retry still has it. The
+// pending entry is only ever replaced, never cleared.
+func (u *Updater) redownloadThenCleanup(ctx context.Context, cyc *cycleState, p *product.Product, dl *download.Manager, pend *state.Pending, channel string) (*state.Pending, error) {
+	src, _, target, err := u.resolveProductTarget(ctx, cyc, p, channel)
+	if err != nil {
+		return nil, err
+	}
+	// The ".stale" name keeps dl's prefix, so a crash between here and the
+	// cleanup below leaves nothing CleanupExcept would not sweep.
+	cached := dl.SetupPath(target.Version)
+	aside := cached + ".stale"
+	movedAside := os.Rename(cached, aside) == nil
+	setupPath, err := dl.Ensure(u.progress.watch(ctx), src, target)
+	if err != nil {
+		if movedAside {
+			if rerr := os.Rename(aside, cached); rerr != nil {
+				u.Log.Warn("could not restore the cached setup after a failed re-download",
+					"product", p.Slug, "error", rerr.Error())
+			}
+		}
+		return nil, fmt.Errorf("re-download failed: %w", err)
+	}
+	fresh := &state.Pending{
+		Version:      target.Version,
+		SetupPath:    setupPath,
+		SHA256:       target.SHA256,
+		Forced:       pend.Forced,
+		DownloadedAt: time.Now().UTC(),
+		Attempts:     pend.Attempts,
+	}
+	if err := u.Store.SetPendingFor(p.Slug, fresh); err != nil {
+		u.Log.Warn("failed to persist re-downloaded pending update, continuing", "product", p.Slug, "error", err.Error())
+	}
+	if err := dl.CleanupExcept(fresh.Version); err != nil {
+		u.Log.Warn("failed to clean up the downloads cache after a re-download", "product", p.Slug, "error", err.Error())
+	}
+	u.Log.Info("re-downloaded setup for the retry", "product", p.Slug, "version", fresh.Version, "path", fresh.SetupPath)
+	return fresh, nil
 }

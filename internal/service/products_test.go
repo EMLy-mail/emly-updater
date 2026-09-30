@@ -41,6 +41,11 @@ type productServer struct {
 	emlySetup []byte
 	// onRequest, when set, sees every request path before it is served.
 	onRequest func(path string)
+	// rcDownloads counts requests for any RocketChat setup; with
+	// rcRefuseAfterFirst every request after the first answers 429 with the
+	// API's queue-full body.
+	rcDownloads        atomic.Int32
+	rcRefuseAfterFirst bool
 }
 
 func newProductServer(t *testing.T) *productServer {
@@ -79,9 +84,19 @@ func newProductServer(t *testing.T) *productServer {
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(ps.rcManifest))
-		case "/v2/updates/" + rcSlug + "/releases/1.1.0/download":
-			_, _ = w.Write(rcSetup)
 		default:
+			// Any RocketChat release serves rcSetup (see rcManifestFor).
+			if strings.HasPrefix(r.URL.Path, "/v2/updates/"+rcSlug+"/releases/") && strings.HasSuffix(r.URL.Path, "/download") {
+				if n := ps.rcDownloads.Add(1); n > 1 && ps.rcRefuseAfterFirst {
+					w.Header().Set("Retry-After", "3600")
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusTooManyRequests)
+					_, _ = w.Write([]byte(`{"error":"download queue full","capacity":4,"active":4}`))
+					return
+				}
+				_, _ = w.Write(rcSetup)
+				return
+			}
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
@@ -89,6 +104,13 @@ func newProductServer(t *testing.T) *productServer {
 	ps.rcManifest = `{"stableVersion":"1.1.0","stableDownload":"` + ps.URL + `/v2/updates/` + rcSlug +
 		`/releases/1.1.0/download","sha256Checksums":{"1.1.0":"` + hex.EncodeToString(sum[:]) + `"}}`
 	return ps
+}
+
+// rcManifestFor is RocketChat's manifest offering version (served rcSetup).
+func (ps *productServer) rcManifestFor(version string) string {
+	sum := sha256.Sum256(rcSetup)
+	return `{"stableVersion":"` + version + `","stableDownload":"` + ps.URL + `/v2/updates/` + rcSlug +
+		`/releases/` + version + `/download","sha256Checksums":{"` + version + `":"` + hex.EncodeToString(sum[:]) + `"}}`
 }
 
 func (ps *productServer) setRC(body string) { ps.mu.Lock(); ps.rcManifest = body; ps.mu.Unlock() }
@@ -434,5 +456,86 @@ func TestProductResumeDoesNotLeakTriggerIntoEMLy(t *testing.T) {
 	}
 	if len(h.driver.installs) != 0 {
 		t.Fatalf("RocketChat installed while running: %v", h.driver.installs)
+	}
+}
+
+// A re-download refused by a busy server (429, queue full) must not reset the
+// attempt counter: the cached setup and the pending entry stay, the retry
+// runs the cached copy, and the cap still gives the version up. Without that,
+// every cycle would wipe the cache, fail to fetch, and start from zero.
+func TestProductRedownloadRefusedKeepsTheAttemptCap(t *testing.T) {
+	srv := newProductServer(t)
+	srv.rcRefuseAfterFirst = true
+	h := newProductHarness(t, srv)
+	h.driver.failInstall = true
+	for i := 0; i < 6; i++ {
+		_ = h.cycle(t)
+	}
+	p, _ := h.u.Store.PendingFor(rcSlug)
+	if p == nil || !p.GaveUp || p.Attempts != maxProductAttempts {
+		t.Fatalf("pending = %+v, want gaveUp after %d attempts", p, maxProductAttempts)
+	}
+	if len(h.driver.installs) != 2*maxProductAttempts {
+		t.Fatalf("setup runs = %d, want %d", len(h.driver.installs), 2*maxProductAttempts)
+	}
+	// One real download, then one refused re-download per attempt; nothing
+	// once the version is given up.
+	if n := srv.rcDownloads.Load(); n != 1+maxProductAttempts {
+		t.Fatalf("setup downloads = %d, want %d", n, 1+maxProductAttempts)
+	}
+	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
+		t.Fatalf("cached setup lost: %v", err)
+	}
+}
+
+// A version given up is retried as soon as the manifest offers another one.
+func TestGivenUpVersionIsResetByADifferentRelease(t *testing.T) {
+	srv := newProductServer(t)
+	h := newProductHarness(t, srv)
+	h.driver.failInstall = true
+	for i := 0; i < maxProductAttempts+1; i++ {
+		_ = h.cycle(t)
+	}
+	if p, _ := h.u.Store.PendingFor(rcSlug); p == nil || !p.GaveUp || p.Version != "1.1.0" {
+		t.Fatalf("pending = %+v, want 1.1.0 given up", p)
+	}
+
+	h.driver.failInstall = false
+	srv.setRC(srv.rcManifestFor("1.2.0"))
+	if err := h.cycle(t); err != nil {
+		t.Fatalf("Cycle: %v", err)
+	}
+	if last := h.driver.installs[len(h.driver.installs)-1]; last != "1.2.0" {
+		t.Fatalf("last setup run = %s, want 1.2.0", last)
+	}
+	if p, _ := h.u.Store.PendingFor(rcSlug); p != nil {
+		t.Fatalf("pending not cleared after installing 1.2.0: %+v", p)
+	}
+}
+
+// Slugs may contain '-': product "a" being up to date clears its own cache
+// only, never product "a-b"'s pending setup.
+func TestProductCachesDoNotCollideOnSlugPrefixes(t *testing.T) {
+	h := newProductHarness(t, newProductServer(t))
+	a := &product.Product{Slug: "a"}
+	ab := &product.Product{Slug: "a-b"}
+	abSetup := h.u.downloadsFor(ab).SetupPath("1.0.0")
+	if err := os.MkdirAll(filepath.Dir(abSetup), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(abSetup, rcSetup, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.u.downloadsFor(a).CleanupExcept(""); err != nil {
+		t.Fatalf("CleanupExcept: %v", err)
+	}
+	if _, err := os.Stat(abSetup); err != nil {
+		t.Fatalf("product a's cleanup removed a-b's setup: %v", err)
+	}
+	if err := h.u.Downloads.CleanupExcept(""); err != nil {
+		t.Fatalf("EMLy CleanupExcept: %v", err)
+	}
+	if _, err := os.Stat(abSetup); err != nil {
+		t.Fatalf("EMLy's cleanup removed a-b's setup: %v", err)
 	}
 }

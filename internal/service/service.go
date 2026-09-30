@@ -23,7 +23,7 @@ import (
 	"emlyupdater/internal/manifest"
 	"emlyupdater/internal/notify"
 	"emlyupdater/internal/policy"
-	"emlyupdater/internal/process"
+	"emlyupdater/internal/product"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/state"
 	"emlyupdater/internal/winget"
@@ -174,6 +174,24 @@ type Updater struct {
 	netInterfacesFn func() []machineinfo.NetInterface
 	// emlyRunningFn overrides process.IsRunning in tests.
 	emlyRunningFn func() bool
+
+	// runningFn/driverFn/notifyBoxFn/toastFn are the product engine's seams
+	// (product.go): tests fake the running check, the setup, the user
+	// notification and the update-complete toast of products other than
+	// EMLy. nil means process.IsRunning, installer.For, notify.SendNotifyBox
+	// and notify.LaunchToast.
+	runningFn   func(exe string) bool
+	driverFn    func(*product.Product) installer.Driver
+	notifyBoxFn func(notify.Message, int) bool
+	toastFn     func(icon, title, body string) bool
+
+	// productDownloads caches one download.Manager per product other than
+	// EMLy (downloadsFor). detectWarned and waitNotified keep the per-product
+	// "unknown version" and "close the app" messages to one per session and
+	// one per version. Poll goroutine only, like announced: no locking.
+	productDownloads map[string]*download.Manager
+	detectWarned     map[string]bool
+	waitNotified     map[string]string
 	// wsSendFn overrides the welcome burst's per-event sender in tests, so a
 	// failed service.started send (and the retry it causes) can be exercised
 	// without a real *wsclient.Session.
@@ -534,110 +552,7 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 		return nil
 	}
 
-	emly := u.Cfg.ResolveEMLyWithChannel(cyc.eff.Doc.Updater.Channel())
-	if emly.FreshInstall {
-		u.Log.Info("EMLy config.ini not found - fresh-install mode",
-			"assumedVersion", emly.InstalledVersion, "channel", emly.Channel)
-	}
-
-	// 1) A persisted pending update takes priority over polling: it may have
-	// been queued right before a reboot and must not be lost or re-fetched.
-	st, err := u.Store.Load()
-	if err != nil {
-		u.Log.Warn("state file unreadable, starting fresh", "error", err.Error())
-		st = &state.State{}
-	}
-	if p := st.Pending; p != nil {
-		stillNeeded, err := manifest.Less(emly.InstalledVersion, p.Version)
-		if err != nil {
-			u.Log.Warn("pending update has invalid version, discarding", "version", p.Version, "error", err.Error())
-			_ = u.Store.ClearPending()
-		} else if !stillNeeded {
-			// Installed by other means (or the pending entry is stale).
-			u.Log.Info("pending update already satisfied, clearing", "version", p.Version)
-			_ = u.Store.ClearPending()
-			_ = u.Downloads.CleanupExcept("")
-		} else if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
-			u.Log.Warn("pending setup failed re-verification, discarding for re-download", "error", err.Error())
-			_ = os.Remove(p.SetupPath)
-			_ = u.Store.ClearPending()
-		} else {
-			u.Log.Info("resuming pending update", "version", p.Version, "forced", p.Forced)
-			u.cycleTrigger = "resume"
-			u.progress = u.newProgressUI(false, p.Version)
-			defer u.endProgress()
-			return u.apply(ctx, cyc, p, emly)
-		}
-	}
-
-	// 2) Normal poll: manifest via this machine's server chain.
-	src, m, target, err := u.resolveTarget(ctx, cyc, emly.Channel)
-	if err != nil {
-		u.notifySourcesUnreachable()
-		return err
-	}
-	u.sourcesUnreachableNotified = false
-
-	needUpdate, err := manifest.Less(emly.InstalledVersion, target.Version)
-	if err != nil {
-		return err
-	}
-	if !needUpdate {
-		u.Log.Debug("already on latest version", "installed", emly.InstalledVersion,
-			"target", target.Version, "channel", emly.Channel)
-		// Nothing pending, nothing needed: superseded setups can go.
-		_ = u.Downloads.CleanupExcept("")
-		return nil
-	}
-
-	forced, err := m.Forced(emly.InstalledVersion)
-	if err != nil {
-		return err
-	}
-
-	u.Log.InfoEvent(logging.EventUpdateFound, "update available",
-		"installed", emly.InstalledVersion, "target", target.Version,
-		"channel", emly.Channel, "forced", forced, "source", src.Name())
-
-	enabled, _ := cyc.eff.UpdaterEnabled(cyc.host.Now)
-	mc := wsclient.ManifestCheck{Target: "emly", Channel: emly.Channel, AvailableVersion: target.Version,
-		UpdateAvailable: true, Critical: forced, MinRequiredVersion: m.MinRequiredVersion,
-		Decision: emlyDecision(true, forced, u.emlyRunning(), !enabled),
-		Source: u.serverRef(cyc, sourceURL(src)), CheckedAt: u.clock().UTC().Format(time.RFC3339)}
-	if !emly.FreshInstall {
-		mc.InstalledVersion = emly.InstalledVersion
-	}
-	u.announceUpdate(mc)
-
-	u.progress = u.newProgressUI(false, target.Version)
-	defer u.endProgress()
-	setupPath, err := u.Downloads.Ensure(u.progress.watch(ctx), src, target)
-	if err != nil {
-		// A full download queue is the server pacing the fleet, not a
-		// failure: Ensure has already waited out what it could and logged
-		// each refusal, and the next cycle tries again.
-		if download.IsQueueFull(err) {
-			u.Log.Info("server download queue full, EMLy setup download retried next cycle",
-				"target", target.Version)
-			return nil
-		}
-		return fmt.Errorf("download/verification failed: %w", err)
-	}
-
-	p := &state.Pending{
-		Version:      target.Version,
-		SetupPath:    setupPath,
-		SHA256:       target.SHA256,
-		Forced:       forced,
-		DownloadedAt: time.Now().UTC(),
-	}
-	// Persist before applying so a crash/reboot at any later point resumes
-	// from the verified local file instead of re-downloading.
-	if err := u.Store.SetPending(p); err != nil {
-		u.Log.Warn("failed to persist pending update, continuing", "error", err.Error())
-	}
-
-	return u.apply(ctx, cyc, p, emly)
+	return u.productCycle(ctx, cyc, u.emlyProduct(cyc))
 }
 
 // newHTTPSource builds an HTTPSource for manifestURL with this machine's
@@ -795,261 +710,14 @@ func (u *Updater) resolveTargetWith(ctx context.Context, cyc *cycleState, channe
 	return src, m, target, nil
 }
 
-// apply installs a verified pending update according to EMLy's running state:
-// not running → install now; running and non-forced → wait for exit; running
-// and forced → optional WTS warning, then kill.
+// apply is applyProduct for EMLy.
 func (u *Updater) apply(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
-	// Coarse check, same reasoning as Cycle's own: apply is reached after
-	// resolveTarget/download, which can take a while, so a destructive
-	// command could have been committed since Cycle's own top-level check.
-	// install() (below, via beginInstall) is still the authoritative,
-	// race-safe checkpoint for the non-forced path - but the forced path
-	// kills EMLy before ever reaching install(), so it gets its own check
-	// too, right before the kill (see below): a user closing EMLy because
-	// of an unrelated reboot warning must not have the forced kill run
-	// anyway for an install that is about to be refused.
-	if u.destructivePendingNow() {
-		u.logDestructiveSkipOnce()
-		return nil
-	}
-
-	exe := u.Cfg.EMLyExeName
-
-	if process.IsRunning(exe) {
-		// The download is done and what follows - a countdown, or waiting
-		// for the user to close EMLy, possibly for hours - is no time to keep
-		// a window up that cannot be closed. install opens it again.
-		u.progress.close()
-		if p.Forced {
-			warning := cyc.eff.Doc.Updater.CriticalWarning
-			if warning.Enabled {
-				seconds := warning.Seconds
-				if notify.WarnCriticalUpdate(emly.Language, seconds) {
-					u.Log.Info("critical update warning shown, counting down",
-						"seconds", seconds, "language", emly.Language)
-					// Honor the full promised countdown even if the user
-					// dismisses the box early (notify returns immediately).
-					select {
-					case <-time.After(time.Duration(seconds) * time.Second):
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-				} else {
-					u.Log.Info("no active user session (console or RDP), skipping warning")
-				}
-			}
-			// Re-checked here, not just at the top of apply: the warning
-			// countdown above can run for cyc.eff.Doc.Updater.CriticalWarning
-			// .Seconds (default 30s) of real time, long enough for a
-			// destructive command to be admitted and committed while EMLy is
-			// still running and untouched. Killing it now would be for
-			// nothing - install() is about to refuse anyway.
-			if u.destructivePendingNow() {
-				u.logDestructiveSkipOnce()
-				return nil
-			}
-			killed, err := process.TerminateAll(exe)
-			if err != nil {
-				u.Log.Warn("terminating EMLy reported errors", "killed", killed, "error", err.Error())
-			}
-			u.Log.WarnEvent(logging.EventForcedKill, "terminated EMLy for forced update",
-				"instances", killed, "target", p.Version)
-		} else {
-			// Notify the user via MSGBox that EMLy will be updated after they exit, then wait for the process to exit.
-			msg := notify.Message{}
-			if emly.Language == "it" {
-				msg.Title = "EMLy - Aggiornamento sospeso"
-				msg.Body = "Un aggiornamento per EMLy è pronto per essere installato. Chiudere l'applicazione per completare l'aggiornamento."
-			} else {
-				msg.Title = "EMLy - Update Pending"
-				msg.Body = "An update for EMLy is ready to be installed. Please close the application to complete the update."
-			}
-			notify.SendNotifyBox(msg, 60)
-			u.Log.Info("EMLy is running and update is not forced - waiting for exit", "target", p.Version)
-			if err := process.WaitForExit(ctx, exe); err != nil {
-				// Context cancelled (service stop) or wait failure: the
-				// pending entry stays persisted and resumes next start.
-				return err
-			}
-			u.Log.Info("EMLy exited, proceeding with queued update", "target", p.Version)
-		}
-	}
-
-	return u.install(ctx, cyc, p, emly)
+	return u.applyProduct(ctx, cyc, u.emlyProduct(cyc), p, emlyState(emly))
 }
 
-// install runs the setup and the post-install steps. The pending entry is
-// cleared only after the new version is confirmed in EMLy's config.ini.
-//
-// The Updater's own decision about the correct version always wins over
-// whatever is already on disk: if a normal run doesn't leave config.ini
-// reporting p.Version - whether the setup itself failed, or it exited clean
-// but the version still doesn't match (e.g. EMLy's installer treating a
-// stale/inconsistent prior install as already up to date) - the existing
-// install is wiped with EMLy's own uninstaller and Run is retried once
-// against a clean slate, ignoring whatever state was there before.
-//
-// A same-bits retry cannot fix anything a matching checksum already
-// verified: if the cached setup itself is the problem (a stale or corrupt
-// local copy, or the manifest having briefly pointed at a bad build), running
-// it again just reproduces the same failure. So before the clean-install
-// retry, the cache entry is dropped and re-fetched fresh from the source;
-// only if that re-fetch cannot happen at all (e.g. offline) does the retry
-// fall back to the original local copy.
+// install is installProduct for EMLy.
 func (u *Updater) install(ctx context.Context, cyc *cycleState, p *state.Pending, emly config.EMLyInfo) error {
-	// Claims installing for the whole of this function - both setup runs,
-	// the forced redownload and the uninstall/reinstall clean-retry, not
-	// just the setup execution itself - so a destructive client command
-	// cannot be admitted mid-uninstall. This is also the checkpoint that
-	// stops a WaitForExit-released install (apply, above) from starting:
-	// the client channel may have accepted a reboot/restart while EMLy was
-	// still running and this cycle was waiting on it.
-	if !u.beginInstall("EMLy install") {
-		return fmt.Errorf("EMLy install skipped: a destructive client command is pending")
-	}
-	defer u.endInstall()
-
-	// from is the version installed before this attempt, omitted (empty) on
-	// a fresh install (spec §8.3): the 0.0.0 sentinel is an internal
-	// comparison value, not a version to report.
-	var from string
-	if !emly.FreshInstall {
-		from = emly.InstalledVersion
-	}
-
-	// Final integrity gate immediately before execution.
-	if err := download.VerifyFile(p.SetupPath, p.SHA256); err != nil {
-		// Corrupt cache: drop it so the next cycle re-downloads cleanly.
-		_ = os.Remove(p.SetupPath)
-		_ = u.Store.ClearPending()
-		u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
-			WillRetry: true, Error: &wsclient.ErrorBody{Code: "checksum_mismatch", Message: err.Error()}})
-		return fmt.Errorf("refusing to install: %w", err)
-	}
-
-	started := u.clock()
-	u.emit(wsclient.EvtUpdateStarted, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
-		Forced: p.Forced, Attempt: 1, Trigger: u.cycleTrigger})
-	u.progress.installing()
-
-	reinstalled := false
-	if err := u.runSetupAndVerify(p, "running setup"); err != nil {
-		u.Log.WarnEvent(logging.EventInstallFailed,
-			"EMLy did not reach the target version, forcing a clean reinstall over the existing state",
-			"version", p.Version, "error", err.Error())
-		reinstalled = true
-
-		if fresh, ferr := u.forceRedownload(ctx, cyc, p, emly.Channel); ferr != nil {
-			u.Log.Warn("could not force a fresh download for the clean-install retry, retrying with the cached copy",
-				"version", p.Version, "error", ferr.Error())
-		} else {
-			p = fresh
-		}
-
-		u.progress.installing() // back from the re-download's progress
-		if uerr := installer.Uninstall(u.Cfg.EMLyInstallDir, config.LogsDir()); uerr != nil {
-			// Best-effort: a failed cleanup is not itself a reason to give up
-			// on the reinstall (e.g. no uninstaller present at all).
-			u.Log.Warn("clean-install uninstall step reported an error, reinstalling anyway",
-				"version", p.Version, "error", uerr.Error())
-		}
-
-		if err := u.runSetupAndVerify(p, "running setup (clean install)"); err != nil {
-			u.Log.ErrorEvent(logging.EventInstallFailed, "EMLy clean install failed",
-				"version", p.Version, "error", err.Error())
-			u.emitUpdateFailed(updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
-				Attempt: 2, WillRetry: true, Error: &wsclient.ErrorBody{Code: installFailureCode(err), Message: err.Error()}})
-			return err // pending kept → retried next cycle
-		}
-	}
-
-	u.Log.InfoEvent(logging.EventInstallOK, "EMLy updated successfully", "version", p.Version)
-
-	attempt := 1
-	if reinstalled {
-		attempt = 2
-	}
-	u.emit(wsclient.EvtUpdateApplied, updateEvent{Target: "emly", FromVersion: from, ToVersion: p.Version,
-		Forced: p.Forced, Attempt: attempt, DurationMS: u.clock().Sub(started).Milliseconds(), Reinstalled: reinstalled})
-
-	u.progress.close() // before the toast, which says the same thing is over
-	u.showUpdateToast(p.Version)
-
-	if err := u.Store.ClearPending(); err != nil {
-		u.Log.Warn("failed to clear pending state", "error", err.Error())
-	}
-	if err := u.Downloads.CleanupExcept(p.Version); err != nil {
-		u.Log.Warn("failed to clean up old downloads", "error", err.Error())
-	}
-
-	// Association self-heal is a backstop; its failure must not fail the
-	// (already successful) update.
-	exePath := assoc.ExePath(u.Cfg.EMLyInstallDir, u.Cfg.EMLyExeName)
-	mappings := assoc.DefaultMappings(u.Cfg.ProgIDEml, u.Cfg.ProgIDMsg)
-	changed, err := assoc.Repair(exePath, mappings, func(format string, args ...any) {
-		u.Log.Info(fmt.Sprintf(format, args...))
-	})
-	if err != nil {
-		u.Log.Warn("file association repair failed", "error", err.Error())
-	} else if changed {
-		u.Log.InfoEvent(logging.EventAssocRepaired, "file associations repaired", "exe", exePath)
-	}
-
-	return nil
-}
-
-// forceRedownload wipes the downloads cache and the persisted state file
-// entirely, then re-resolves the manifest for channel and fetches whatever
-// it currently offers from scratch. A same-checksum cache hit can't be
-// trusted after a verified install still didn't land (stale local copy, or
-// the manifest briefly having pointed at a bad build), so nothing short of a
-// full wipe + fresh pull from the API guarantees clean bits. Returns the new,
-// persisted pending entry.
-func (u *Updater) forceRedownload(ctx context.Context, cyc *cycleState, p *state.Pending, channel string) (*state.Pending, error) {
-	if err := u.Downloads.CleanupExcept(""); err != nil {
-		u.Log.Warn("failed to fully clear the downloads cache before forcing a re-download",
-			"error", err.Error())
-	}
-	if err := u.Store.ClearPending(); err != nil {
-		u.Log.Warn("failed to clear state.json before forcing a re-download", "error", err.Error())
-	}
-
-	src, _, target, err := u.resolveTarget(ctx, cyc, channel)
-	if err != nil {
-		return nil, err
-	}
-
-	setupPath, err := u.Downloads.Ensure(u.progress.watch(ctx), src, target)
-	if err != nil {
-		return nil, fmt.Errorf("re-download failed: %w", err)
-	}
-
-	fresh := &state.Pending{
-		Version:      target.Version,
-		SetupPath:    setupPath,
-		SHA256:       target.SHA256,
-		Forced:       p.Forced,
-		DownloadedAt: time.Now().UTC(),
-	}
-	if err := u.Store.SetPending(fresh); err != nil {
-		u.Log.Warn("failed to persist re-downloaded pending update, continuing", "error", err.Error())
-	}
-	u.Log.Info("re-downloaded setup for clean-install retry", "version", fresh.Version, "path", fresh.SetupPath)
-	return fresh, nil
-}
-
-// runSetupAndVerify runs EMLy's setup for p and confirms config.ini now
-// reports p.Version. label distinguishes the first attempt from the
-// clean-install retry in the logs.
-// installing is claimed by the caller (install, above) for its whole
-// duration - both attempts, plus the redownload/uninstall between them -
-// not by this function per call.
-func (u *Updater) runSetupAndVerify(p *state.Pending, label string) error {
-	u.Log.Info(label, "path", p.SetupPath, "version", p.Version)
-	if err := installer.Run(p.SetupPath, p.Version, config.LogsDir()); err != nil {
-		return err
-	}
-	return installer.VerifyInstalled(u.Cfg.EMLyConfigFile, p.Version)
+	return u.installProduct(ctx, cyc, u.emlyProduct(cyc), p, emlyState(emly))
 }
 
 // ensureCertificate installs the 3gIT code-signing certificate into the

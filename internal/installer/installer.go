@@ -48,19 +48,6 @@ func For(s Spec) Driver {
 	}
 }
 
-// Run installs EMLy through the Inno driver. Kept for the current EMLy call
-// sites; removed once the service drives products through For.
-func Run(setupPath, version, logsDir string) error {
-	return For(Spec{Slug: "emly", Type: "inno", LogsDir: logsDir, ForceUpgrade: true}).Install(setupPath, version)
-}
-
-// Uninstall runs EMLy's uninstaller through the Inno driver. Kept for the
-// current EMLy call sites; removed once the service drives products through
-// For.
-func Uninstall(installDir, logsDir string) error {
-	return For(Spec{Slug: "emly", Type: "inno", InstallDir: installDir, LogsDir: logsDir}).Uninstall()
-}
-
 // runSilent starts cmd hidden, waits for it to exit, and translates the
 // result into an error. logPath names where the setup wrote its own log, for
 // the error message; "" when it writes none.

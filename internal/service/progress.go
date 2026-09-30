@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"emlyupdater/internal/assoc"
 	"emlyupdater/internal/notify"
+	"emlyupdater/internal/product"
 	"emlyupdater/internal/progresswin"
 	"emlyupdater/internal/source"
 	"emlyupdater/internal/version"
@@ -54,6 +56,18 @@ func (u *Updater) newProgressUI(self bool, target string) *progressUI {
 		p.iconPath = "" // the helper falls back to its own icon: this binary's
 	}
 	return p
+}
+
+// newProductProgressUI is newProgressUI for any product: EMLy keeps its own
+// window, every other product gets its name and its executable's icon.
+func (u *Updater) newProductProgressUI(p *product.Product, target string) *progressUI {
+	ui := u.newProgressUI(false, target)
+	if ui == nil || p.Legacy {
+		return ui
+	}
+	ui.product = p.Name
+	ui.iconPath = filepath.Join(p.InstallDir, p.ExeName)
+	return ui
 }
 
 // download is a source.ProgressFunc.
@@ -173,7 +187,7 @@ func (p *progressUI) installText() (heading, detail string) {
 	if p.self {
 		return heading, "Attendere il completamento. EMLy resta utilizzabile."
 	}
-	return heading, "Attendere il completamento. EMLy non è disponibile fino al termine."
+	return heading, fmt.Sprintf("Attendere il completamento. %s non è disponibile fino al termine.", p.product)
 }
 
 // formatMB renders n bytes as megabytes with one decimal and a decimal comma.

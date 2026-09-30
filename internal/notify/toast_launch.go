@@ -151,3 +151,12 @@ func enablePrivilege(name string) error {
 	}
 	return nil
 }
+
+// ProductUpdatedMessage is the update-complete toast for a product other than
+// EMLy. Italian only.
+func ProductUpdatedMessage(name, version string) Message {
+	return Message{
+		Title: name + " aggiornato",
+		Body:  fmt.Sprintf("%s è stato aggiornato alla versione %s.", name, version),
+	}
+}

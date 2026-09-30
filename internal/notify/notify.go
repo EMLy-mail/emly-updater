@@ -50,32 +50,21 @@ var messages = map[string]Message{
 	},
 }
 
-// WarnCriticalUpdate shows the countdown warning in the user's session
-// (viewerSession) and returns true when a box was actually displayed. It does NOT
-// sleep: the box is sent with bWait=FALSE and auto-dismisses after `seconds`,
-// while the caller owns the full countdown - that way the promised N seconds
-// elapse even if the user clicks OK immediately.
-//
-// Returns false (warn skipped) when no user session is active: nobody is
-// looking, so the caller may kill immediately.
-func WarnCriticalUpdate(lang string, seconds int) bool {
+// formatBody applies seconds to body only when body has a verb for it.
+func formatBody(body string, seconds int) string {
+	if strings.Contains(body, "%") {
+		return fmt.Sprintf(body, seconds)
+	}
+	return body
+}
+
+// sendBox shows title/body in the viewer session without waiting, the box
+// auto-dismissing after seconds. False when nobody is at the machine.
+func sendBox(title, body string, seconds int) bool {
 	session, ok := viewerSession()
 	if !ok {
 		return false
 	}
-
-	msg, ok := messages[lang]
-	if !ok {
-		msg = messages["en"]
-	}
-	title := msg.Title
-	var body string
-	if strings.Contains(msg.Body, "%") {
-		body = fmt.Sprintf(msg.Body, seconds)
-	} else {
-		body = msg.Body
-	}
-
 	titleU16, err := windows.UTF16FromString(title)
 	if err != nil {
 		return false
@@ -84,7 +73,6 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 	if err != nil {
 		return false
 	}
-
 	var response uint32
 	// Title/message lengths are in BYTES, excluding the NUL terminator.
 	// bWait=FALSE: return immediately; Timeout still auto-dismisses the box.
@@ -103,38 +91,47 @@ func WarnCriticalUpdate(lang string, seconds int) bool {
 	return ret != 0
 }
 
-func SendNotifyBox(msg Message, seconds int) bool {
-	session, ok := viewerSession()
+// WarnCriticalUpdate shows the countdown warning in the user's session
+// (viewerSession) and returns true when a box was actually displayed. It does NOT
+// sleep: the box is sent with bWait=FALSE and auto-dismisses after `seconds`,
+// while the caller owns the full countdown - that way the promised N seconds
+// elapse even if the user clicks OK immediately.
+//
+// Returns false (warn skipped) when no user session is active: nobody is
+// looking, so the caller may kill immediately.
+func WarnCriticalUpdate(lang string, seconds int) bool {
+	msg, ok := messages[lang]
 	if !ok {
-		return false
+		msg = messages["en"]
 	}
+	return sendBox(msg.Title, formatBody(msg.Body, seconds), seconds)
+}
 
-	title := msg.Title
-	body := fmt.Sprintf(msg.Body, seconds)
+func SendNotifyBox(msg Message, seconds int) bool {
+	return sendBox(msg.Title, formatBody(msg.Body, seconds), seconds)
+}
 
-	titleU16, err := windows.UTF16FromString(title)
-	if err != nil {
-		return false
+// CriticalUpdateProductMessage is the critical-update countdown warning for a
+// product other than EMLy. Italian only, like the progress window. %d is the
+// countdown in seconds.
+func CriticalUpdateProductMessage(name string) Message {
+	return Message{
+		Title: name + " - Aggiornamento critico",
+		Body:  name + " verrà chiuso tra %d secondi per installare un aggiornamento critico.\n\nSi prega di salvare il proprio lavoro.",
 	}
-	bodyU16, err := windows.UTF16FromString(body)
-	if err != nil {
-		return false
-	}
+}
 
-	var response uint32
-	// Title/message lengths are in BYTES, excluding the NUL terminator.
-	// bWait=FALSE: return immediately; Timeout still auto-dismisses the box.
-	ret, _, _ := procWTSSendMessage.Call(
-		wtsCurrentServerHandle,
-		uintptr(session),
-		uintptr(unsafe.Pointer(&titleU16[0])),
-		uintptr((len(titleU16)-1)*2),
-		uintptr(unsafe.Pointer(&bodyU16[0])),
-		uintptr((len(bodyU16)-1)*2),
-		uintptr(mbOK|mbIconWarning|mbSetForeground|mbTopMost),
-		uintptr(seconds),
-		uintptr(unsafe.Pointer(&response)),
-		0, // bWait = FALSE
-	)
-	return ret != 0
+// WarnCriticalUpdateProduct is WarnCriticalUpdate for a product other than EMLy.
+func WarnCriticalUpdateProduct(name string, seconds int) bool {
+	msg := CriticalUpdateProductMessage(name)
+	return sendBox(msg.Title, formatBody(msg.Body, seconds), seconds)
+}
+
+// ProductWaitingMessage tells the user an update is waiting for them to close
+// a product other than EMLy.
+func ProductWaitingMessage(name string) Message {
+	return Message{
+		Title: name + " - Aggiornamento in attesa",
+		Body:  "Un aggiornamento di " + name + " è pronto. Chiudere l'applicazione per completarlo.",
+	}
 }

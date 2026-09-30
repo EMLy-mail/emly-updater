@@ -79,6 +79,10 @@ func readSource(src VersionSource, path string) (string, error) {
 	switch src.Type {
 	case SourceINI:
 		return readINI(path, src.Section, src.Key)
+	case SourceFile:
+		return readVersionFile(path)
+	case SourceExe:
+		return readExeVersion(path)
 	}
 	return "", fmt.Errorf("unknown version source type %q", src.Type)
 }
@@ -105,4 +109,20 @@ func checkVersion(v string) (string, error) {
 		return "", fmt.Errorf("version %q is not parsable: %w", v, err)
 	}
 	return v, nil
+}
+
+// readVersionFile returns the first line of a plain-text version file,
+// without a UTF-8 BOM and surrounding whitespace.
+func readVersionFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	text := strings.TrimPrefix(string(data), "\xEF\xBB\xBF")
+	line, _, _ := strings.Cut(text, "\n")
+	v := strings.TrimSpace(line)
+	if v == "" {
+		return "", fmt.Errorf("%s is empty", path)
+	}
+	return checkVersion(v)
 }

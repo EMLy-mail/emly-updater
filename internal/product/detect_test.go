@@ -103,3 +103,63 @@ func TestResultString(t *testing.T) {
 		t.Errorf("String() = %q", r.String())
 	}
 }
+
+// version.txt as a Windows setup writes it: UTF-8 BOM, CRLF, trailing newline.
+func TestDetectFileStripsBOMAndLineEndings(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "version.txt", "\xEF\xBB\xBF1.0.0\r\n")
+	r := Detect(&Product{InstallDir: dir, Detect: []VersionSource{{Type: SourceFile, Path: "version.txt"}}})
+	if r.Outcome != Installed || r.Version != "1.0.0" {
+		t.Fatalf("got %+v, want installed 1.0.0", r)
+	}
+}
+
+func TestDetectEmptyFileIsUnknown(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "version.txt", "\r\n")
+	if r := Detect(&Product{InstallDir: dir, Detect: []VersionSource{{Type: SourceFile, Path: "version.txt"}}}); r.Outcome != Unknown {
+		t.Fatalf("got %+v, want unknown", r)
+	}
+}
+
+// RocketChat's chain today: version.txt first, the (stale) config.ini
+// version only when version.txt is gone.
+func TestDetectFileBeforeINI(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "version.txt", "1.1.0\n")
+	write(t, dir, "config.ini", "[app]\nversion = 1.0.0\n")
+	chain := []VersionSource{{Type: SourceFile, Path: "version.txt"}, iniSource("config.ini")}
+	if r := Detect(&Product{InstallDir: dir, Detect: chain}); r.Version != "1.1.0" {
+		t.Fatalf("got %+v, want 1.1.0 from version.txt", r)
+	}
+	_ = os.Remove(filepath.Join(dir, "version.txt"))
+	if r := Detect(&Product{InstallDir: dir, Detect: chain}); r.Version != "1.0.0" || r.Source != "ini:config.ini" {
+		t.Fatalf("got %+v, want 1.0.0 from the ini once version.txt is gone", r)
+	}
+}
+
+// notepad.exe carries VERSIONINFO on every Windows install.
+func TestDetectExeReadsVersionInfo(t *testing.T) {
+	sys := os.Getenv("SystemRoot")
+	if sys == "" {
+		sys = `C:\Windows`
+	}
+	p := &Product{InstallDir: filepath.Join(sys, "System32"), Detect: []VersionSource{{Type: SourceExe, Path: "notepad.exe"}}}
+	r := Detect(p)
+	if r.Outcome != Installed || strings.Count(r.Version, ".") != 3 {
+		t.Fatalf("got %+v, want installed a.b.c.d", r)
+	}
+}
+
+// An exe without VERSIONINFO exists but says nothing: unknown, like the
+// current 3g-RocketChat.exe. The test binary itself has none.
+func TestDetectExeWithoutVersionInfoIsUnknown(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Product{InstallDir: filepath.Dir(self), Detect: []VersionSource{{Type: SourceExe, Path: filepath.Base(self)}}}
+	if r := Detect(p); r.Outcome != Unknown {
+		t.Fatalf("got %+v, want unknown", r)
+	}
+}

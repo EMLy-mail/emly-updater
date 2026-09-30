@@ -617,11 +617,13 @@ func (u *Updater) newHTTPSource(manifestURL string) *source.HTTPSource {
 // versions, not a release the API should record as installed, and a missing
 // header leaves the stored value untouched.
 //
-// inventory is the complete product list, today EMLy only. It is nil - no
-// header - when detection failed, and an empty non-nil map only when EMLy is
-// positively absent (its config.ini does not exist): the API treats the
-// inventory as authoritative and an empty one sent by mistake drops the
-// machine from the dashboard. EMLy is listed with the same GUI_SEMVER value
+// inventory is the complete product list - EMLy plus every product of the
+// document, enabled or not (enabled turns updates off, not dashboard visibility).
+// It is nil - no header - when detection failed, and an empty non-nil map only
+// when all products are positively absent: the API treats the inventory as
+// authoritative and an empty one sent by mistake drops the machine from the
+// dashboard. One unreadable product voids the whole inventory, which is complete
+// by definition. EMLy is listed with the same GUI_SEMVER value
 // X-EMLy-AppVersion carries, never as 0.0.0.
 func (u *Updater) installedProducts() (emlyVersion string, inventory map[string]string) {
 	version, err := u.Cfg.DetectEMLy()
@@ -631,6 +633,21 @@ func (u *Updater) installedProducts() (emlyVersion string, inventory map[string]
 	inventory = map[string]string{}
 	if version != "" {
 		inventory[ProductEMLy] = version
+	}
+	var cyc *cycleState
+	if u.Policy != nil {
+		cyc = u.current()
+	}
+	for _, p := range u.documentProducts(cyc, false) {
+		r := product.Detect(p)
+		switch r.Outcome {
+		case product.Installed:
+			inventory[p.Slug] = r.Version
+		case product.Unknown:
+			// The inventory is complete by definition: leaving this product
+			// out would report it uninstalled. Send nothing instead.
+			return version, nil
+		}
 	}
 	return version, inventory
 }

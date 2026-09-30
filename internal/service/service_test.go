@@ -78,3 +78,29 @@ func TestInstalledProductsForHeaders(t *testing.T) {
 		t.Errorf("unreadable: got (%q, %#v), want (\"\", nil)", version, inv)
 	}
 }
+
+// Every product of the document is reported - disabled ones too: enabled
+// turns updates off, not dashboard visibility. One unreadable product voids
+// the whole inventory, which is complete by definition.
+func TestInstalledProductsCoversDocumentProducts(t *testing.T) {
+	srv := newProductServer(t)
+	h := newProductHarness(t, srv)
+	s := h.u.Policy.Current().Parsed.Global.Products[rcSlug]
+	s.Enabled = false
+	h.u.Policy.Current().Parsed.Global.Products[rcSlug] = s
+
+	_, inv := h.u.installedProducts()
+	if inv["emly"] != "2.0.0" || inv[rcSlug] != "1.0.0" {
+		t.Fatalf("inventory = %v, want emly 2.0.0 and %s 1.0.0", inv, rcSlug)
+	}
+
+	_ = os.WriteFile(filepath.Join(h.rcDir, "version.txt"), []byte("not-a-version"), 0o644)
+	if _, inv := h.u.installedProducts(); inv != nil {
+		t.Fatalf("inventory with an unknown product = %v, want nil", inv)
+	}
+
+	_ = os.Remove(filepath.Join(h.rcDir, "version.txt"))
+	if _, inv := h.u.installedProducts(); inv == nil || len(inv) != 1 || inv["emly"] != "2.0.0" {
+		t.Fatalf("inventory with the product absent = %v, want only emly", inv)
+	}
+}

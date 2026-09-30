@@ -1,9 +1,11 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -295,5 +297,75 @@ func TestConcurrentWritesUnderRace(t *testing.T) {
 	// the one Remove took effect: commands-1 pending commands remain.
 	if len(st.PendingCommands) != commands-1 {
 		t.Fatalf("pending commands = %d, want %d: %+v", len(st.PendingCommands), commands-1, st.PendingCommands)
+	}
+}
+
+// EMLy's pending entry stays in the historical "pending" field and every
+// other product goes under "products": an agent rolled back to a build that
+// predates products still finds (and resumes) EMLy's queued install.
+func TestPendingForKeepsEMLyInTheLegacyField(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	emly := &Pending{Version: "2.3.0", SetupPath: `C:\x\EMLy-2.3.0-setup.exe`, SHA256: "aa"}
+	rc := &Pending{Version: "1.1.0", SetupPath: `C:\x\3g-rocketchat-1.1.0-setup.exe`, SHA256: "bb", Attempts: 1}
+	if err := s.SetPendingFor(LegacySlug, emly); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPendingFor("3g-rocketchat", rc); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(s.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// What a pre-products build decodes: only the fields it knows.
+	var old struct {
+		Pending *struct {
+			Version string `json:"version"`
+		} `json:"pending"`
+	}
+	if err := json.Unmarshal(data, &old); err != nil {
+		t.Fatalf("old build cannot decode state.json: %v", err)
+	}
+	if old.Pending == nil || old.Pending.Version != "2.3.0" {
+		t.Fatalf("old build sees pending = %+v, want EMLy 2.3.0", old.Pending)
+	}
+	if strings.Contains(string(data), `"attempts": 0`) || strings.Contains(string(data), `"gaveUp": false`) {
+		t.Errorf("zero attempts/gaveUp must be omitted, got:\n%s", data)
+	}
+
+	got, err := s.PendingFor("3g-rocketchat")
+	if err != nil || got == nil || got.Version != "1.1.0" || got.Attempts != 1 {
+		t.Fatalf("PendingFor(3g-rocketchat) = %+v, %v", got, err)
+	}
+	if got, _ := s.PendingFor(LegacySlug); got == nil || got.Version != "2.3.0" {
+		t.Fatalf("PendingFor(emly) = %+v", got)
+	}
+}
+
+func TestClearPendingForTouchesOnlyThatSlug(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	_ = s.SetPending(&Pending{Version: "2.3.0"})
+	_ = s.SetPendingFor("3g-rocketchat", &Pending{Version: "1.1.0"})
+
+	if err := s.ClearPendingFor("3g-rocketchat"); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.Load()
+	if st.Pending == nil || st.Products != nil {
+		t.Fatalf("after clearing the product: pending=%+v products=%+v", st.Pending, st.Products)
+	}
+	if err := s.ClearPendingFor(LegacySlug); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := s.Load(); st.Pending != nil {
+		t.Fatalf("EMLy pending not cleared: %+v", st.Pending)
+	}
+}
+
+func TestPendingForUnknownSlugIsNil(t *testing.T) {
+	s := &Store{Path: filepath.Join(t.TempDir(), "state.json")}
+	if p, err := s.PendingFor("nothing"); p != nil || err != nil {
+		t.Fatalf("PendingFor on empty state = %+v, %v", p, err)
 	}
 }

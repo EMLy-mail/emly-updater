@@ -22,6 +22,11 @@ type Pending struct {
 	SHA256       string    `json:"sha256"`
 	Forced       bool      `json:"forced"`
 	DownloadedAt time.Time `json:"downloadedAt"`
+	// Attempts and GaveUp cap how often a product other than EMLy retries a
+	// failing target version (spec §6.2). Always zero for EMLy, whose entry
+	// is therefore byte-identical to the pre-products format.
+	Attempts int  `json:"attempts,omitempty"`
+	GaveUp   bool `json:"gaveUp,omitempty"`
 }
 
 // SelfUpdate records an updater release whose setup has been handed off to
@@ -57,20 +62,28 @@ type PendingCommand struct {
 	AcceptedAt time.Time `json:"acceptedAt"`
 }
 
+// LegacySlug is EMLy's product slug. Its pending entry lives in State.Pending,
+// the field every build before multi-product reads; must equal
+// product.EMLySlug (this package stays a leaf and does not import it).
+const LegacySlug = "emly"
+
 // State is the on-disk document. Kept as a struct (not a bare Pending) so
 // future fields can be added without a format break.
 type State struct {
 	Pending         *Pending         `json:"pending,omitempty"`
 	SelfUpdate      *SelfUpdate      `json:"selfUpdate,omitempty"`
 	PendingCommands []PendingCommand `json:"pendingCommands,omitempty"`
+	// Products holds the pending entry of every product other than EMLy,
+	// keyed by slug. A build that predates it ignores the field.
+	Products map[string]*Pending `json:"products,omitempty"`
 }
 
 // Store reads and writes the state file.
 //
-// state.json holds three independent lifecycles - EMLy's pending update, the
-// updater's own self-update record, and the client channel's pending
-// destructive commands - each written by a different part of a cycle: the
-// welcome-burst goroutine (TakePendingCommands), the command goroutines
+// state.json holds three independent lifecycles - EMLy's and every product's
+// queued update, the updater's own self-update record, and the client channel's
+// pending destructive commands - each written by a different part of a cycle:
+// the welcome-burst goroutine (TakePendingCommands), the command goroutines
 // (Add/RemovePendingCommand) and the poll goroutine (SetPending/
 // SetSelfUpdate/ClearPending/ClearSelfUpdate) can all be in flight at once.
 // mu serialises every read-modify-write (and a bare Load/Save) so two calls
@@ -161,14 +174,50 @@ func (s *Store) saveLocked(st *State) error {
 	return nil
 }
 
-// SetPending persists p as the pending update.
-func (s *Store) SetPending(p *Pending) error {
-	return s.update(func(st *State) { st.Pending = p })
+// SetPending persists p as EMLy's pending update.
+func (s *Store) SetPending(p *Pending) error { return s.SetPendingFor(LegacySlug, p) }
+
+// ClearPending removes EMLy's pending update.
+func (s *Store) ClearPending() error { return s.ClearPendingFor(LegacySlug) }
+
+// PendingFor returns slug's pending update, nil when there is none.
+func (s *Store) PendingFor(slug string) (*Pending, error) {
+	st, err := s.Load()
+	if err != nil {
+		return nil, err
+	}
+	if slug == LegacySlug {
+		return st.Pending, nil
+	}
+	return st.Products[slug], nil
 }
 
-// ClearPending removes any pending update.
-func (s *Store) ClearPending() error {
-	return s.update(func(st *State) { st.Pending = nil })
+// SetPendingFor persists p as slug's pending update.
+func (s *Store) SetPendingFor(slug string, p *Pending) error {
+	return s.update(func(st *State) {
+		if slug == LegacySlug {
+			st.Pending = p
+			return
+		}
+		if st.Products == nil {
+			st.Products = map[string]*Pending{}
+		}
+		st.Products[slug] = p
+	})
+}
+
+// ClearPendingFor removes slug's pending update.
+func (s *Store) ClearPendingFor(slug string) error {
+	return s.update(func(st *State) {
+		if slug == LegacySlug {
+			st.Pending = nil
+			return
+		}
+		delete(st.Products, slug)
+		if len(st.Products) == 0 {
+			st.Products = nil
+		}
+	})
 }
 
 // SetSelfUpdate persists su as the self-update in flight.
@@ -207,14 +256,14 @@ func (s *Store) TakePendingCommands() ([]PendingCommand, error) {
 // interleave with it (see the Store doc comment).
 //
 // Read-modify-write, not a wholesale overwrite: the document holds three
-// independent lifecycles - EMLy's queued update, the updater's own
-// self-update record, and the client channel's pending destructive commands
-// (PendingCommands) - and each is touched by a different part of a cycle.
-// Saving a freshly built State from any one side would silently drop the
-// others' entries, losing a queued EMLy install, the record that tells the
-// next start whether a self-update landed, or a service.restart/
-// machine.reboot id a redelivered command still needs to be recognised
-// against.
+// independent lifecycles - EMLy's and every product's queued update, the
+// updater's own self-update record, and the client channel's pending
+// destructive commands (PendingCommands) - and each is touched by a
+// different part of a cycle. Saving a freshly built State from any one side
+// would silently drop the others' entries, losing a queued EMLy or product
+// install, the record that tells the next start whether a self-update
+// landed, or a service.restart/machine.reboot id a redelivered command
+// still needs to be recognised against.
 //
 // A missing file is treated as empty (loadLocked already reports that case
 // as State{}, nil error). A file that exists but does not parse is moved

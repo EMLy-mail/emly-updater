@@ -27,7 +27,8 @@ iscc installer\installer.iss
 
 ```
 main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug) | show-toast (internal, see notify/) |
-                         restart-service (internal: detached stop+start for the client channel's service.restart, see service/clientpower.go)
+                         restart-service (internal: detached stop+start for the client channel's service.restart, see service/clientpower.go) |
+                         products [--check] (read-only: detection, pending and attempts per product; --check also asks the manifest, never downloads)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
@@ -56,7 +57,12 @@ internal/
                          pacer.go waits out the server's 429s (Retry-After + jitter)
   authenticode/          WinVerifyTrust + signer-thumbprint pinning, for the updater's own setup
   selfupdate/            The self-update rules (Reconcile/Decide, pure) + the detached setup launch
-  installer/             Runs InnoSetup /VERYSILENT and verifies via EMLy's config.ini
+  product/               What a product is, with no network I/O: Product (slug, InstallDir, ExeName,
+                         channel, Installer spec, Legacy) and Detect, the closed `ini`/`file`/`exe`
+                         version-source chain with three outcomes (installed / absent / unknown)
+  installer/             Silent setup drivers behind `Driver` (`For(Spec)`): `inno` (EMLy,
+                         /VERYSILENT + /FORCEUPGRADE) and `nsis` (`/S /D=<dir>`, uninstall
+                         `uninstall.exe /S _?=<dir>`); CheckNotUserWritable gates every uninstaller
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
                          remoteconfig.go fetches/validates/caches the policy document and builds the
                          IPC view; sourcepolicy.go matches the machine to a site every cycle and
@@ -67,7 +73,10 @@ internal/
                          (service.started, machine.info, session.changed payloads); clientnotify.go
                          turns release.published/config.published into a jittered RunLoop wake;
                          clientpower.go is service.restart/machine.reboot's admission, destructivePending
-                         state machine and execution (internal/power)
+                         state machine and execution (internal/power);
+                         product.go/products.go are the per-product engine (installProduct, driverFor,
+                         the sequential round cycleProducts, unavailable/attempt bookkeeping);
+                         report.go backs the `products` subcommand
   state/                 state.json: pending update entry, written atomically, survives reboots
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session;
@@ -117,8 +126,8 @@ Read this before designing anything that moves bytes over the network.
 ## Product name vs. technical identifiers
 
 The product is called **AryxD Agent**: the distribution, monitoring and
-management agent for 3gIT's supported products, of which EMLy is today the only
-one. The rename is **display-only**. Every name another component or an
+management agent for 3gIT's supported products: EMLy, plus any other product the
+remote configuration's `products` section describes (see *Products other than EMLy*). The rename is **display-only**. Every name another component or an
 existing install relies on keeps the old `EMLyUpdater` spelling, and must not
 be renamed without a coordinated migration:
 
@@ -199,18 +208,79 @@ EMLy is a product it distributes.
   inventory and decides from it which dashboard users see the machine: nil
   sends no header ("unknown"), an empty non-nil map sends an **empty header**
   ("nothing installed", every product dropped). `Updater.installedProducts`
-  builds it from the same `config.ini` read as `X-EMLy-AppVersion`, through
-  `Cfg.DetectEMLy`, which - unlike `ResolveEMLy` - tells "config.ini does not
-  exist" (EMLy absent, `{}`) apart from "exists but unreadable / no
-  `GUI_SEMVER`" (unknown, nil). Never collapse the two: an empty inventory sent
+  runs `product.Detect` on EMLy **and on every product in the document, enabled
+  or not**; `installed(v)` goes in the map, `absent` stays out, and **one single
+  `unknown` makes the whole result nil** (no header), because an inventory that
+  omits a product reads as that product being uninstalled. For EMLy the chain is
+  one `ini` read of `config.ini` and, unlike `ResolveEMLy`, tells "config.ini
+  does not exist" (EMLy absent) apart from "exists but unreadable / no
+  `GUI_SEMVER`" (unknown). Never collapse the two: an empty inventory sent
   by mistake removes the machine from its owners' dashboard. EMLy is listed
   under slug `emly` with its `GUI_SEMVER`, never `0.0.0`. The WS `identity`
   carries the same inventory as `installed_products`, a `*map[string]string`
   so `{}` survives `omitempty`. Not to be confused with `X-EMLy-Product`
-  (firmware SKU). Products other than EMLy (`/v2/updates/{slug}/…`) are
-  updated in `Cycle`'s sequential round (`cycleProducts`, `products.go`):
-  enabled document products by slug, EMLy always last because it can block
-  on `WaitForExit`; only EMLy's error fails the cycle.
+  (firmware SKU). `X-EMLy-AppVersion` still reports EMLy only.
+- **Products other than EMLy are data, EMLy is the implicit product** -
+  the document's `products` section (`internal/policy/products.go`, keyed by
+  slug, `emly` forbidden, patchable by overrides, shared fixtures under
+  `testdata/remoteconfig/` like everything else in the document) defines them;
+  `product.Product` is what the engine works on. The design is
+  `docs/superpowers/specs/2026-09-30-multi-product-agent-design.md`.
+  - **One sequential round per cycle** (`cycleProducts`, `products.go`):
+    enabled document products sorted by slug, **EMLy last** because it is the
+    one that can block on `WaitForExit` and must not delay the others. The
+    destructive gate is re-checked before each product, the cycle trigger is
+    reset per product, and only EMLy's error fails the cycle - a generic
+    product's error is logged and the round moves on. Never two downloads or
+    two setups at once on a machine.
+  - **`Legacy` is what makes EMLy EMLy**: file-association repair after the
+    install, localized critical warning and "app open" messages (`LANGUAGE`
+    from EMLy's config.ini; other products are Italian only, like the progress
+    window), the channel from EMLy's config.ini with `updater.channelOverride`
+    winning, fresh install when absent, blocking `WaitForExit`, the clean
+    retry with uninstall on every cycle with no attempt cap, `/FORCEUPGRADE`,
+    the `update.*` WS events with `target: "emly"`, and the historical manifest
+    path `/v2/updates/manifest`. A generic product gets none of these.
+  - **Detection has three outcomes and only `installed` can lead to an
+    install.** The chain is tried in order: a source whose file is missing
+    falls through to the next; the first `installed(v)` wins; if a source
+    exists but is broken (unreadable, no key, unparsable) and no later one
+    answers, the result is `unknown`, **not** `absent`. `absent` means every
+    source was missing. `unknown` skips the product (one Warn per session) and
+    silences the inventory; it never installs, so a transient read error cannot
+    trigger a reinstall over live data. `installWhenAbsent` defaults to false:
+    a product is only updated where it already is.
+  - **`enabled` switches updates, not detection.** A disabled product is still
+    detected and still in the inventory, so the dashboard keeps showing it.
+  - **Not blocking when the app is open.** A generic product whose exe is
+    running keeps its pending entry and the round goes on; the user gets one
+    "update pending" notification per version (in-memory set, recorded only
+    when a box was actually shown, so nobody-logged-on retries next cycle) and
+    the next cycle installs once the app is closed. A forced update still
+    warns and terminates, like EMLy.
+  - **A 404 or an empty release means "nothing for this product", not an
+    error**: the product is marked unavailable for 6 hours, in memory, with a
+    single Info line. For products the chain gets `defaultServer` appended
+    before concluding, since a site's server may simply not have the product's
+    manifest yet. EMLy's 404 behaviour is unchanged.
+  - **Three failed attempts per version and the agent stops** (products only):
+    `attempts`/`gaveUp` in `state.json`, one Error log, and the product is left
+    alone until the manifest offers a **different** version, which resets the
+    count - the same scheme as `selfUpdate`. EMLy keeps retrying every cycle.
+  - **`cleanReinstall` defaults to false**, and the second attempt then
+    re-downloads and re-runs the setup *without* uninstalling. An NSIS
+    uninstaller typically removes `$INSTDIR`; for 3g-RocketChat that would
+    delete the IT-managed `config.ini` (recreated from defaults by the setup)
+    and the user's `data\`. Turn it on per product only when the installer is
+    known to keep user data. EMLy always does the clean retry.
+  - **`state.json` layout**: EMLy's pending entry stays in the historical
+    `pending` field, byte-identical to before, so rolling the agent back does
+    not lose a downloaded EMLy install; every other product is in `products`,
+    per slug, with `attempts`/`gaveUp`. An older agent ignores `products`.
+  - **Download managers**: one per product in the same `downloads\` directory,
+    distinguished by `Prefix` (`<slug>-`), sharing the single `Pacer`.
+    `service.Updater.install` is a thin wrapper over `installProduct`
+    (`internal/service/product.go`).
 - **The presence channel is off until a document turns it on, and follows the
   same server the poll does** — `internal/wsclient` holds one WebSocket open
   to `GET /v2/client/ws` on `cyc.chain[0]`, the very server `beginCycle`
@@ -355,7 +425,7 @@ EMLy is a product it distributes.
 - **ProgramData survives uninstall** - `cmdUninstall` deletes the service but never removes `%ProgramData%\EMLyUpdater`. The InnoSetup `[UninstallRun]` block does the same.
 - **Exe-dir log is preserved on uninstall** - `cmdUninstall` copies `<ExeDir>\updater.log` to `%ProgramData%\EMLyUpdater\logs\updater-final.log` before the InnoSetup uninstaller can delete the exe directory.
 - **SHA256 is mandatory** - a setup whose checksum is missing or wrong is never executed. This applies to resumed pending installs too (re-verified before use).
-- **The Updater's target version always wins over what's already installed** - `Updater.install` (`internal/service/service.go`) trusts `installer.VerifyInstalled` (config.ini's `GUI_SEMVER`), not the setup's own exit code. If a run doesn't leave config.ini reporting the target version - setup failure or a clean exit that still doesn't match (e.g. EMLy's installer treating a stale/inconsistent prior install as already current) - `installer.Uninstall` wipes the existing install via EMLy's own `unins*.exe` (best-effort; a missing uninstaller is not an error) and the setup is retried once against a clean slate. Still mismatched after that → the pending entry stays and the whole thing (including the uninstall/reinstall) is retried on the next poll cycle.
+- **The Updater's target version always wins over what's already installed** - `installProduct` (`internal/service/product.go`; `Updater.install` is a thin wrapper for EMLy) trusts the product's `Detect` chain (for EMLy, config.ini's `GUI_SEMVER`; the required result is `installed(v)` with `v >= target`), not the setup's own exit code. If a run doesn't leave the chain reporting the target version - setup failure or a clean exit that still doesn't match (e.g. EMLy's installer treating a stale/inconsistent prior install as already current; NSIS can also exit 0 on a partial failure) - the retry depends on the product: EMLy, and any product with `cleanReinstall`, wipes the existing install through `driverFor(p).Uninstall()` (EMLy's own `unins*.exe`, or NSIS's `uninstall.exe`; best-effort, a missing uninstaller is not an error) and runs the setup once against a clean slate; other products skip the uninstall and only re-download and re-run the setup. The uninstall step is additionally refused, with a Warn, when `installer.CheckNotUserWritable` does not pass (see Common Pitfalls); the reinstall proceeds without it. Still mismatched after that → the pending entry stays and the whole thing is retried on the next poll cycle (products: up to 3 attempts per version, see *Products other than EMLy*).
 - **Atomic state writes** - `state.Store` writes to a temp file then renames, so a crash mid-write cannot corrupt the pending entry.
 - **The update source is decided every cycle, from the policy** - `beginCycle`
   (`internal/service/sourcepolicy.go`) resolves the nearest domain controller and this
@@ -483,8 +553,8 @@ tested) and the launch; `internal/service/selfupdate.go` orchestrates. Design no
 - **The launch must never be waited on.** `selfupdate.Launch` uses `DETACHED_PROCESS` and
   `Process.Release()`, never `Wait`. The setup's first act is `EMLyUpdater.exe stop`; the stop
   handler cancels the loop and waits for it to return, so a blocking launch would deadlock the two
-  until the 60-second stop timeout expired and the install failed. This is why `installer.Run`
-  (which does wait) is deliberately not reused here.
+  until the 60-second stop timeout expired and the install failed. This is why the installer drivers
+  (`installer.For(...).Install`, which wait) are deliberately not reused here.
 - **The outcome is only knowable at the next start.** The launching process does not survive, so
   `state.json`'s `selfUpdate` record is written *before* the launch and reconciled after the restart
   by comparing `version.Version` against it. If the record cannot be persisted, the setup is not
@@ -833,6 +903,11 @@ land; the `selfUpdate` record left in `state.json` says which version was attemp
 
 ## Common Pitfalls
 
+- **Never patch `products` from an override while agents <= 1.7.x are in the field**: a global `products` section is harmless (`policy.complete` copies only the sections it knows), but an override whose patch touches `products` makes those agents reject the **whole** document ("not a patchable section"), and they then stay on their cached revision for everything - servers, kill switch, all of it. Same trap as `clientWs` in September. Wait until the fleet is all >= 1.8.0.
+- **Removing a product from the document drops it from the inventory, so from the dashboard**: `installedProducts` walks the document's products, so a product that is no longer there is no longer reported. To stop updating a product use `enabled: false`, which keeps detection and the inventory intact.
+- **NSIS command lines are raw**: `/D=<dir>` must be the last argument and unquoted (even with spaces), and the uninstaller needs `_?=<dir>` last and unquoted too. Go's argument quoting would add quotes, so the nsis driver sets `SysProcAttr.CmdLine` itself. Without `_?=` the NSIS uninstaller copies itself to `%TEMP%`, relaunches and returns at once, and the agent would start the reinstall while the uninstall is still running.
+- **An uninstaller in a directory writable by Users is never run as SYSTEM** (`installer.CheckNotUserWritable`): it is stricter than "no write for Users". The owner of `InstallDir` and of the uninstaller must be SYSTEM, Administrators or TrustedInstaller, and any non-inherit-only allow ACE granting a write right (including `FILE_DELETE_CHILD`) to any other SID, an unknown allow-ACE type, or a NULL DACL refuses. A refusal only skips the clean-reinstall uninstall (Warn), the reinstall itself proceeds. Consequence: an install directory created by a user, or one inheriting "Authenticated Users: Modify" from `C:\` (e.g. `C:\3gIT\EMLy` unless its installer sets permissions), makes the uninstall step always skipped. That is by design, not a bug to relax.
+- **3g-RocketChat's `config.ini` `[app] version` is not rewritten by its setup today**: its detection chain therefore reads `version.txt` first, then the ini, then the exe's VERSIONINFO. Reordering it puts a stale version first and the agent will reinstall forever (until the 3-attempt cap stops it).
 - **Building a `download.Manager` without the shared `Pacer`**: a nil `Pacer` turns off 429 pacing entirely (the 429 comes straight back as an error, retried only next cycle). `service.New` gives `Downloads` and `SelfDownloads` the *same* `Pacer` because the server's slots are one pool; giving each its own lets the EMLy download hit the server right after the self-update download was told to wait.
 - **Adding a new config key**: update `Config` struct, `Load()`, and `config.default.ini` (all three, otherwise the key is invisible to callers and missing from freshly seeded configs). Upgrades pick it up for free — `config.Reset` rewrites the file from the embedded defaults, so a new key arrives with its default and its comment (and any per-machine edit is discarded).
 - **Rotating the code-signing certificate now also gates self-update**: `internal/authenticode` pins the signer to whatever `cert.Embedded()` holds, so a release signed with the *new* certificate cannot be self-installed by machines still running a build that embeds only the old one. Ship the new certificate in a release signed with the old one first, let the fleet take it, and only then start signing with the new one.

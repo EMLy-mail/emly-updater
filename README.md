@@ -9,6 +9,8 @@ Standalone Windows update service for **EMLy**. Runs as a `LocalSystem`
 auto-start service on domain-joined PCs and keeps EMLy current without any
 user interaction: it polls an update manifest, downloads and SHA256-verifies
 the InnoSetup installer, and applies it silently.
+Other 3gIT products (for example 3g-RocketChat) are kept current the same way
+when the remote configuration describes them - see [Products](#products).
 
 The service is fully independent of EMLy: binary in `C:\Program Files\EMLyUpdater`,
 everything else (config, state, logs, download cache) under
@@ -141,6 +143,72 @@ keys are ANDed and the values inside one list are ORed; `match: {"all": true}`
 selects the whole fleet and `except` carves a group back out of it. Because
 they are evaluated locally, a laptop that moves between sites changes side at
 its next cycle without a new document.
+
+### Products
+
+EMLy is the implicit product and needs no entry. Any other product is described
+by the document's `products` section, an object **keyed by slug** (so a
+per-host override can switch off one product without rewriting a list):
+
+```json
+"products": {
+  "3g-rocketchat": {
+    "enabled": true,
+    "name": "3g-RocketChat",
+    "channel": "stable",
+    "installDir": "C:\\3gIT\\3g-RocketChat",
+    "exeName": "3g-RocketChat.exe",
+    "installWhenAbsent": false,
+    "detect": [
+      { "type": "file", "path": "version.txt" },
+      { "type": "ini",  "path": "config.ini", "section": "app", "key": "version" },
+      { "type": "exe",  "path": "3g-RocketChat.exe" }
+    ],
+    "installer": { "type": "nsis", "cleanReinstall": false }
+  }
+}
+```
+
+| Field | Rule | Default |
+|---|---|---|
+| key (slug) | `^[a-z0-9][a-z0-9-]{0,19}$`; not reserved (`updater`, `all`, `manifest`, `releases`, `download`, `products`); not `emly` | - |
+| `enabled` | bool; switches **updates**, not detection or the inventory | `false` |
+| `name` | non-empty, at most 64 characters; shown to users and in logs | required |
+| `channel` | `stable` or `beta` | `stable` |
+| `installDir` | absolute Windows path (`X:\...`), no `..` | required |
+| `exeName` | file name without separators, ends in `.exe`; the process to wait on or close and the icon source | required |
+| `installWhenAbsent` | install where the product is not found | `false` |
+| `detect` | 1-5 sources, tried in order; `type` is `ini` (`path`, `section`, `key`), `file` (`path`, whole content, first line) or `exe` (`path`, VERSIONINFO); paths are relative to `installDir`, no `..` | required |
+| `installer.type` | `nsis` or `inno` | required |
+| `installer.cleanReinstall` | on a failed verification, uninstall before the second attempt | `false` |
+
+Detection has three outcomes: *installed* (a version was read), *absent* (every
+source file is missing) and *unknown* (a source exists but cannot be read or
+parsed). Only *installed* can lead to an update; *unknown* skips the product and
+leaves the machine's inventory header out rather than reporting a wrong one.
+
+Each cycle updates the enabled products one after the other, sorted by slug,
+with EMLy last. Behaviour that differs from EMLy: an update is never waited on
+when the application is open (the setup stays queued, the user is told once per
+version, the next cycle installs once it is closed; a forced update still warns
+and closes it); a `404` or an empty release from the manifest means "no update
+for this product" and parks it for 6 hours; after 3 failed attempts on the same
+version the agent stops touching it until a different version is offered.
+NSIS products are installed with `/S /D=<installDir>` and removed with
+`uninstall.exe /S _?=<installDir>`; the uninstaller is only run when
+`installDir` and the uninstaller are not writable by ordinary users.
+
+Two cautions. Do **not** patch `products` from a per-host override while agents
+older than 1.8.0 are in the field: they reject the whole document. And to stop
+updating a product set `enabled: false` rather than deleting its entry, which
+would also drop it from the inventory the dashboard shows.
+
+`emly-updater products` prints, for EMLy and every product in the effective
+document, whether it is enabled, what detection found (and which source
+answered) and any pending install; `products --check` also asks the manifest
+what version is offered. It is read-only and does not need the service stopped,
+so it is the way to validate a new product
+definition on a machine before enabling it.
 
 ## Update sources
 
@@ -362,6 +430,7 @@ EMLyUpdater.exe install     # register delayed auto-start service + Event Log so
 EMLyUpdater.exe uninstall   # stop + remove the service, keep ProgramData
 EMLyUpdater.exe start|stop  # control the service
 EMLyUpdater.exe run         # foreground debug mode (console logging)
+EMLyUpdater.exe products [--check]  # read-only: detection, pending and (with --check) offered version of every product
 ```
 
 ## Logs
@@ -416,6 +485,14 @@ and watch them take effect without restarting the service; break a field on
 purpose to watch the document being refused whole (event 902) while the
 previous one stays in force. The conformance fixtures under
 `testdata/remoteconfig/` are ready-made documents for this.
+
+For a **product other than EMLy**, put a `products` entry in the test document
+(see [Products](#products); use a scratch `installDir` holding a `version.txt`
+and an exe name of your choice), serve `/v2/updates/3g-rocketchat/manifest`
+next to it in the same shape as `version.json`, plus the setup it points to,
+and run `emly-updater products --check` first: it shows what detection found
+and which version the manifest offers without downloading or installing
+anything. Only then start `run`.
 
 Point `ProgramData` at a scratch directory for the run (`config.DataDir()`
 reads it) so the machine's real config, state and logs are untouched, and set

@@ -1,6 +1,9 @@
 package manifest
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 const sampleJSON = `{
   "stableVersion": "1.7.3",
@@ -136,5 +139,20 @@ func TestForced(t *testing.T) {
 	m = &Manifest{}
 	if forced, _ := m.Forced("0.0.1"); forced {
 		t.Fatal("empty minRequiredVersion must not force")
+	}
+}
+
+// What the API serves for a registered product with nothing published.
+func TestParseEmptyReleaseIsErrNoRelease(t *testing.T) {
+	_, err := Parse([]byte(`{"stableVersion":"","stableDownload":"","isCritical":false,"sha256Checksums":{},"releaseNotes":{}}`))
+	if !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("Parse = %v, want ErrNoRelease", err)
+	}
+}
+
+func TestChannelVersionWithoutBetaIsErrNoRelease(t *testing.T) {
+	m := &Manifest{StableVersion: "1.0.0", StableDownload: "x"}
+	if _, _, err := m.ChannelVersion("beta"); !errors.Is(err, ErrNoRelease) {
+		t.Fatalf("ChannelVersion(beta) = %v, want ErrNoRelease", err)
 	}
 }

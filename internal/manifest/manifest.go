@@ -5,10 +5,17 @@ package manifest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	goversion "github.com/hashicorp/go-version"
 )
+
+// ErrNoRelease reports a manifest with nothing published for the requested
+// channel - what the API answers for a product that exists but has no
+// release yet. For a product other than EMLy it means "no update", not a
+// failure.
+var ErrNoRelease = errors.New("no release published")
 
 // Manifest mirrors the JSON served by /v2/updates/manifest.
 // StableDownload/BetaDownload are full URLs, and SHA256Checksums is keyed by
@@ -53,7 +60,7 @@ func Parse(data []byte) (*Manifest, error) {
 		return nil, fmt.Errorf("failed to parse manifest JSON: %w", err)
 	}
 	if m.StableVersion == "" || m.StableDownload == "" {
-		return nil, fmt.Errorf("invalid manifest: missing stable version or download")
+		return nil, fmt.Errorf("invalid manifest: missing stable version or download: %w", ErrNoRelease)
 	}
 	return &m, nil
 }
@@ -69,14 +76,14 @@ func (m *Manifest) ChannelVersion(channel string) (version, downloadRef string, 
 	if channel != "beta" {
 		version, downloadRef = m.StableVersion, m.StableDownload
 		if version == "" || downloadRef == "" {
-			return "", "", fmt.Errorf("manifest has no target for channel %q", channel)
+			return "", "", fmt.Errorf("manifest has no target for channel %q: %w", channel, ErrNoRelease)
 		}
 		return version, downloadRef, nil
 	}
 
 	version, downloadRef = m.BetaVersion, m.BetaDownload
 	if version == "" || downloadRef == "" {
-		return "", "", fmt.Errorf("manifest has no target for channel %q", channel)
+		return "", "", fmt.Errorf("manifest has no target for channel %q: %w", channel, ErrNoRelease)
 	}
 	if m.StableVersion != "" && m.StableDownload != "" {
 		betaOutdated, err := Less(version, m.StableVersion)

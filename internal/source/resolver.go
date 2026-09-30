@@ -145,9 +145,10 @@ func resolveWith[T any](ctx context.Context, r *Resolver, fetch func(context.Con
 		if ctx.Err() != nil {
 			return nil, zero, ctx.Err()
 		}
-		// A 404 is a definitive answer, not a hiccup: backing off and asking
-		// the same question again cannot change it.
-		if errors.Is(err, ErrNotFound) {
+		// A 404, or a manifest with nothing published, is a definitive
+		// answer, not a hiccup: asking the same question again cannot
+		// change it.
+		if errors.Is(err, ErrNotFound) || errors.Is(err, manifest.ErrNoRelease) {
 			r.logf("primary source %s does not serve the %s, skipping the remaining attempts",
 				r.Primary.Name(), r.document())
 			break

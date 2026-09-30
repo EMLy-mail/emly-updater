@@ -1,5 +1,8 @@
-// EMLyUpdater is a standalone Windows service (LocalSystem, auto-start) that
-// keeps EMLy up to date on domain-joined machines: it polls an update
+// AryxD Agent (binary and service still named EMLyUpdater, see AGENTS.md §
+// "Product name vs. technical identifiers") is a standalone Windows service
+// (LocalSystem, auto-start): the distribution, monitoring and management agent
+// for 3gIT's supported products, today EMLy. It keeps EMLy up to date on
+// domain-joined machines: it polls an update
 // manifest over HTTP, downloads and SHA256-verifies the InnoSetup installer,
 // and applies it silently - immediately when EMLy is closed, on exit when it
 // is open, or force-killing it for critical updates.
@@ -44,12 +47,37 @@ import (
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/service"
 	"emlyupdater/internal/toast"
+	"emlyupdater/internal/version"
 )
 
 const (
-	displayName = "EMLy Updater Service"
-	description = "Bootstrapper e updater per EMLy, il visualizzatore EML/MSG di 3gIT. "
+	// productName is the display name only. Every technical identifier -
+	// service name, pipe, mutex, ProgramData directory, Event Log source,
+	// exe and installer file names, User-Agent - keeps "EMLyUpdater": the
+	// emly and emly-go-api repos and already-installed machines depend on
+	// them (AGENTS.md § "Product name vs. technical identifiers").
+	productName = "AryxD Agent"
+	displayName = productName + " Service"
+	description = "AryxD Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. " +
+		"Distribuisce e mantiene aggiornato EMLy (il visualizzatore EML/MSG di 3gIT), " +
+		"riporta lo stato della postazione al server centrale ed esegue i comandi di gestione remota. " +
+		"Se questo servizio viene arrestato, EMLy non riceve più aggiornamenti."
+
+	// supportedProducts are the products this agent distributes, logged at
+	// startup so a log read in isolation says what the agent is for.
+	supportedProducts = "EMLy"
+	agentRoles        = "distribution, monitoring, management"
 )
+
+// logIdentity writes the agent's identity as the first lines of a run.
+func logIdentity(log *logging.Logger, mode string) {
+	log.Info(productName+" "+mode+" starting",
+		"version", version.Version,
+		"roles", agentRoles,
+		"supportedProducts", supportedProducts)
+	log.Info("EMLy is a supported product, distributed by " + productName +
+		", which also acts as its monitoring and management agent")
+}
 
 func main() {
 	inService, err := svc.IsWindowsService()
@@ -187,13 +215,13 @@ func runService() {
 		os.Exit(1)
 	}
 
-	log.Info("EMLyUpdater service starting")
+	logIdentity(log, "service")
 	handler := &service.Handler{Updater: service.New(cfg, log, false)}
 	if err := svc.Run(service.Name, handler); err != nil {
 		log.ErrorEvent(logging.EventGeneric, "service run failed", "error", err.Error())
 		os.Exit(1)
 	}
-	log.Info("EMLyUpdater service stopped")
+	log.Info(productName + " service stopped")
 }
 
 // cmdRun executes the update loop in the foreground with console logging -
@@ -221,7 +249,8 @@ func cmdRun() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	fmt.Println("EMLyUpdater running in foreground, Ctrl+C to stop")
+	fmt.Println(productName + " running in foreground, Ctrl+C to stop")
+	logIdentity(log, "foreground run")
 	service.New(cfg, log, true).RunLoop(ctx)
 	return nil
 }
@@ -242,7 +271,7 @@ func acquireSingleton() (func(), error) {
 	}
 	if callErr == windows.ERROR_ALREADY_EXISTS {
 		windows.CloseHandle(windows.Handle(h))
-		return nil, fmt.Errorf("another EMLyUpdater instance is already running (service or foreground)")
+		return nil, fmt.Errorf("another AryxD Agent (EMLyUpdater) instance is already running (service or foreground)")
 	}
 	return func() { windows.CloseHandle(windows.Handle(h)) }, nil
 }

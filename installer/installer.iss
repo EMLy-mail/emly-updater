@@ -1,4 +1,11 @@
+; ApplicationName is the *technical* name: exe file name, install directory,
+; setup file name, and - through AppId below - the uninstall registry key.
+; All four are load-bearing (emly checks %ProgramFiles%\EMLyUpdater,
+; emly-go-api serves EMLyUpdater_Installer_<ver>.exe to self-update, and a
+; different AppId would install side by side instead of upgrading), so it
+; stays EMLyUpdater. ProductName is what people see.
 #define ApplicationName 'EMLyUpdater'
+#define ProductName 'AryxD Agent'
 #define ApplicationVersion '1.7.2'
 #define ServiceName 'EMLyUpdater'
 
@@ -31,9 +38,13 @@
 #define PwshURL 'https://github.com/PowerShell/PowerShell/releases/download/v' + PwshVersion + '/' + PwshMSI
 
 [Setup]
-AppName={#ApplicationName}
+; AppId must stay pinned to the old AppName: Inno Setup defaults AppId to
+; AppName, so without this line the rename would orphan every existing install.
+AppId={#ApplicationName}
+AppName={#ProductName}
 AppVersion={#ApplicationVersion}
-AppVerName={#ApplicationName} {#ApplicationVersion}
+AppVerName={#ProductName} {#ApplicationVersion}
+AppPublisher=3gIT
 DefaultDirName={autopf}\{#ApplicationName}
 OutputBaseFilename={#ApplicationName}_Installer_{#ApplicationVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -58,12 +69,12 @@ ArchiveExtraction=full
 ; whatever the selection. Without /COMPONENTS an upgrade (self-update
 ; included) keeps the previous install's choice.
 [Types]
-Name: "compact"; Description: "EMLy Updater only"
-Name: "full"; Description: "EMLy Updater + WinGet PowerShell module (with PowerShell 7)"
+Name: "compact"; Description: "{#ProductName} only"
+Name: "full"; Description: "{#ProductName} + WinGet PowerShell module (with PowerShell 7)"
 Name: "custom"; Description: "Custom"; Flags: iscustom
 
 [Components]
-Name: "updater"; Description: "EMLy Updater service"; Types: compact full custom; Flags: fixed
+Name: "updater"; Description: "{#ProductName} service (distributes EMLy)"; Types: compact full custom; Flags: fixed
 ; ExtraDiskSpaceRequired: the module's extracted size plus PowerShell 7's
 ; installed size (~250 MB), since nothing in [Files] accounts for either.
 Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module + PowerShell {#PwshVersion} (download)"; Types: full; ExtraDiskSpaceRequired: 306025934

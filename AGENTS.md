@@ -1,4 +1,4 @@
-# EMLyUpdater - Agent Instructions
+# AryxD Agent (EMLyUpdater) - Agent Instructions
 
 ## Build & Test
 
@@ -110,6 +110,33 @@ Read this before designing anything that moves bytes over the network.
   and config fetches. Client-side jitter alone does not bound concurrency on a shared link.
   Updates can be urgent and must install as soon as the link allows, so "download days early,
   install later" is not an acceptable answer.
+
+## Product name vs. technical identifiers
+
+The product is called **AryxD Agent**: the distribution, monitoring and
+management agent for 3gIT's supported products, of which EMLy is today the only
+one. The rename is **display-only**. Every name another component or an
+existing install relies on keeps the old `EMLyUpdater` spelling, and must not
+be renamed without a coordinated migration:
+
+| Identifier | Value | Who depends on it |
+|---|---|---|
+| Windows service name | `EMLyUpdater` (`service.Name`) | `emly` (`app_updater_status.go`: registry key + SCM query), SCM upgrade in place |
+| Named pipe | `\.\pipe\EMLyUpdater` | `emly` (`updateripc/dial.go`, hardcoded) |
+| Singleton mutex | `Global\EMLyUpdaterSingleton` | an older service still running during an upgrade |
+| Data directory | `%ProgramData%\EMLyUpdater` | config/state/cache of every installed machine; `emly` checks it exists |
+| Install directory / exe | `%ProgramFiles%\EMLyUpdater\EMLyUpdater.exe` | `emly` checks the folder; the service's `ImagePath`; `PrepareToInstall` stops the *old* exe by this path |
+| Setup file name | `EMLyUpdater_Installer_<ver>.exe` | `emly-go-api` (`updates/updater.route.go`) builds it for self-update; CI globs it |
+| Inno Setup `AppId` | `EMLyUpdater` (pinned explicitly) | the uninstall key; a new AppId installs side by side instead of upgrading |
+| Event Log source | `EMLyUpdater` | registered at `install`; existing event-log filters/SIEM rules |
+| User-Agent | `EMLy-Updater/<ver> (...)` | `emly-go-api` (`updaterclient.go` regex) identifies updater requests by it |
+| Download prefix | `EMLyUpdater-` | cache cleanup in `internal/download` |
+
+What *is* renamed: the service display name and description, `versioninfo.json`
+`ProductName`/`FileDescription`, the installer's `AppName`/`AppVerName`
+(Programs and Features), toast titles, CLI messages, and the first log lines of
+every run (`logIdentity` in `main.go`), which state the agent's roles and that
+EMLy is a product it distributes.
 
 ## Key Conventions
 

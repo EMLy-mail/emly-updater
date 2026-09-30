@@ -9,16 +9,17 @@
     "FileSubtype": "0"
   },
   "StringFileInfo": {
+    "Comments": "AryxD Agent distribuisce, monitora e gestisce i prodotti supportati da 3gIT.",
     "CompanyName": "3gIT",
-    "FileDescription": "EMLy Updater",
+    "FileDescription": "AryxD Agent - Agente di distribuzione, monitoraggio e gestione di 3gIT",
     "FileVersion": "1.7.2",
     "InternalName": "EMLyUpdater.exe",
     "OriginalFilename": "EMLyUpdater.exe",
-    "ProductName": "EMLy Updater",
+    "ProductName": "AryxD Agent",
     "ProductVersion": "1.7.2"
   },
   "VarFileInfo": {
-    "Translation": { "LangID": 1033, "Charset": 1200 }
+    "Translation": { "LangID": 1040, "Charset": 1200 }
   },
   "icon_path": "installer/appicon.ico"
 }

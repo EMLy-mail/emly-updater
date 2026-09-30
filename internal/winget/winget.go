@@ -79,9 +79,9 @@ var (
 	// ErrPowerShell7Required means the module refused Windows PowerShell 5.1,
 	// which it does when the caller runs as SYSTEM (the service), and no
 	// pwsh.exe was found to run it under instead.
-	ErrPowerShell7Required = errors.New(`Microsoft.WinGet.Client does not support Windows PowerShell when running as SYSTEM; install PowerShell 7 (pwsh.exe) on this machine, or re-run the EMLyUpdater setup with /COMPONENTS="updater,wingetmodule", which installs it`)
+	ErrPowerShell7Required = errors.New(`Microsoft.WinGet.Client does not support Windows PowerShell when running as SYSTEM; install PowerShell 7 (pwsh.exe) on this machine, or re-run the AryxD Agent setup (EMLyUpdater_Installer_*.exe) with /COMPONENTS="updater,wingetmodule", which installs it`)
 	// ErrModuleNotInstalled means the Microsoft.WinGet.Client module is missing.
-	ErrModuleNotInstalled = errors.New(`PowerShell module Microsoft.WinGet.Client is not installed; install it with: Install-Module Microsoft.WinGet.Client -Scope CurrentUser, or re-run the EMLyUpdater setup with /COMPONENTS="updater,wingetmodule"`)
+	ErrModuleNotInstalled = errors.New(`PowerShell module Microsoft.WinGet.Client is not installed; install it with: Install-Module Microsoft.WinGet.Client -Scope CurrentUser, or re-run the AryxD Agent setup (EMLyUpdater_Installer_*.exe) with /COMPONENTS="updater,wingetmodule"`)
 )
 
 // PowerShell is the default Runner: PowerShell 7 when installed, Windows

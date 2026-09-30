@@ -34,13 +34,13 @@ func UpdateCompleteMessage(lang, version, channel string) Message {
 func SourcesUnreachableMessage(lang string) Message {
 	if lang == "it" {
 		return Message{
-			Title: "EMLy Updater - Errore di connessione",
-			Body:  "EMLy Updater non riesce a contattare il server degli aggiornamenti. Contattare il proprio IT.",
+			Title: "AryxD Agent - Errore di connessione",
+			Body:  "AryxD Agent non riesce a contattare il server degli aggiornamenti. Contattare il proprio IT.",
 		}
 	}
 	return Message{
-		Title: "EMLy Updater - Connection Error",
-		Body:  "EMLy Updater cannot reach the update server. Please contact your IT department.",
+		Title: "AryxD Agent - Connection Error",
+		Body:  "AryxD Agent cannot reach the update server. Please contact your IT department.",
 	}
 }
 

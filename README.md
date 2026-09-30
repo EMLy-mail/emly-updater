@@ -1,4 +1,9 @@
-# EMLyUpdater
+# AryxD Agent (EMLyUpdater)
+
+**AryxD Agent** is the distribution, monitoring and management agent for 3gIT's
+supported products. **EMLy** is a supported product, distributed by AryxD Agent.
+The binary, service, pipe and data directories keep their technical name
+`EMLyUpdater` - see AGENTS.md § *Product name vs. technical identifiers*.
 
 Standalone Windows update service for **EMLy**. Runs as a `LocalSystem`
 auto-start service on domain-joined PCs and keeps EMLy current without any

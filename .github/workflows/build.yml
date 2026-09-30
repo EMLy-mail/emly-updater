@@ -2,7 +2,10 @@ name: Build AryxD Agent
 
 on:
   push:
-    branches: [master]
+    # feat/* too, so a feature branch's installer can be downloaded and
+    # tried before it is merged. "feat/**" also matches nested names
+    # (feat/x/y), which "feat/*" would not.
+    branches: [master, "feat/**"]
   pull_request:
     branches: [stable]
   workflow_dispatch:

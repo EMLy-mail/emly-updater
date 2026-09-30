@@ -30,7 +30,6 @@ type progressUI struct {
 	self     bool // the agent's own update rather than EMLy's
 	product  string
 	version  string
-	lang     string
 	iconPath string
 
 	win    *notify.ProgressWindow
@@ -47,7 +46,6 @@ func (u *Updater) newProgressUI(self bool, target string) *progressUI {
 		return nil
 	}
 	p := &progressUI{u: u, self: self, version: target, lastPc: -2,
-		lang:     u.Cfg.ResolveEMLy().Language,
 		iconPath: assoc.ExePath(u.Cfg.EMLyInstallDir, u.Cfg.EMLyExeName),
 		product:  "EMLy",
 	}
@@ -154,56 +152,31 @@ func (p *progressUI) detach() {
 	p.win, p.tried = nil, false
 }
 
-func (p *progressUI) it() bool { return p.lang == "it" }
+// The window's text is Italian only, whatever EMLy's LANGUAGE says - a
+// deliberate choice, unlike the toasts and the critical-update warning.
 
 func (p *progressUI) title() string {
-	if p.it() {
-		return p.product + " - Aggiornamento"
-	}
-	return p.product + " - Update"
+	return p.product + " - Aggiornamento"
 }
 
 func (p *progressUI) downloadText(done, total int64) (heading, detail string) {
-	if p.it() {
-		heading = fmt.Sprintf("Download di %s %s in corso", p.product, p.version)
-		if total > 0 {
-			detail = fmt.Sprintf("%s di %s. L'operazione potrebbe richiedere alcuni minuti.",
-				formatMB(done, true), formatMB(total, true))
-		} else {
-			detail = fmt.Sprintf("%s scaricati. L'operazione potrebbe richiedere alcuni minuti.", formatMB(done, true))
-		}
-		return heading, detail
-	}
-	heading = fmt.Sprintf("Downloading %s %s", p.product, p.version)
+	heading = fmt.Sprintf("Download di %s %s in corso", p.product, p.version)
 	if total > 0 {
-		detail = fmt.Sprintf("%s of %s. This might take several minutes.", formatMB(done, false), formatMB(total, false))
-	} else {
-		detail = fmt.Sprintf("%s downloaded. This might take several minutes.", formatMB(done, false))
+		return heading, fmt.Sprintf("%s di %s. L'operazione potrebbe richiedere alcuni minuti.",
+			formatMB(done), formatMB(total))
 	}
-	return heading, detail
+	return heading, fmt.Sprintf("%s scaricati. L'operazione potrebbe richiedere alcuni minuti.", formatMB(done))
 }
 
 func (p *progressUI) installText() (heading, detail string) {
-	if p.it() {
-		heading = fmt.Sprintf("Installazione di %s %s in corso", p.product, p.version)
-		if p.self {
-			return heading, "Attendere il completamento. EMLy resta utilizzabile."
-		}
-		return heading, "Attendere il completamento. EMLy non è disponibile fino al termine."
-	}
-	heading = fmt.Sprintf("Installing %s %s", p.product, p.version)
+	heading = fmt.Sprintf("Installazione di %s %s in corso", p.product, p.version)
 	if p.self {
-		return heading, "Please wait for it to complete. EMLy remains available."
+		return heading, "Attendere il completamento. EMLy resta utilizzabile."
 	}
-	return heading, "Please wait for it to complete. EMLy is unavailable until it finishes."
+	return heading, "Attendere il completamento. EMLy non è disponibile fino al termine."
 }
 
-// formatMB renders n bytes as megabytes with one decimal, with the decimal
-// comma in Italian.
-func formatMB(n int64, italian bool) string {
-	s := fmt.Sprintf("%.1f MB", float64(n)/(1024*1024))
-	if italian {
-		s = strings.Replace(s, ".", ",", 1)
-	}
-	return s
+// formatMB renders n bytes as megabytes with one decimal and a decimal comma.
+func formatMB(n int64) string {
+	return strings.Replace(fmt.Sprintf("%.1f MB", float64(n)/(1024*1024)), ".", ",", 1)
 }

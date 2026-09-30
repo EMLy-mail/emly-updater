@@ -670,8 +670,9 @@ publisher instead of "Unknown publisher".
 `internal/progresswin` + `service/progress.go`. While an update of EMLy or of
 the agent itself is downloaded and installed, the console user sees a
 fixed-size, non-closable window (no close/minimize, Alt+F4 ignored) with
-EMLy's icon, a heading, a detail line and a progress bar, localized it/en
-from EMLy's `LANGUAGE`.
+EMLy's icon, a heading, a detail line and a progress bar. Its text is
+**Italian only**, by request - unlike the toasts and the critical-update
+warning, it does not follow EMLy's `LANGUAGE`.
 
 - **Only `config.ini` decides** (`[progressWindow] enabled`). There is no
   counterpart in the remote document and there must not be one: the user asked

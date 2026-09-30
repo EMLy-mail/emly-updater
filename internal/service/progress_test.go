@@ -27,28 +27,25 @@ func TestProgressUIDisabledIsNilAndInert(t *testing.T) {
 	u.endProgress()
 }
 
+// Italian only, whatever EMLy's LANGUAGE is.
 func TestProgressUITexts(t *testing.T) {
-	it := &progressUI{product: "EMLy", version: "1.8.0", lang: "it"}
-	h, d := it.downloadText(3*1024*1024+512*1024, 10*1024*1024)
+	p := &progressUI{product: "EMLy", version: "1.8.0"}
+	h, d := p.downloadText(3*1024*1024+512*1024, 10*1024*1024)
 	if h != "Download di EMLy 1.8.0 in corso" || !strings.HasPrefix(d, "3,5 MB di 10,0 MB") {
-		t.Errorf("it download = %q / %q", h, d)
+		t.Errorf("download = %q / %q", h, d)
 	}
-	if _, d := it.downloadText(1024*1024, -1); !strings.HasPrefix(d, "1,0 MB scaricati") {
-		t.Errorf("it download, unknown size = %q", d)
+	if _, d := p.downloadText(1024*1024, -1); !strings.HasPrefix(d, "1,0 MB scaricati") {
+		t.Errorf("download, unknown size = %q", d)
 	}
-	if h, _ := it.installText(); h != "Installazione di EMLy 1.8.0 in corso" {
-		t.Errorf("it install = %q", h)
+	if h, d := p.installText(); h != "Installazione di EMLy 1.8.0 in corso" || !strings.Contains(d, "non è disponibile") {
+		t.Errorf("install = %q / %q", h, d)
 	}
-	if it.title() != "EMLy - Aggiornamento" {
-		t.Errorf("it title = %q", it.title())
+	if p.title() != "EMLy - Aggiornamento" {
+		t.Errorf("title = %q", p.title())
 	}
 
-	en := &progressUI{product: "AryxD Agent", version: "1.7.4", lang: "en", self: true}
-	h, d = en.downloadText(512*1024, 1024*1024)
-	if h != "Downloading AryxD Agent 1.7.4" || !strings.HasPrefix(d, "0.5 MB of 1.0 MB") {
-		t.Errorf("en download = %q / %q", h, d)
-	}
-	if _, d := en.installText(); !strings.Contains(d, "EMLy remains available") {
-		t.Errorf("en self install detail = %q: the agent's own update does not touch EMLy", d)
+	self := &progressUI{product: "AryxD Agent", version: "1.7.4", self: true}
+	if h, d := self.installText(); h != "Installazione di AryxD Agent 1.7.4 in corso" || !strings.Contains(d, "EMLy resta utilizzabile") {
+		t.Errorf("self install = %q / %q: the agent's own update does not touch EMLy", h, d)
 	}
 }

@@ -887,6 +887,14 @@ The setup:
   `%ProgramFiles%\PowerShell\7`. There is no separate PowerShell component on purpose:
   the service runs as SYSTEM, where the module refuses Windows PowerShell 5.1, so the
   module is useless to it without PowerShell 7 (`internal/winget` prefers `pwsh.exe`).
+  Each half is skipped (not downloaded, not installed) when already present:
+  `pwsh.exe` in `%ProgramFiles%\PowerShell\7` (any version), and the module at the
+  pinned version **or newer** under `%ProgramFiles%\WindowsPowerShell\Modules` or
+  `%ProgramFiles%\PowerShell\Modules` (the AllUsers paths SYSTEM can load; a
+  CurrentUser install does not count). With both present, an interactive run greys
+  out the component ("already installed", `CurPageChanged(wpSelectComponents)`) without
+  changing its checked state; a silent run with `/COMPONENTS=...,wingetmodule` just
+  skips both downloads.
   Both downloads run on a download page with a progress bar right after "Ready to
   Install" (`NextButtonClick(wpReady)`, also reached in a silent install), before the
   service is stopped; only the extract/msiexec steps run in `ssPostInstall`.

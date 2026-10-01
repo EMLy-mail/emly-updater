@@ -140,16 +140,61 @@ begin
   Result := ExpandConstant('{commonpf64}\WindowsPowerShell\Modules\{#WinGetModuleName}\{#WinGetModuleVersion}');
 end;
 
+// HasModuleVersionAtLeast reports whether Root\<version>\<module>.psd1 exists
+// for a version folder >= the pinned one. An older one does not count: the
+// pinned version is then installed beside it, and internal/winget picks the
+// highest version folder.
+function HasModuleVersionAtLeast(const Root: String): Boolean;
+var
+  FindRec: TFindRec;
+  Found, Pinned: Int64;
+begin
+  Result := False;
+  if not StrToVersion('{#WinGetModuleVersion}', Pinned) then
+    Exit;
+  if not FindFirst(Root + '\*', FindRec) then
+    Exit;
+  try
+    repeat
+      if (FindRec.Attributes and FILE_ATTRIBUTE_DIRECTORY <> 0) and
+         StrToVersion(FindRec.Name, Found) and
+         (ComparePackedVersion(Found, Pinned) >= 0) and
+         FileExists(Root + '\' + FindRec.Name + '\{#WinGetModuleName}.psd1') then begin
+        Result := True;
+        Exit;
+      end;
+    until not FindNext(FindRec);
+  finally
+    FindClose(FindRec);
+  end;
+end;
+
+// WinGetModuleInstalled looks only where the SYSTEM service can load the
+// module from: the AllUsers module paths of Windows PowerShell and of
+// PowerShell 7 (both are on pwsh's PSModulePath). A CurrentUser install
+// (Documents\...\Modules) is invisible to SYSTEM, so it does not count.
+function WinGetModuleInstalled: Boolean;
+begin
+  Result :=
+    HasModuleVersionAtLeast(ExpandConstant('{commonpf64}\WindowsPowerShell\Modules\{#WinGetModuleName}')) or
+    HasModuleVersionAtLeast(ExpandConstant('{commonpf64}\PowerShell\Modules\{#WinGetModuleName}'));
+end;
+
+// PwshInstalled checks where internal/winget looks for pwsh.exe first. Any
+// version counts (see InstallPwsh).
+function PwshInstalled: Boolean;
+begin
+  Result := FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe'));
+end;
+
 function WinGetModuleNeeded: Boolean;
 begin
-  Result := WizardIsComponentSelected('wingetmodule') and
-    not FileExists(WinGetModuleDir + '\{#WinGetModuleName}.psd1');
+  Result := WizardIsComponentSelected('wingetmodule') and not WinGetModuleInstalled;
 end;
 
 function PwshNeeded: Boolean;
 begin
-  Result := WizardIsComponentSelected('wingetmodule') and
-    not FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe'));
+  Result := WizardIsComponentSelected('wingetmodule') and not PwshInstalled;
 end;
 
 // DownloadOne fetches Url into {tmp}\BaseName through the download page,
@@ -171,6 +216,28 @@ end;
 procedure InitializeWizard;
 begin
   DownloadPage := CreateDownloadPage(SetupMessage(msgWizardPreparing), SetupMessage(msgPreparingDesc), nil);
+end;
+
+// When PowerShell 7 and the module are both already on the machine the
+// "wingetmodule" component has nothing left to do, so on an interactive run
+// its checkbox is greyed out and says so. Its checked state is left as the
+// type/previous install set it, so the choice recorded for upgrades does not
+// change. With only one of the two present it stays selectable and installs
+// just the missing one. Silent installs never show this page: there,
+// /COMPONENTS="...,wingetmodule" is accepted as is and PwshNeeded /
+// WinGetModuleNeeded skip both downloads.
+procedure CurPageChanged(CurPageID: Integer);
+var
+  I: Integer;
+begin
+  if (CurPageID <> wpSelectComponents) or not (PwshInstalled and WinGetModuleInstalled) then
+    Exit;
+  // Matched on the caption from [Components], since the list has no names.
+  for I := 0 to WizardForm.ComponentsList.Items.Count - 1 do
+    if Pos('{#WinGetModuleName}', WizardForm.ComponentsList.ItemCaption[I]) = 1 then begin
+      WizardForm.ComponentsList.ItemEnabled[I] := False;
+      WizardForm.ComponentsList.ItemSubItem[I] := 'already installed';
+    end;
 end;
 
 function NextButtonClick(CurPageID: Integer): Boolean;
@@ -202,11 +269,11 @@ begin
   if not WizardIsComponentSelected('wingetmodule') then
     Exit;
 
-  Dest := WinGetModuleDir;
-  if FileExists(Dest + '\{#WinGetModuleName}.psd1') then begin
-    Log('WinGet module: {#WinGetModuleVersion} already installed in ' + Dest);
+  if WinGetModuleInstalled then begin
+    Log('WinGet module: {#WinGetModuleVersion} or newer already installed, not downloaded');
     Exit;
   end;
+  Dest := WinGetModuleDir;
   if not WinGetModuleArchiveReady then begin
     Log('WinGet module: NOT installed, the updater is installed without it: nothing was downloaded');
     Exit;
@@ -263,8 +330,8 @@ begin
   if not WizardIsComponentSelected('wingetmodule') then
     Exit;
 
-  if FileExists(ExpandConstant('{commonpf64}\PowerShell\7\pwsh.exe')) then begin
-    Log('PowerShell 7: already installed, left alone');
+  if PwshInstalled then begin
+    Log('PowerShell 7: already installed, left alone, not downloaded');
     Exit;
   end;
   if not PwshMsiReady then begin

@@ -184,6 +184,14 @@ type Updater struct {
 	driverFn    func(*product.Product) installer.Driver
 	notifyBoxFn func(notify.Message, int) bool
 	toastFn     func(icon, title, body string) bool
+	// waitExitFn overrides process.WaitForExitUnder for watchProductExit.
+	waitExitFn func(ctx context.Context, p *product.Product) error
+
+	// exitWatchers holds the slugs whose watchProductExit goroutine is
+	// running, so a cycle that defers the same product again does not start
+	// a second one. The goroutine removes its own slug, hence the lock.
+	exitWatchersMu sync.Mutex
+	exitWatchers   map[string]bool
 
 	// productDownloads caches one download.Manager per product other than
 	// EMLy (downloadsFor). detectWarned and waitNotified keep the per-product
@@ -511,7 +519,9 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	// field rather than threaded through apply/install's signatures - both
 	// run on this same poll goroutine.
 	trigger := u.wakeReason
-	if trigger == "" {
+	if trigger == "" || trigger == productExitWake {
+		// A product's app closing is a local event, not one of the
+		// update.started triggers the server knows: it reads as a cycle.
 		trigger = "cycle"
 	}
 	u.cycleTrigger = trigger

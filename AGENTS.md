@@ -261,8 +261,13 @@ EMLy is a product it distributes.
   - **Not blocking when the app is open.** A generic product whose exe is
     running keeps its pending entry and the round goes on; the user gets one
     "update pending" notification per version (in-memory set, recorded only
-    when a box was actually shown, so nobody-logged-on retries next cycle) and
-    the next cycle installs once the app is closed. A forced update still
+    when a box was actually shown, so nobody-logged-on retries next cycle), and
+    `watchProductExit` starts one goroutine per product that waits for the
+    app to exit (`process.WaitForExitUnder`, scoped like below) and then
+    wakes `RunLoop` with reason `product-exit` (reported as trigger `cycle`).
+    The goroutine **never installs**: the woken cycle does, so the "one setup
+    at a time" rule holds. If EMLy is blocking the cycle in `WaitForExit` at
+    that moment, the wake waits until EMLy is done. A forced update still
     warns and terminates, like EMLy.
   - **A product's process is matched by name *and* location.** Its `exeName`
     comes from the document and the service is SYSTEM, so "is it running" and

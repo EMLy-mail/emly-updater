@@ -63,6 +63,11 @@ func IsRunning(exeName string) bool {
 // sleeps in WaitForMultipleObjects; after any instance exits it re-snapshots,
 // which also catches instances launched while waiting.
 func WaitForExit(ctx context.Context, exeName string) error {
+	return waitForExit(ctx, func() ([]uint32, error) { return ListPIDs(exeName) })
+}
+
+// waitForExit is WaitForExit over any PID lister, re-run after every exit.
+func waitForExit(ctx context.Context, list func() ([]uint32, error)) error {
 	// A manual-reset event bridges context cancellation into the Win32 wait.
 	cancelEvent, err := windows.CreateEvent(nil, 1, 0, nil)
 	if err != nil {
@@ -81,7 +86,7 @@ func WaitForExit(ctx context.Context, exeName string) error {
 	}()
 
 	for {
-		pids, err := ListPIDs(exeName)
+		pids, err := list()
 		if err != nil {
 			return err
 		}
@@ -209,6 +214,12 @@ func TerminateAllUnder(exeName, dir string) (int, error) {
 		return 0, err
 	}
 	return terminatePIDs(pids)
+}
+
+// WaitForExitUnder is WaitForExit restricted to instances inside dir. An
+// instance of the same name launched elsewhere while waiting is ignored.
+func WaitForExitUnder(ctx context.Context, exeName, dir string) error {
+	return waitForExit(ctx, func() ([]uint32, error) { return ListPIDsUnder(exeName, dir) })
 }
 
 // imagePath returns the full Win32 path of pid's executable.

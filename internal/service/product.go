@@ -355,7 +355,8 @@ func (u *Updater) productCycle(ctx context.Context, cyc *cycleState, p *product.
 // applyProduct installs a verified pending update according to the app's
 // running state: not running → install now; running and forced → optional
 // WTS warning, then kill; running and non-forced → EMLy waits for exit, any
-// other product is deferred to a later cycle.
+// other product is deferred and a goroutine wakes the loop when it exits
+// (watchProductExit).
 func (u *Updater) applyProduct(ctx context.Context, cyc *cycleState, p *product.Product, pend *state.Pending, ps productState) error {
 	// Coarse check, same reasoning as Cycle's own: apply is reached after
 	// resolveTarget/download, which can take a while, so a destructive
@@ -439,10 +440,12 @@ func (u *Updater) applyProduct(ctx context.Context, cyc *cycleState, p *product.
 		} else {
 			// A product other than EMLy never blocks the cycle: it may be a
 			// chat kept open all day, and waiting on it would hold every
-			// product after it. The pending entry stays; the next cycle
-			// installs as soon as the app is closed.
+			// product after it. The pending entry stays and a goroutine
+			// waits for the app to close, then wakes the loop: the install
+			// itself still runs in a cycle, one setup at a time.
 			u.notifyWaitingOnce(p, pend.Version)
-			u.Log.Info("app is running and the update is not forced - install deferred to a later cycle",
+			u.watchProductExit(ctx, p)
+			u.Log.Info("app is running and the update is not forced - install deferred until it exits",
 				"product", p.Slug, "target", pend.Version)
 			return nil
 		}
@@ -465,6 +468,57 @@ func (u *Updater) notifyWaitingOnce(p *product.Product, version string) {
 	if u.notifyBox(notify.ProductWaitingMessage(p.Name), 60) {
 		u.waitNotified[p.Slug] = version
 	}
+}
+
+// productExitWake is the wake reason watchProductExit sends.
+const productExitWake = "product-exit"
+
+// watchProductExit starts, unless one is already running for p, a goroutine
+// that waits for p's app to exit and then wakes RunLoop, so the deferred
+// install runs right away instead of at the next poll. It installs nothing
+// itself: the cycle stays the only place a setup runs (spec §5.1). It ends
+// with ctx, i.e. with the service.
+//
+// If EMLy is blocking the cycle in WaitForExit at that moment, the wake
+// waits in the channel until EMLy's install is done.
+func (u *Updater) watchProductExit(ctx context.Context, p *product.Product) {
+	u.exitWatchersMu.Lock()
+	defer u.exitWatchersMu.Unlock()
+	if u.exitWatchers[p.Slug] {
+		return
+	}
+	if u.exitWatchers == nil {
+		u.exitWatchers = map[string]bool{}
+	}
+	u.exitWatchers[p.Slug] = true
+
+	wait := u.waitExitFn
+	if wait == nil {
+		wait = func(ctx context.Context, p *product.Product) error {
+			return process.WaitForExitUnder(ctx, p.ExeName, p.InstallDir)
+		}
+	}
+	go func() {
+		defer u.recoverGoroutine("watchProductExit", "product", p.Slug)
+		defer func() {
+			u.exitWatchersMu.Lock()
+			delete(u.exitWatchers, p.Slug)
+			u.exitWatchersMu.Unlock()
+		}()
+		if err := wait(ctx, p); err != nil {
+			if ctx.Err() == nil {
+				// The next poll still installs once the app is closed.
+				u.Log.Warn("waiting for the app to exit failed, install left to the next cycle",
+					"product", p.Slug, "error", err.Error())
+			}
+			return
+		}
+		u.Log.Info("app exited, waking the update loop for the deferred install", "product", p.Slug)
+		select {
+		case u.wake <- productExitWake:
+		default: // a wake is already pending: that cycle installs it
+		}
+	}()
 }
 
 // installProduct runs the setup and the post-install steps. The pending

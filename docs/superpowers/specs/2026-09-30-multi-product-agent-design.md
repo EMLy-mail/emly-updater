@@ -306,8 +306,12 @@ giro.
   distruttivo ricontrollato, `process.TerminateAll(ExeName)`, install.
 - **Non forzato, prodotto generico**: **non blocca**. Il pending resta, parte
   una notifica per la sessione utente una volta per versione (set in memoria;
-  dopo un riavvio del servizio può ripartire), e il giro prosegue. Il ciclo
-  successivo ritenta e installa appena l'app è chiusa.
+  dopo un riavvio del servizio può ripartire), e il giro prosegue. Una
+  goroutine per prodotto (`watchProductExit`) attende l'uscita dell'app
+  (`WaitForExitUnder`) e sveglia subito il loop: il ciclo svegliato installa.
+  La goroutine non installa mai da sé, così resta un solo setup alla volta
+  (§5.1). Se in quel momento EMLy blocca il ciclo in `WaitForExit`, il
+  risveglio aspetta che EMLy finisca.
 - **Non forzato, EMLy**: `WaitForExit` bloccante, come oggi.
 
 Testo della notifica per i prodotti generici (solo italiano):

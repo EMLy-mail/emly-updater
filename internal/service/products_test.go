@@ -121,6 +121,10 @@ type productHarness struct {
 	driver  *fakeDriver
 	running map[string]bool
 	boxes   []notify.Message
+	// waits counts watchProductExit goroutines started; closing exited
+	// releases them as if the app had closed.
+	waits  atomic.Int32
+	exited chan struct{}
 }
 
 // newProductHarness: EMLy installed at the manifest's version, RocketChat
@@ -134,7 +138,7 @@ func newProductHarness(t *testing.T, srv *productServer) *productHarness {
 	cfg.EMLyConfigFile = filepath.Join(emlyDir, "config.ini")
 	_ = os.WriteFile(cfg.EMLyConfigFile, []byte("[EMLy]\nGUI_SEMVER="+srv.emlyVersion+"\n"), 0o644)
 
-	h := &productHarness{rcDir: t.TempDir(), running: map[string]bool{}}
+	h := &productHarness{rcDir: t.TempDir(), running: map[string]bool{}, exited: make(chan struct{})}
 	_ = os.WriteFile(filepath.Join(h.rcDir, "version.txt"), []byte("1.0.0\r\n"), 0o644)
 	h.driver = &fakeDriver{dir: h.rcDir}
 
@@ -150,6 +154,15 @@ func newProductHarness(t *testing.T, srv *productServer) *productHarness {
 	}
 	u.notifyBoxFn = func(m notify.Message, _ int) bool { h.boxes = append(h.boxes, m); return true }
 	u.toastFn = func(string, string, string) bool { return true }
+	u.waitExitFn = func(ctx context.Context, _ *product.Product) error {
+		h.waits.Add(1)
+		select {
+		case <-h.exited:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
 
 	snap := u.Policy.Current()
 	snap.Parsed.Global.Updater.Resolver = policy.ResolverSettings{Attempts: 1}
@@ -165,8 +178,9 @@ func newProductHarness(t *testing.T, srv *productServer) *productHarness {
 
 func (h *productHarness) cycle(t *testing.T) error {
 	t.Helper()
-	cyc := h.u.beginCycle(context.Background(), true)
-	return h.u.Cycle(context.Background(), cyc)
+	// t.Context, so a watchProductExit goroutine still waiting ends with the test.
+	cyc := h.u.beginCycle(t.Context(), true)
+	return h.u.Cycle(t.Context(), cyc)
 }
 
 func TestCycleUpdatesAProduct(t *testing.T) {
@@ -208,6 +222,50 @@ func TestRunningProductDefersWithOneNotification(t *testing.T) {
 	}
 	if len(h.driver.installs) != 1 {
 		t.Fatalf("installs after close = %v", h.driver.installs)
+	}
+}
+
+// A deferred product gets one exit watcher however many cycles defer it, and
+// the app closing wakes the loop instead of waiting for the next poll.
+func TestRunningProductExitWakesTheLoop(t *testing.T) {
+	h := newProductHarness(t, newProductServer(t))
+	h.u.wake = make(chan string, 1)
+	h.running["3g-RocketChat.exe"] = true
+	for i := 0; i < 3; i++ {
+		if err := h.cycle(t); err != nil {
+			t.Fatalf("cycle %d: %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for h.waits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if n := h.waits.Load(); n != 1 {
+		t.Fatalf("exit watchers = %d, want 1", n)
+	}
+	if len(h.driver.installs) != 0 {
+		t.Fatalf("installed while running: %v", h.driver.installs)
+	}
+
+	h.running["3g-RocketChat.exe"] = false
+	close(h.exited)
+	select {
+	case reason := <-h.u.wake:
+		if reason != productExitWake {
+			t.Fatalf("wake reason = %q", reason)
+		}
+		h.u.wakeReason = reason
+	case <-time.After(5 * time.Second):
+		t.Fatal("app exit did not wake the loop")
+	}
+	if err := h.cycle(t); err != nil {
+		t.Fatal(err)
+	}
+	if len(h.driver.installs) != 1 || h.driver.installs[0] != "1.1.0" {
+		t.Fatalf("installs after exit = %v, want [1.1.0]", h.driver.installs)
+	}
+	if h.u.cycleTrigger != "cycle" {
+		t.Errorf("trigger = %q, want cycle", h.u.cycleTrigger)
 	}
 }
 

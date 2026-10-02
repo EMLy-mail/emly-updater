@@ -21,5 +21,6 @@
   "VarFileInfo": {
     "Translation": { "LangID": 1040, "Charset": 1200 }
   },
-  "icon_path": "installer/appicon.ico"
+  "IconPath": "installer/appicon.ico",
+  "ManifestPath": "app.manifest"
 }

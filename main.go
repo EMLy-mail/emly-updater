@@ -37,6 +37,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -51,6 +52,7 @@ import (
 	"emlyupdater/internal/progresswin"
 	"emlyupdater/internal/service"
 	"emlyupdater/internal/toast"
+	"emlyupdater/internal/tray"
 	"emlyupdater/internal/version"
 )
 
@@ -112,6 +114,10 @@ func main() {
 		err = cmdShowProgress(os.Args[2:])
 	case "products":
 		err = cmdProducts(os.Args[2:])
+	case "tray":
+		err = tray.Run()
+	case "apply-settings":
+		err = cmdApplySettings(os.Args[2:])
 	case "restart-service":
 		// Internal: launched detached by the service itself for the client
 		// channel's service.restart command. cmdStop waits for the service
@@ -127,7 +133,7 @@ func main() {
 }
 
 func usage() {
-	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run|products [--check]\n", os.Args[0])
+	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run|products [--check]|tray\n", os.Args[0])
 	if err != nil {
 		return
 	}
@@ -553,4 +559,103 @@ func cmdProducts(args []string) error {
 	log := logging.New(filepath.Join(os.TempDir(), "emly-updater-products"), "", false)
 	u := service.New(cfg, log, false)
 	return u.ReportProducts(context.Background(), os.Stdout, *check)
+}
+
+
+// cmdApplySettings writes the given config.ini keys and restarts the
+// service so it loads them. Run elevated by the tray's settings window
+// (internal/tray), through the UAC prompt: config.ini is writable only by
+// administrators and SYSTEM. Only config.EditableKeys are accepted, and the
+// edited file is validated exactly as the service loads it before it
+// replaces the old one - an invalid edit leaves config.ini untouched.
+//
+// --result names a file the outcome is written to ("ok" or the error), since
+// the elevated process has no console the tray could read.
+func cmdApplySettings(args []string) (err error) {
+	fs := flag.NewFlagSet("apply-settings", flag.ContinueOnError)
+	result := fs.String("result", "", "file to write the outcome to")
+	restart := fs.Bool("restart", true, "restart the service when it is running")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	defer func() {
+		if *result == "" {
+			return
+		}
+		msg := "ok"
+		if err != nil {
+			msg = err.Error()
+		}
+		_ = os.WriteFile(*result, []byte(msg), 0644)
+	}()
+
+	var edits []config.Edit
+	for _, a := range fs.Args() {
+		e, err := config.ParseEdit(a)
+		if err != nil {
+			return err
+		}
+		edits = append(edits, e)
+	}
+	if len(edits) == 0 {
+		return fmt.Errorf("no settings to apply")
+	}
+
+	_ = config.EnsureDirs()
+	log := logging.New(config.LogsDir(), config.ExeLogPath(), false)
+	log.AttachEventLog()
+	defer log.Close()
+
+	changes := make([]string, len(edits))
+	for i, e := range edits {
+		changes[i] = e.Key + "=" + e.Value
+	}
+	if err := config.WriteEdits(config.ConfigPath(), edits); err != nil {
+		log.Warn("apply-settings: config.ini not changed", "changes", strings.Join(changes, " "), "error", err.Error())
+		return err
+	}
+	log.InfoEvent(logging.EventGeneric, "apply-settings: config.ini edited from the tray",
+		"changes", strings.Join(changes, " "), "user", currentUser())
+
+	if !*restart || !serviceRunning() {
+		return nil
+	}
+	if err := cmdStop(); err != nil {
+		return fmt.Errorf("settings saved, but the service did not stop: %w", err)
+	}
+	if err := cmdStart(); err != nil {
+		return fmt.Errorf("settings saved, but the service did not start again: %w", err)
+	}
+	return nil
+}
+
+// serviceRunning reports whether the agent service is running; false when it
+// is not installed or cannot be queried.
+func serviceRunning() bool {
+	m, err := mgr.Connect()
+	if err != nil {
+		return false
+	}
+	defer m.Disconnect()
+	s, err := m.OpenService(service.Name)
+	if err != nil {
+		return false
+	}
+	defer s.Close()
+	st, err := s.Query()
+	return err == nil && st.State == svc.Running
+}
+
+// currentUser names the account apply-settings runs as, for the log line.
+func currentUser() string {
+	t := windows.GetCurrentProcessToken()
+	u, err := t.GetTokenUser()
+	if err != nil {
+		return ""
+	}
+	account, domain, _, err := u.User.Sid.LookupAccount("")
+	if err != nil {
+		return u.User.Sid.String()
+	}
+	return domain + `\` + account
 }

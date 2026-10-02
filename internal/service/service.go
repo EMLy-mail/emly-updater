@@ -362,6 +362,14 @@ type Updater struct {
 	// pushes cannot collapse into a stampede of early cycles. Zero means
 	// none yet this process.
 	lastNotifyWake time.Time
+	// lastCheckNow is when the tray's CheckNowControl last woke the loop (see
+	// RequestCheck, checknow.go); guarded by notifyWakeMu, since the SCM
+	// control handler is not the poll goroutine either.
+	lastCheckNow time.Time
+
+	// readOnly is set by Prepare: this Updater only reports (the tray, the
+	// products subcommand) and must not write the service's files.
+	readOnly bool
 }
 
 // clock is the time source; tests pin it.
@@ -519,9 +527,10 @@ func (u *Updater) Cycle(ctx context.Context, cyc *cycleState) error {
 	// field rather than threaded through apply/install's signatures - both
 	// run on this same poll goroutine.
 	trigger := u.wakeReason
-	if trigger == "" || trigger == productExitWake {
-		// A product's app closing is a local event, not one of the
-		// update.started triggers the server knows: it reads as a cycle.
+	if trigger == "" || trigger == productExitWake || trigger == checkNowWake {
+		// A product's app closing, or the tray's "check now", is a local
+		// event, not one of the update.started triggers the server knows: it
+		// reads as a cycle.
 		trigger = "cycle"
 	}
 	u.cycleTrigger = trigger
@@ -925,6 +934,8 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 		switch c.Cmd {
 		case svc.Interrogate:
 			changes <- c.CurrentStatus
+		case CheckNowControl:
+			h.Updater.RequestCheck()
 		case svc.SessionChange:
 			// Parsed right here: EventData points into memory the SCM only
 			// lends for the duration of its control handler call.

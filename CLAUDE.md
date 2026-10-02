@@ -60,6 +60,9 @@ The generated file is committed, so neither is needed for a build, `go test ./..
 ## Running it locally
 
 `emly-updater run` is the foreground debug mode (same loop as the service, logs to console).
+`emly-updater tray` starts the per-user tray icon (AGENTS.md § *Tray*). It is read-only
+against the machine except through the elevated `apply-settings`, so it runs safely beside
+an installed service.
 A named kernel mutex (`Global\EMLyUpdaterSingleton`) stops it racing an installed service.
 
 To exercise the real code paths without any server infrastructure, see

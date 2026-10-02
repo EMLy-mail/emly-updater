@@ -49,6 +49,12 @@ DefaultDirName={autopf}\{#ApplicationName}
 OutputBaseFilename={#ApplicationName}_Installer_{#ApplicationVersion}
 ArchitecturesInstallIn64BitMode=x64compatible
 DisableProgramGroupPage=yes
+; The tray (EMLyUpdater.exe tray) runs the installed exe in every user
+; session, so replacing the file needs it closed: the Restart Manager does it
+; (the tray exits on WM_ENDSESSION) and restarts it afterwards. Both are Inno
+; Setup's defaults, spelled out because the tray depends on them.
+CloseApplications=yes
+RestartApplications=yes
 ; Service registration requires elevation; deployment runs via IT tooling
 ; (GPO/Intune) or an admin shell anyway.
 PrivilegesRequired=admin
@@ -88,11 +94,25 @@ Source: "appicon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; prima il file precedente come config.prev.ini. Le personalizzazioni locali
 ; NON sopravvivono all'upgrade: ogni release riparte dal proprio default.
 
+[Registry]
+; The tray icon (EMLyUpdater.exe tray, internal/tray), started at every
+; user's logon. EMLyUpdater.exe is a console program: run directly from Run
+; it would open a console window for the life of the tray, so it is hosted by
+; a headless conhost instead (Windows 10 1809+). The value name is the
+; display name Task Manager's Startup tab shows.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#ProductName}"; ValueData: """{sys}\conhost.exe"" --headless ""{app}\{#ApplicationName}.exe"" tray"; Flags: uninsdeletevalue
+
 [Run]
 ; Register (or refresh, on upgrade) the auto-start LocalSystem service, the
 ; Event Log source, and the ProgramData tree; then start it.
 Filename: "{app}\{#ApplicationName}.exe"; Parameters: "install"; Flags: runhidden waituntilterminated
 Filename: "{app}\{#ApplicationName}.exe"; Parameters: "start"; Flags: runhidden waituntilterminated
+; Interactive installs only: start the tray now for the user who ran the
+; setup rather than at their next logon. A silent install (GPO, self-update)
+; skips it - there the Restart Manager relaunches a tray it closed to replace
+; the exe (RegisterApplicationRestart), and every other session gets it at
+; logon.
+Filename: "{sys}\conhost.exe"; Parameters: "--headless ""{app}\{#ApplicationName}.exe"" tray"; Flags: nowait runasoriginaluser skipifsilent
 
 [UninstallRun]
 ; Stops and deletes the service and removes the Event Log source.

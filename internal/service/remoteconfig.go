@@ -53,7 +53,7 @@ func (u *Updater) initPolicy() {
 	if err != nil {
 		u.Log.Warn("remote configuration cache unreadable, moving it aside and using the default policy",
 			"path", path, "error", err.Error())
-		_ = policy.QuarantineCache(path, u.cacheBadPath())
+		u.quarantineCache(path)
 		u.Policy = policy.NewStore(fallback)
 		return
 	}
@@ -68,7 +68,7 @@ func (u *Updater) initPolicy() {
 		u.Log.ErrorEvent(logging.EventRemoteConfigRejected,
 			"cached remote configuration failed validation, moving it aside and using the default policy",
 			"path", path, "revision", cache.Revision(), "problems", probs.Error())
-		_ = policy.QuarantineCache(path, u.cacheBadPath())
+		u.quarantineCache(path)
 		u.Policy = policy.NewStore(fallback)
 		return
 	}
@@ -85,6 +85,17 @@ func (u *Updater) initPolicy() {
 		"revision", snap.Revision(), "generatedAt", snap.GeneratedAt(),
 		"fetchedAt", snap.FetchedAt.Format(time.RFC3339), "fetchedFrom", snap.FetchedFrom,
 		"source", snap.Source.String())
+}
+
+// quarantineCache moves a cache that failed to load or validate aside -
+// unless this Updater only reports (Prepare): the tray and the products
+// subcommand must never touch the service's files, even when an
+// administrator runs them.
+func (u *Updater) quarantineCache(path string) {
+	if u.readOnly {
+		return
+	}
+	_ = policy.QuarantineCache(path, u.cacheBadPath())
 }
 
 // configCandidates lists the base URLs to ask for the document, in order:

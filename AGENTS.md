@@ -28,7 +28,9 @@ iscc installer\installer.iss
 ```
 main.go                  Subcommands: install | uninstall | start | stop | run (foreground debug) | show-toast (internal, see notify/) |
                          restart-service (internal: detached stop+start for the client channel's service.restart, see service/clientpower.go) |
-                         products [--check] (read-only: detection, pending and attempts per product; --check also asks the manifest, never downloads)
+                         products [--check] (read-only: detection, pending and attempts per product; --check also asks the manifest, never downloads) |
+                         tray (the per-user notification-area icon, see internal/tray) |
+                         apply-settings (admin: write config.ini keys from the tray and restart the service)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
@@ -93,6 +95,10 @@ internal/
   assoc/                 HKLM file-association self-heal after install
   cert/                  Embedded 3gIT code-signing certificate + install into Root/TrustedPublisher (machine + console user)
   ipc/                   Named-pipe server exposing SystemInfo/ADStatus/Config to the EMLy client (protobuf)
+  tray/                  `tray` subcommand: notification-area icon + settings window (windigo) in each user's
+                         session. Reads config.ini and the effective policy (service.Updater.Prepare, read-only),
+                         writes config.ini only through the elevated `apply-settings`, wakes the service with
+                         service.CheckNowControl, dry-runs the manifest per product (CheckProduct/CheckUpdater)
   winget/                Read-only listing of winget-upgradable packages via the Microsoft.WinGet.Client
                          PowerShell module (JSON, never `winget upgrade` text); CLI in tools/winget-update-parser
 ```
@@ -435,9 +441,11 @@ EMLy is a product it distributes.
   verbatim in `session.changed`'s `events` (`internal/machineinfo/sessionchange.go`,
   CLIENT_WS_PROTOCOL.md §8.1); renaming one is a protocol change, not a local refactor.
 - **`config.ini` is never written at runtime** - the source decision lives in
-  memory and in the log (event 700), nowhere else. `config.Reset` (on install)
-  is the only writer of that file. `config.SetPrimary` is gone: a config file
-  the service rewrites is a config file with two owners and no truth.
+  memory and in the log (event 700), nowhere else. The service never writes
+  that file: `config.Reset` (on install) and `config.WriteEdits` (the tray's
+  elevated `apply-settings`, i.e. an administrator editing it) are its only
+  writers. `config.SetPrimary` is gone: a config file the service rewrites is a
+  config file with two owners and no truth.
 - **Fail-open, always** - an unreachable endpoint, a `204`, a `304`, a stale
   cache: none of them pause anything. Only an explicit, valid
   `control.updater.enabled = false` does, and even then the config fetch, IPC
@@ -680,6 +688,110 @@ checklist is their verification.
    the loop wakes within the jitter window, `update.available`/`update.started` events
    appear, then `update.applied` once the new build comes back up.
 
+## Tray (`EMLyUpdater.exe tray`)
+
+`internal/tray`. A notification-area icon started at every logon (HKLM `Run`,
+written by the installer) with a settings window over `config.ini`, a "check
+now", and a products window. It is a **client of the service, never a second
+agent**: it installs nothing, and the service gains no new inbound surface for it.
+
+- **Reading**: `config.Load` plus a `service.Updater` of its own (what
+  `products` builds too), on which it calls `Prepare(ctx, false)` and then
+  `EffectivePolicy`/`ProductRows`. `Prepare` makes the Updater **read-only**: it
+  must not even move an invalid cache aside (`quarantineCache`), because an
+  administrator running the tray (or `products`) would otherwise rename the
+  service's `remote-config.json`. `bootRetry=false` believes a failed DC lookup
+  at once: the boot retry window is up to 30 s of "Caricamento…" for nothing on
+  a machine that booted long ago. Everything runs off the UI thread, serialised
+  by `backend.mu`.
+- **The settings shown are the effective ones**: when a remote document is in
+  force (`PolicyView.Governed`, i.e. the policy source is not `default`), the keys
+  it overrides (`governedKeys` in `settings.go`: poll, channel, primary, DC retry,
+  self-update, critical warning, certificate) show the document's value and are
+  disabled. Unticking "Configurazione remota" re-enables them with config.ini's
+  values, since that is what the service will use after the save. `remoteConfig`,
+  `ipc` and `progressWindow` have no counterpart in the document and are always
+  editable. The list mirrors `policy.DefaultsFromConfig`: a key added there
+  belongs in `governedKeys` too.
+- **Writing** goes through `EMLyUpdater.exe apply-settings --result <tmp>
+  section.key=value...`, launched with `ShellExecuteEx("runas")`, because
+  `config.ini` is `Users:(RX)`. Only `config.EditableKeys` are accepted: URLs, the
+  API key and the pipe name are not something a settings window should re-point,
+  and the elevated process trusts its command line. `config.ApplyEdits` changes
+  only the value part of each line, so comments and alignment survive;
+  `config.WriteEdits` validates the result with `config.Parse` (the service's own
+  loader) before the atomic replace, and the tray runs the same check unelevated
+  first so a bad value never costs a UAC prompt. The edit is logged with the
+  account (`apply-settings: config.ini edited from the tray`), then the service is
+  restarted, since it reads `config.ini` only at start. **The edit lasts until the
+  next install or self-update**, which resets the file (`config.Reset`); the
+  window says so.
+- **"Controlla ora" is a service control code, not IPC**: `service.CheckNowControl`
+  (200, in the user-defined range). The default service DACL already grants
+  interactive users `SERVICE_USER_DEFINED_CONTROL` (`sc sdshow EMLyUpdater` →
+  `(A;;CCLCSWLOCRRC;;;IU)`, where `CR` is that right), so a non-elevated tray can
+  send it with no change to the pipe (which admits only `EMLy.exe`), its proto, or
+  the service's DACL. It carries no data, so there is nothing to validate.
+  `RequestCheck` wakes `RunLoop` with reason `check-now` (reported as trigger
+  `cycle`, like `product-exit`) and forces the next config fetch, at most once a
+  minute (`checkNowThrottle`). It runs a full ordinary cycle, downloads and
+  installs included, paced by the server's 429s like any other. An older service
+  ignores the code.
+- **"Verifica" in the products window is a dry run**: `CheckProduct` /
+  `CheckUpdater` (`notePreferred=false`, no download, no `state.json` write). It
+  does reach the server, with the usual `X-EMLy-*` identity headers, from the
+  user's session: one small manifest GET per row checked.
+- **The tray locks `EMLyUpdater.exe`**, which every install replaces. Inno Setup's
+  Restart Manager (`CloseApplications`/`RestartApplications`, both spelled out in
+  `installer.iss`) closes it: the tray quits on `WM_ENDSESSION` (hiding on
+  `WM_CLOSE` is only for the user's close button), and it calls
+  `RegisterApplicationRestart("tray")` at start so Windows brings it back
+  afterwards. If it is not restarted in some session, it is back at the next logon.
+- **It is a console binary**: the `Run` value starts it as `conhost.exe --headless
+  "...\EMLyUpdater.exe" tray`, otherwise a console window stays open beside the
+  icon. One tray per session (`Local\AryxDAgentTray` mutex).
+- **`ListViewItem.SetData` is not used** in the products window: in testing the
+  agent's row read back EMLy's slug, so the window keeps its own index → slug
+  slice instead.
+- **Theme follows Windows' app mode, live** (`theme.go`): light or dark from
+  `AppsUseLightTheme`, re-applied on `WM_SETTINGCHANGE("ImmersiveColorSet")`;
+  DWM dark title bar, rounded corners and Mica. Three things no visual style
+  does on Windows 11 26100, so they are drawn by hand in dark mode only:
+  checkbox captions (a themed checkbox ignores `WM_CTLCOLORBTN`, so each row is a
+  bare glyph + a Static, `checkRow`; a disabled row's label is painted dim rather
+  than disabled, because a disabled Static is drawn etched), push buttons
+  (`darkButton`, NM_CUSTOMDRAW), and list view column titles (`darkListHeader`,
+  NM_CUSTOMDRAW on the header via a list view subclass - windigo dispatches
+  WM_NOTIFY only by (ID, code), so `fixHeaderID` pins the header's ID first). The
+  undocumented uxtheme ordinals (104, 133, 135, 136) are looked up by ordinal and
+  skipped when missing. All of it depends on the Common Controls 6 manifest (see
+  Common Pitfalls → `versioninfo.json`).
+
+### Tray manual verification
+
+`go test` covers only `config` (edits) and `service` (`RequestCheck`, `Prepare`):
+the window, UAC and the Restart Manager need a desktop.
+
+1. Install, log on as a **standard user**: the icon appears, with no console
+   window. The menu's first line shows the service state.
+2. Settings with a cached document: the governed fields show the document's
+   values, greyed out; untick "Configurazione remota" and they become editable
+   with config.ini's values.
+3. Change the poll interval and save: UAC prompt (admin credentials), then the
+   balloon, the `apply-settings: config.ini edited from the tray` line in the
+   service log, a service restart, and `config.ini` with only that value changed.
+   Cancel the UAC prompt: nothing changes and the edit stays on screen. Enter `0`:
+   the error is shown before any UAC prompt.
+4. "Controlla ora": `update check requested from the tray, waking the update
+   loop`, then a cycle, in the service log; a second click within a minute logs
+   `throttled`. With the service stopped, the balloon says so and nothing is sent.
+5. Prodotti → "Verifica tutti": the agent's row shows the updater manifest's
+   version, each product its own. The service log shows nothing (it was not
+   involved); the tray's own log is `%TEMP%\aryxd-agent-tray\updater.log`.
+6. Self-update with the tray open, from the service (silent, as SYSTEM): the setup
+   does not fail on a locked `EMLyUpdater.exe`, and the tray comes back, in the
+   console session and in an RDP session. **Not verified yet.**
+
 ## Configuration Reference
 
 `%ProgramData%\EMLyUpdater\config.ini` - full annotated defaults in [internal/config/config.default.ini](internal/config/config.default.ini).
@@ -879,6 +991,8 @@ The setup:
 - Installs the binary to `%ProgramFiles%\EMLyUpdater\`
 - Calls `emly-updater.exe install` (seeds config, registers service + Event Log source)
 - Calls `emly-updater.exe start`
+- Writes the HKLM `Run` value that starts the tray at every logon (`conhost.exe
+  --headless ... tray`), and on an interactive install starts it right away
 - On upgrade: stops the service first (60 s wait), then replaces the binary
 - Optional component `wingetmodule` (**off by default**): downloads
   `Microsoft.WinGet.Client` from PowerShell Gallery at install time and puts it in
@@ -916,7 +1030,13 @@ Copy-Item .\build\bin\emly-updater.exe "C:\Program Files\EMLyUpdater\"
 
 ### Post-deployment config tweaks
 
-Edit `%ProgramData%\EMLyUpdater\config.ini` (survives upgrades). Changes take effect on the next poll cycle; no service restart needed for most keys.
+Edit `%ProgramData%\EMLyUpdater\config.ini` as an administrator - by hand, or from
+the tray's settings window, which validates the edit and restarts the service for
+you. The service reads the file only at start, so a hand edit needs a restart.
+Edits do **not** survive an upgrade: every install, self-update included, rewrites
+the file from the new build's defaults (`config.Reset`, previous copy in
+`config.prev.ini`). Anything that must hold fleet-wide belongs in the remote
+configuration document instead.
 
 ## Logs & Diagnostics
 
@@ -968,6 +1088,13 @@ land; the `selfUpdate` record left in `state.json` says which version was attemp
   annual one creates yearly release pressure for nothing), and timestamp the
   signatures themselves (`signtool /tr <rfc3161-url> /td sha256`) so they survive
   the certificate's expiry.
+- **`versioninfo.json` must keep `IconPath` and `ManifestPath`** (PascalCase, as
+  goversioninfo reads them): commit `f62bbf7` replaced both with an `icon_path` key
+  goversioninfo ignores, and every build from 1.7.2 to 1.8.0 shipped with no icon
+  and no manifest. That means no Common Controls 6 (classic progress bar, no
+  `PBS_MARQUEE`, classic tray controls), no `dpiAware`, and the generic icon on the
+  exe itself (Explorer, the tray, the window title bars). Quick check after `go generate`: `resource.syso`
+  is ~575 KB with them, ~1 KB without.
 - **HTTP headers**: set them in `HTTPSource` only - the `Resolver` itself is header-agnostic.
 - **`logging.New` signature**: `(logDir, exeLogPath, console)` - passing an empty string for `exeLogPath` disables the exe-side sink.
 - **InnoSetup version lock**: `installer.iss` uses `{autopf}` and `ArchitecturesInstallIn64BitMode` which require IS 6. IS 5 will refuse to compile it.

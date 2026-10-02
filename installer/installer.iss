@@ -6,7 +6,7 @@
 ; stays EMLyUpdater. ProductName is what people see.
 #define ApplicationName 'EMLyUpdater'
 #define ProductName 'AryxD Agent'
-#define ApplicationVersion '1.8.0'
+#define ApplicationVersion '1.8.1'
 #define ServiceName 'EMLyUpdater'
 
 ; Microsoft.WinGet.Client, the PowerShell module internal/winget drives.

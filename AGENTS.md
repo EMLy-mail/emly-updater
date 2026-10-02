@@ -766,6 +766,12 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   undocumented uxtheme ordinals (104, 133, 135, 136) are looked up by ordinal and
   skipped when missing. All of it depends on the Common Controls 6 manifest (see
   Common Pitfalls → `versioninfo.json`).
+- **Waiting on the backend shows a loading bar** (`loading.go`): an owner-drawn,
+  indeterminate bar in the style of the Explorer copy dialog, while the settings
+  load or save, and while products load or a manifest check runs. Not
+  `msctls_progress32` + `PBS_MARQUEE`, which stays light in the dark palette.
+  `Start`/`Stop` nest, so several checks in flight keep one animation. One per
+  window: windigo keeps a single WM_DRAWITEM handler per window.
 
 ### Tray manual verification
 

@@ -12,6 +12,9 @@ import (
 	"emlyupdater/internal/version"
 )
 
+// productsBarTimer is the products window's loadingBar timer ID.
+const productsBarTimer = 1
+
 // agentSlug is the products window's row for AryxD Agent itself: checked
 // against the updater manifest instead of a product manifest.
 const agentSlug = "aryxd-agent"
@@ -35,6 +38,7 @@ type productsWindow struct {
 	wnd      *ui.Modal
 	list     *ui.ListView
 	status   *ui.Static
+	bar      *loadingBar
 	btnOne   *ui.Button
 	btnAll   *ui.Button
 	btnClose *ui.Button
@@ -59,8 +63,9 @@ func showProducts(a *app) {
 		Column("Installato", ui.DpiX(200)).
 		Column("In sospeso", ui.DpiX(110)).
 		Column("Offerto dal server", ui.DpiX(150)))
-	p.status = ui.NewStatic(p.wnd, ui.OptsStatic().Position(ui.Dpi(12, 252)).Size(ui.Dpi(676, 18)).
+	p.status = ui.NewStatic(p.wnd, ui.OptsStatic().Position(ui.Dpi(12, 252)).Size(ui.Dpi(420, 18)).
 		Text("Caricamento…"))
+	p.bar = newLoadingBar(p.wnd, productsBarTimer, 448, 253, 240, 14)
 	p.btnOne = ui.NewButton(p.wnd, ui.OptsButton().Text("&Verifica selezionato").
 		Position(ui.Dpi(12, 280)).Width(ui.DpiX(140)))
 	p.btnAll = ui.NewButton(p.wnd, ui.OptsButton().Text("Verifica &tutti").
@@ -106,9 +111,11 @@ func showProducts(a *app) {
 
 func (p *productsWindow) load() {
 	p.addRow(agentSlug, version.ProductName, "sì", version.Version, "")
+	p.bar.Start()
 	go func() {
 		rows, err := p.a.be.products(p.a.ctx)
 		p.wnd.UiThread(func() {
+			p.bar.Stop()
 			if err != nil {
 				p.status.Hwnd().SetWindowText("Impossibile leggere i prodotti: " + err.Error())
 				return
@@ -124,8 +131,7 @@ func (p *productsWindow) load() {
 				}
 				p.addRow(r.Slug, name, enabled, r.Detected, r.Pending)
 			}
-			p.status.Hwnd().SetWindowText(strconv.Itoa(len(rows)) +
-				" prodotti. \"Verifica\" chiede al server la versione pubblicata senza scaricare nulla.")
+			p.status.Hwnd().SetWindowText(strconv.Itoa(len(rows)) + " prodotti. \"Verifica\" non scarica nulla.")
 		})
 	}()
 }
@@ -152,6 +158,7 @@ func (p *productsWindow) check(it ui.ListViewItem) {
 	}
 	it.SetText(colOffered, "verifica in corso…")
 	p.busy++
+	p.bar.Start()
 	p.status.Hwnd().SetWindowText("Verifica in corso…")
 	go func() {
 		offered, err := p.a.be.check(p.a.ctx, slug)
@@ -161,6 +168,7 @@ func (p *productsWindow) check(it ui.ListViewItem) {
 			}
 			it.SetText(colOffered, offered)
 			p.busy--
+			p.bar.Stop()
 			if p.busy == 0 {
 				p.status.Hwnd().SetWindowText("Verifica completata.")
 			}

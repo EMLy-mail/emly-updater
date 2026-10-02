@@ -17,6 +17,9 @@ import (
 	"emlyupdater/internal/version"
 )
 
+// settingsBarTimer is the settings window's loadingBar timer ID.
+const settingsBarTimer = 1
+
 // Channel combo entries, in order. Index 0 is "no override".
 var channelValues = []string{"", "stable", "beta"}
 
@@ -47,6 +50,7 @@ type settingsForm struct {
 	btnCheck, btnProducts *ui.Button
 	btnSave, btnCancel    *ui.Button
 	saving                bool
+	bar                   *loadingBar // while loading or saving
 }
 
 func newSettingsForm(a *app) *settingsForm {
@@ -57,6 +61,9 @@ func newSettingsForm(a *app) *settingsForm {
 
 	f.status = ui.NewStatic(w, ui.OptsStatic().Position(ui.Dpi(lx, y)).Size(ui.Dpi(520, 48)).
 		Text("Caricamento della configurazione…"))
+	// Under the status line's first row: while it shows, the status is a
+	// single line ("Caricamento…", "Salvataggio…").
+	f.bar = newLoadingBar(w, settingsBarTimer, lx, y+24, 520, 14)
 	y += 58
 
 	label := func(text string) {
@@ -148,9 +155,13 @@ func (f *settingsForm) reload() {
 	f.snap = snapshot{}
 	f.setAllEnabled(false)
 	f.status.Hwnd().SetWindowText("Caricamento della configurazione…")
+	f.bar.Start()
 	go func() {
 		snap := f.a.be.load(f.a.ctx)
-		f.a.wnd.UiThread(func() { f.fill(snap) })
+		f.a.wnd.UiThread(func() {
+			f.bar.Stop()
+			f.fill(snap)
+		})
 	}()
 }
 
@@ -382,8 +393,9 @@ func (f *settingsForm) save() {
 	}
 
 	f.saving = true
+	f.bar.Start()
 	f.setAllEnabled(false)
-	f.status.Hwnd().SetWindowText("Salvataggio in corso: confermare la richiesta di amministratore, poi il servizio verrà riavviato…")
+	f.status.Hwnd().SetWindowText("Salvataggio: confermare la richiesta di amministratore…")
 	go func() {
 		code, runErr := runElevated(h, f.a.exe, args)
 		out, _ := os.ReadFile(resultPath)
@@ -394,6 +406,7 @@ func (f *settingsForm) save() {
 
 func (f *settingsForm) saved(code uint32, runErr error, detail string) {
 	f.saving = false
+	f.bar.Stop()
 	h := f.a.wnd.Hwnd()
 	switch {
 	case errors.Is(runErr, errElevationCancelled):

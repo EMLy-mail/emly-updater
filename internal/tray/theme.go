@@ -11,10 +11,14 @@ import (
 	"github.com/rodrigocfd/windigo/win"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+
+	"emlyupdater/internal/version"
 )
 
-// Dark/light theme for plain Win32 controls, following Windows' own "app
-// mode" (Settings > Personalization > Colors), switched live when it changes:
+// Dark/light theme for plain Win32 controls, chosen by the user in the
+// settings window ("Tema": Sistema, Chiaro, Scuro; see themeMode). "Sistema"
+// follows Windows' own app mode (Settings > Personalization > Colors),
+// switched live when it changes. The theme is applied through:
 //   - the title bar through DWM (immersive dark mode, Windows 10 2004+);
 //   - backgrounds and text through WM_ERASEBKGND / WM_CTLCOLOR*;
 //   - the controls' visual styles through SetWindowTheme("DarkMode_*");
@@ -26,7 +30,8 @@ import (
 //
 // A themed checkbox draws its own text in black whatever WM_CTLCOLORBTN says,
 // which is unreadable on the dark background: that is why the settings
-// window draws each checkbox as a bare glyph plus a Static (checkRow).
+// window draws each checkbox as a bare glyph plus a Static (checkRow), and
+// each theme radio the same way (themeRow).
 
 type palette struct {
 	bg, editBg, text   win.COLORREF
@@ -103,6 +108,61 @@ func installTheme(w themedWindow) {
 	w.On().Wm(co.WM_CTLCOLORLISTBOX, paintEdit)
 }
 
+// Theme modes, in the order of the settings window's radios. The zero value
+// is "Sistema", so a user who never chose gets Windows' own app mode.
+const (
+	themeSystem = iota
+	themeLight
+	themeDark
+)
+
+// themeKey/themeValue hold the user's choice: per user, like the tray
+// itself, and outside config.ini, which is machine-wide and admin-only.
+var (
+	themeKey   = `Software\` + version.ProductName + `\Tray`
+	themeValue = "Theme"
+)
+
+// themeMode is the theme in use, which can be a not-yet-saved preview from
+// the settings window. UI thread only.
+var themeMode = loadThemeMode()
+
+// loadThemeMode reads the user's saved choice; themeSystem when there is
+// none or it is out of range.
+func loadThemeMode() int {
+	k, err := registry.OpenKey(registry.CURRENT_USER, themeKey, registry.QUERY_VALUE)
+	if err != nil {
+		return themeSystem
+	}
+	defer k.Close()
+	v, _, err := k.GetIntegerValue(themeValue)
+	if err != nil || v > themeDark {
+		return themeSystem
+	}
+	return int(v)
+}
+
+func saveThemeMode(mode int) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, themeKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+	return k.SetDWordValue(themeValue, uint32(mode))
+}
+
+// isDark reports whether themeMode currently means the dark palette.
+func isDark() bool {
+	switch themeMode {
+	case themeLight:
+		return false
+	case themeDark:
+		return true
+	default:
+		return systemDark()
+	}
+}
+
 // systemDark reports whether Windows' app mode is dark (AppsUseLightTheme = 0).
 func systemDark() bool {
 	k, err := registry.OpenKey(registry.CURRENT_USER,
@@ -115,10 +175,10 @@ func systemDark() bool {
 	return err == nil && v == 0
 }
 
-// applyTheme switches w (frame, palette, controls) to the system theme and
-// repaints it. Safe to call again whenever the theme changes.
+// applyTheme switches w (frame, palette, controls) to themeMode and repaints
+// it. Safe to call again whenever the theme changes.
 func applyTheme(w themedWindow) {
-	dark := systemDark()
+	dark := isDark()
 	if dark {
 		curPal = &darkPal
 	} else {
@@ -381,3 +441,43 @@ func (c *checkRow) Enable(on bool) {
 // dimmed are the Statics painted in the dim colour: checkRow labels of
 // disabled rows. UI thread only.
 var dimmed = map[win.HWND]bool{}
+
+// themeRow is the settings window's "Tema" choice: one radio per theme mode,
+// each a bare glyph plus a Static like checkRow. Clicking either part
+// previews the theme at once (onPick); the window saves or reverts it.
+type themeRow struct {
+	radios []*ui.RadioButton
+}
+
+func newThemeRow(parent ui.Parent, x, y int, onPick func(mode int)) *themeRow {
+	names := []string{"Sistema", "Chiaro", "Scuro"} // themeSystem, themeLight, themeDark
+	opts := make([]*ui.VarOptsRadioButton, len(names))
+	for i := range names {
+		opts[i] = ui.OptsRadioButton().Position(ui.Dpi(x+i*90, y)).Size(ui.Dpi(18, 20))
+	}
+	g := ui.NewRadioGroup(parent, opts...)
+	t := &themeRow{}
+	for i, name := range names {
+		mode := i
+		t.radios = append(t.radios, g.Get(i))
+		lbl := ui.NewStatic(parent, ui.OptsStatic().Text(name).Position(ui.Dpi(x+i*90+20, y+3)).Size(ui.Dpi(65, 16)))
+		lbl.On().StnClicked(func() {
+			t.Select(mode)
+			onPick(mode)
+		})
+	}
+	g.On().BnClicked(func(r *ui.RadioButton) { onPick(r.Index()) })
+	return t
+}
+
+// Select checks one radio and unchecks the others: BM_SETCHECK does not do
+// the mutual exclusion a mouse click on a radio does.
+func (t *themeRow) Select(mode int) {
+	for i, r := range t.radios {
+		state := co.BST_UNCHECKED
+		if i == mode {
+			state = co.BST_CHECKED
+		}
+		r.Hwnd().SendMessage(co.BM_SETCHECK, win.WPARAM(state), 0)
+	}
+}

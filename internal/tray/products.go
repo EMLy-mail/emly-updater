@@ -9,6 +9,7 @@ import (
 	"github.com/rodrigocfd/windigo/ui"
 	"github.com/rodrigocfd/windigo/win"
 
+	"emlyupdater/internal/product"
 	"emlyupdater/internal/version"
 )
 
@@ -129,11 +130,24 @@ func (p *productsWindow) load() {
 				if !r.Enabled {
 					enabled = "disattivati"
 				}
-				p.addRow(r.Slug, name, enabled, r.Detected, r.Pending)
+				p.addRow(r.Slug, name, enabled, installedText(r.Detection), r.Pending)
 			}
 			p.status.Hwnd().SetWindowText(strconv.Itoa(len(rows)) + " prodotti. \"Verifica\" non scarica nulla.")
 		})
 	}()
+}
+
+// installedText is the "Installato" cell: just the version, not detection's
+// full "installed X (source)" string; the source is in the service log.
+func installedText(r product.Result) string {
+	switch r.Outcome {
+	case product.Installed:
+		return r.Version
+	case product.Unknown:
+		return "sconosciuto"
+	default:
+		return "non installato"
+	}
 }
 
 // addRow appends a row and remembers its slug by index.

@@ -75,11 +75,11 @@ func Run() error {
 	a := &app{exe: exe, be: newBackend(), ctx: ctx}
 	a.icon, a.bigIcon = exeIcons(exe)
 	a.wmTaskbarCreated, _ = win.RegisterWindowMessage("TaskbarCreated")
-	setDarkMenus(systemDark()) // the app mode must be set before any window exists
+	setDarkMenus(isDark()) // the app mode must be set before any window exists
 
 	a.wnd = ui.NewMain(ui.OptsMain().
 		Title(version.ProductName + " - Impostazioni").
-		Size(ui.Dpi(560, 482)).
+		Size(ui.Dpi(560, 512)).
 		Center(true).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_MINIMIZEBOX | co.WS_CLIPCHILDREN | co.WS_BORDER).
 		CmdShow(co.SW_HIDE))
@@ -128,8 +128,9 @@ func (a *app) events() {
 	}
 
 	// Closing the window only hides it; "Esci" in the menu is the real exit.
+	// Like "Annulla", it drops an unsaved theme preview.
 	a.wnd.On().Wm(co.WM_CLOSE, func(_ ui.Wm) uintptr {
-		a.wnd.Hwnd().ShowWindow(co.SW_HIDE)
+		a.form.cancel()
 		return 0
 	})
 

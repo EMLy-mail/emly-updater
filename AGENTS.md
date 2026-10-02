@@ -753,9 +753,14 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
 - **`ListViewItem.SetData` is not used** in the products window: in testing the
   agent's row read back EMLy's slug, so the window keeps its own index → slug
   slice instead.
-- **Theme follows Windows' app mode, live** (`theme.go`): light or dark from
-  `AppsUseLightTheme`, re-applied on `WM_SETTINGCHANGE("ImmersiveColorSet")`;
-  DWM dark title bar, rounded corners and Mica. Three things no visual style
+- **Theme is the user's choice, "Sistema" by default** (`theme.go`): the
+  settings window's "Tema" row (Sistema / Chiaro / Scuro, glyph + Static radios
+  like `checkRow`) previews on click, keeps it on "Salva" and reverts it on
+  "Annulla" or the close button. It is stored per user in
+  `HKCU\Software\AryxD Agent\Tray\Theme` (DWORD 0/1/2), not in `config.ini`:
+  no UAC prompt, and saved even when the `config.ini` save is cancelled.
+  "Sistema" follows `AppsUseLightTheme`, re-applied live on
+  `WM_SETTINGCHANGE("ImmersiveColorSet")`. DWM dark title bar, rounded corners and Mica. Three things no visual style
   does on Windows 11 26100, so they are drawn by hand in dark mode only:
   checkbox captions (a themed checkbox ignores `WM_CTLCOLORBTN`, so each row is a
   bare glyph + a Static, `checkRow`; a disabled row's label is painted dim rather

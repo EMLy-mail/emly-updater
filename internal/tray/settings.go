@@ -46,6 +46,7 @@ type settingsForm struct {
 	selfUpdate, crit      *checkRow
 	critSeconds           *ui.Edit
 	ipc, cert, progress   *checkRow
+	theme                 *themeRow
 	note                  *ui.Static
 	btnCheck, btnProducts *ui.Button
 	btnSave, btnCancel    *ui.Button
@@ -109,6 +110,10 @@ func newSettingsForm(a *app) *settingsForm {
 	f.cert = check("Installa il certificato di code-signing 3gIT")
 	y += 28
 	f.progress = check("Finestra di avanzamento durante gli aggiornamenti")
+	y += 30
+
+	label("Tema")
+	f.theme = newThemeRow(w, cx, y, func(mode int) { f.previewTheme(mode) })
 	y += 34
 
 	f.note = ui.NewStatic(w, ui.OptsStatic().Position(ui.Dpi(lx, y)).Size(ui.Dpi(520, 66)).Text(
@@ -130,8 +135,34 @@ func newSettingsForm(a *app) *settingsForm {
 	f.btnCheck.On().BnClicked(func() { a.checkNow() })
 	f.btnProducts.On().BnClicked(func() { showProducts(a) })
 	f.btnSave.On().BnClicked(func() { f.save() })
-	f.btnCancel.On().BnClicked(func() { a.wnd.Hwnd().ShowWindow(co.SW_HIDE) })
+	f.btnCancel.On().BnClicked(func() { f.cancel() })
 	return f
+}
+
+// previewTheme applies a theme radio's mode at once, without saving it.
+func (f *settingsForm) previewTheme(mode int) {
+	themeMode = mode
+	applyTheme(f.a.wnd)
+}
+
+// saveTheme keeps the previewed theme. It is the user's own preference, in
+// HKCU: no UAC prompt, and independent of the config.ini edits.
+func (f *settingsForm) saveTheme() {
+	if themeMode == loadThemeMode() {
+		return
+	}
+	if err := saveThemeMode(themeMode); err != nil {
+		f.a.balloon(version.ProductName, "Impossibile salvare il tema: "+err.Error(), true)
+	}
+}
+
+// cancel hides the window, dropping an unsaved theme preview.
+func (f *settingsForm) cancel() {
+	if saved := loadThemeMode(); saved != themeMode {
+		themeMode = saved
+		applyTheme(f.a.wnd)
+	}
+	f.a.wnd.Hwnd().ShowWindow(co.SW_HIDE)
 }
 
 // governedKeys are the config.ini keys a remote document overrides
@@ -153,6 +184,7 @@ var governedKeys = map[string]bool{
 // reload re-reads everything off the UI thread and refills the form.
 func (f *settingsForm) reload() {
 	f.snap = snapshot{}
+	f.theme.Select(themeMode)
 	f.setAllEnabled(false)
 	f.status.Hwnd().SetWindowText("Caricamento della configurazione…")
 	f.bar.Start()
@@ -352,7 +384,11 @@ func (f *settingsForm) edits() ([]config.Edit, error) {
 // hands them to `EMLyUpdater.exe apply-settings` through the UAC prompt:
 // config.ini is writable only by administrators and SYSTEM.
 func (f *settingsForm) save() {
-	if f.snap.cfg == nil || f.saving {
+	if f.saving {
+		return
+	}
+	f.saveTheme()
+	if f.snap.cfg == nil {
 		return
 	}
 	edits, err := f.edits()

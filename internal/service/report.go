@@ -19,6 +19,9 @@ type ProductRow struct {
 	Name     string
 	Enabled  bool
 	Detected string // product.Detect's result, e.g. "installed(3.5.0)"
+	// Detection is the same result unformatted, for callers (the tray) that
+	// show only the version rather than Detected's full string.
+	Detection product.Result
 	Pending  string // "" when nothing is pending
 }
 
@@ -97,7 +100,8 @@ func (u *Updater) ProductRows() []ProductRow {
 	list, enabled := u.reportProducts(u.current())
 	rows := make([]ProductRow, 0, len(list))
 	for _, p := range list {
-		row := ProductRow{Slug: p.Slug, Name: p.Name, Enabled: enabled[p.Slug], Detected: product.Detect(p).String()}
+		det := product.Detect(p)
+		row := ProductRow{Slug: p.Slug, Name: p.Name, Enabled: enabled[p.Slug], Detected: det.String(), Detection: det}
 		if pend, err := u.Store.PendingFor(p.Slug); err == nil && pend != nil {
 			row.Pending = fmt.Sprintf("%s (attempts %d, gaveUp %v)", pend.Version, pend.Attempts, pend.GaveUp)
 		}

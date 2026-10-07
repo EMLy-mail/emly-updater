@@ -30,7 +30,8 @@ main.go                  Subcommands: install | uninstall | start | stop | run (
                          restart-service (internal: detached stop+start for the client channel's service.restart, see service/clientpower.go) |
                          products [--check] (read-only: detection, pending and attempts per product; --check also asks the manifest, never downloads) |
                          tray (the per-user notification-area icon, see internal/tray) |
-                         apply-settings (admin: write config.ini keys from the tray and restart the service)
+                         apply-settings (admin: write config.ini keys from the tray and restart the service) |
+                         simulate-crash [panic|goroutine|error] (fails on purpose to show the fatal-error box, see internal/crash)
 proto/                   updateripc.proto - IPC wire schema, manually synced with the emly repo
 tools/genversion/        go generate helper: propagates versioninfo.json's version everywhere else
 internal/
@@ -84,6 +85,13 @@ internal/
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session;
                          session_exec.go runs a process as a session's user and captures its output (RunInSession)
+  crash/                 Fatal-error box ("AryxD Agent ha subito un grave errore e deve chiudersi" + the error):
+                         Guard (deferred: report a panic, then re-panic) and Report (before a fatal os.Exit).
+                         MessageBoxW in a desktop session; in session 0 (the service) notify.SendErrorBox
+                         sends it to the viewer session via WTSSendMessageW, where it outlives the process.
+                         Covers only goroutines that defer Guard: main, the service's three Execute
+                         goroutines, the tray's background goroutines. Not imported by progresswin
+                         (import cycle via notify); its UI thread is main's goroutine, so it is covered anyway
   toast/                 Notification-area balloon (Shell_NotifyIcon) with EMLy's icon; runs inside the user session, launched via `show-toast`
   progresswin/           Download/install progress window (raw Win32, EMLy's icon, not closable); runs inside the user session,
                          launched via `show-progress` by notify.OpenProgressWindow and driven through its stdin (JSON lines);
@@ -1050,6 +1058,13 @@ the file from the new build's defaults (`config.Reset`, previous copy in
 configuration document instead.
 
 ## Logs & Diagnostics
+
+A fatal error shows a message box before the process exits (`internal/crash`): a panic on a
+guarded goroutine, a `tray` that returns an error, and the service's own fatal exits (dirs,
+invalid config.ini, `svc.Run` failure). Ordinary CLI subcommands (`install`, `start`, …) still
+only print to stderr. `EMLyUpdater.exe simulate-crash [panic|goroutine|error]` triggers each
+path on purpose. A service crash loop shows at most one box per SCM restart - four a day with
+the recovery actions `install` sets.
 
 | File | Content |
 |------|---------|

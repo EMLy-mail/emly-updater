@@ -15,6 +15,7 @@ import (
 	"emlyupdater/internal/assoc"
 	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
+	"emlyupdater/internal/crash"
 	"emlyupdater/internal/download"
 	"emlyupdater/internal/installer"
 	"emlyupdater/internal/ipc"
@@ -912,14 +913,17 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
+		defer crash.Guard(h.Updater.Log)
 		h.Updater.RunLoop(ctx)
 	}()
 	go func() {
 		defer wg.Done()
+		defer crash.Guard(h.Updater.Log)
 		h.Updater.watchSessions(ctx)
 	}()
 	go func() {
 		defer wg.Done()
+		defer crash.Guard(h.Updater.Log)
 		h.Updater.IPC.Serve(ctx)
 	}()
 	go func() {

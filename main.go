@@ -23,6 +23,8 @@
 //	restart-service  stop then start the service (internal use: launched
 //	            detached by the service itself for the client channel's
 //	            service.restart command)
+//	simulate-crash [panic|goroutine|error]  fail on purpose, to check the
+//	            fatal-error box (internal/crash); panic is the default
 //
 // Without arguments the binary expects to be launched by the SCM.
 //
@@ -48,6 +50,7 @@ import (
 
 	"emlyupdater/internal/cert"
 	"emlyupdater/internal/config"
+	"emlyupdater/internal/crash"
 	"emlyupdater/internal/logging"
 	"emlyupdater/internal/progresswin"
 	"emlyupdater/internal/service"
@@ -83,6 +86,10 @@ func logIdentity(log *logging.Logger, mode string) {
 }
 
 func main() {
+	// A panic on the main goroutine - the service's SCM dispatcher, the
+	// tray's UI thread, a foreground run - shows the fatal-error box first.
+	defer crash.Guard(nil)
+
 	inService, err := svc.IsWindowsService()
 	if err != nil {
 		fatalf("failed to determine session type: %v", err)
@@ -115,9 +122,15 @@ func main() {
 	case "products":
 		err = cmdProducts(os.Args[2:])
 	case "tray":
-		err = tray.Run()
+		// The tray has no console: a fatal error would only make the icon
+		// vanish, so it is reported with the box too.
+		if err = tray.Run(); err != nil {
+			crash.Report(err.Error())
+		}
 	case "apply-settings":
 		err = cmdApplySettings(os.Args[2:])
+	case "simulate-crash":
+		err = cmdSimulateCrash(os.Args[2:])
 	case "restart-service":
 		// Internal: launched detached by the service itself for the client
 		// channel's service.restart command. cmdStop waits for the service
@@ -129,6 +142,39 @@ func main() {
 	}
 	if err != nil {
 		fatalf("%s failed: %v", os.Args[1], err)
+	}
+}
+
+// cmdSimulateCrash fails on purpose, the way a real fatal error would, so the
+// fatal-error box can be checked without breaking anything:
+//
+//	panic      a panic on the main goroutine (main's deferred crash.Guard)
+//	goroutine  a panic on a goroutine that defers crash.Guard, like the
+//	           service's and the tray's
+//	error      a fatal error, reported with crash.Report before exiting 1
+func cmdSimulateCrash(args []string) error {
+	kind := "panic"
+	if len(args) > 0 {
+		kind = args[0]
+	}
+	switch kind {
+	case "panic":
+		panic("crash simulato (simulate-crash panic)")
+	case "goroutine":
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			defer crash.Guard(nil)
+			panic("crash simulato in una goroutine (simulate-crash goroutine)")
+		}()
+		<-done // never reached: the re-panic ends the process
+		return nil
+	case "error":
+		crash.Report("errore simulato (simulate-crash error)")
+		os.Exit(1)
+		return nil
+	default:
+		return fmt.Errorf("unknown crash kind %q: use panic, goroutine or error", kind)
 	}
 }
 
@@ -233,6 +279,7 @@ func fatalf(format string, args ...any) {
 func runService() {
 	if err := config.EnsureDirs(); err != nil {
 		// No logger yet; the SCM records the non-zero exit.
+		crash.Report(err.Error())
 		os.Exit(1)
 	}
 
@@ -243,6 +290,8 @@ func runService() {
 	cfg, err := config.Load(config.ConfigPath())
 	if err != nil {
 		log.ErrorEvent(logging.EventGeneric, "invalid configuration, service cannot start", "error", err.Error())
+		crash.Report("configurazione non valida: " + err.Error())
+		log.Close() // os.Exit skips the deferred Close
 		os.Exit(1)
 	}
 
@@ -250,6 +299,8 @@ func runService() {
 	handler := &service.Handler{Updater: service.New(cfg, log, false)}
 	if err := svc.Run(service.Name, handler); err != nil {
 		log.ErrorEvent(logging.EventGeneric, "service run failed", "error", err.Error())
+		crash.Report(err.Error())
+		log.Close()
 		os.Exit(1)
 	}
 	log.Info(productName + " service stopped")

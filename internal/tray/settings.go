@@ -14,6 +14,7 @@ import (
 	"github.com/rodrigocfd/windigo/win"
 
 	"emlyupdater/internal/config"
+	"emlyupdater/internal/crash"
 	"emlyupdater/internal/version"
 )
 
@@ -189,6 +190,7 @@ func (f *settingsForm) reload() {
 	f.status.Hwnd().SetWindowText("Caricamento della configurazione…")
 	f.bar.Start()
 	go func() {
+		defer crash.Guard(nil)
 		snap := f.a.be.load(f.a.ctx)
 		f.a.wnd.UiThread(func() {
 			f.bar.Stop()
@@ -433,6 +435,7 @@ func (f *settingsForm) save() {
 	f.setAllEnabled(false)
 	f.status.Hwnd().SetWindowText("Salvataggio: confermare la richiesta di amministratore…")
 	go func() {
+		defer crash.Guard(nil)
 		code, runErr := runElevated(h, f.a.exe, args)
 		out, _ := os.ReadFile(resultPath)
 		os.Remove(resultPath)

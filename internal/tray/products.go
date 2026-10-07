@@ -9,6 +9,7 @@ import (
 	"github.com/rodrigocfd/windigo/ui"
 	"github.com/rodrigocfd/windigo/win"
 
+	"emlyupdater/internal/crash"
 	"emlyupdater/internal/product"
 	"emlyupdater/internal/version"
 )
@@ -114,6 +115,7 @@ func (p *productsWindow) load() {
 	p.addRow(agentSlug, version.ProductName, "sì", version.Version, "")
 	p.bar.Start()
 	go func() {
+		defer crash.Guard(nil)
 		rows, err := p.a.be.products(p.a.ctx)
 		p.wnd.UiThread(func() {
 			p.bar.Stop()
@@ -175,6 +177,7 @@ func (p *productsWindow) check(it ui.ListViewItem) {
 	p.bar.Start()
 	p.status.Hwnd().SetWindowText("Verifica in corso…")
 	go func() {
+		defer crash.Guard(nil)
 		offered, err := p.a.be.check(p.a.ctx, slug)
 		p.wnd.UiThread(func() {
 			if err != nil {

@@ -23,6 +23,7 @@ const (
 	wtsCurrentServerHandle = 0
 
 	mbOK            = 0x00000000
+	mbIconError     = 0x00000010
 	mbIconWarning   = 0x00000030
 	mbSetForeground = 0x00010000
 	mbTopMost       = 0x00040000
@@ -61,6 +62,19 @@ func formatBody(body string, seconds int) string {
 // sendBox shows title/body in the viewer session without waiting, the box
 // auto-dismissing after seconds. False when nobody is at the machine.
 func sendBox(title, body string, seconds int) bool {
+	return sendStyledBox(title, body, seconds, mbIconWarning)
+}
+
+// SendErrorBox shows an error box in the viewer session without waiting and
+// without a timeout: the box belongs to that session, so it outlives the
+// calling process - which is the point, it is how the service reports a
+// fatal error just before exiting (internal/crash). False when nobody is at
+// the machine.
+func SendErrorBox(title, body string) bool {
+	return sendStyledBox(title, body, 0, mbIconError)
+}
+
+func sendStyledBox(title, body string, seconds int, icon uintptr) bool {
 	session, ok := viewerSession()
 	if !ok {
 		return false
@@ -83,7 +97,7 @@ func sendBox(title, body string, seconds int) bool {
 		uintptr((len(titleU16)-1)*2),
 		uintptr(unsafe.Pointer(&bodyU16[0])),
 		uintptr((len(bodyU16)-1)*2),
-		uintptr(mbOK|mbIconWarning|mbSetForeground|mbTopMost),
+		mbOK|icon|mbSetForeground|mbTopMost,
 		uintptr(seconds),
 		uintptr(unsafe.Pointer(&response)),
 		0, // bWait = FALSE

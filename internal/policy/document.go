@@ -85,13 +85,15 @@ type ClientWSSettings struct {
 
 func (c ClientWSSettings) Allows(name string) bool { return slices.Contains(c.Commands, name) }
 
-// DefaultClientWSCommands are the read-only commands.
+// DefaultClientWSCommands are the read-only commands - all but
+// log.send_latest, which is read-only too but ships the service's log off the
+// machine, so it is opt-in: a document has to name it.
 var DefaultClientWSCommands = []string{"machine.info", "emly.manifest.check", "updater.manifest.check", "apps.list_upgradable"}
 
 // knownClientWSCommands mirrors wsclient.CommandNames; policy must not
 // import wsclient, so internal/service pins the two equal in a test.
 var knownClientWSCommands = []string{"machine.info", "emly.manifest.check", "updater.manifest.check",
-	"apps.list_upgradable", "service.restart", "machine.reboot"}
+	"apps.list_upgradable", "service.restart", "machine.reboot", "log.send_latest"}
 
 // KnownClientWSCommands is exported for that test.
 func KnownClientWSCommands() []string { return slices.Clone(knownClientWSCommands) }

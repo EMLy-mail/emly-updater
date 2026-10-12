@@ -283,6 +283,8 @@ func (u *Updater) runReadOnly(ctx context.Context, cmd wsclient.Command) (any, *
 		return u.updaterManifestCheck(cctx, u.cur.Load()), nil, false
 	case wsclient.CmdAppsListUpgradable:
 		return u.listUpgradable(ctx)
+	case wsclient.CmdLogSendLatest:
+		return u.sendLatestLog()
 	}
 	return nil, refuse(wsclient.ErrUnsupportedCommand, cmd.Name), false
 }

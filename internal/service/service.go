@@ -222,6 +222,9 @@ type Updater struct {
 	runningMu sync.Mutex
 	running   map[string]bool
 
+	// logFilePathFn overrides Log.FilePath for log.send_latest in tests: the
+	// test logger's own file is held open by lumberjack.
+	logFilePathFn func() string
 	// listUpgradableFn overrides winget.ListUpgradable in tests.
 	listUpgradableFn func(context.Context) ([]winget.Package, error)
 	// listUserUpgradableFn overrides listUserUpgradable (the logged-on

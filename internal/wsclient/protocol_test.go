@@ -17,6 +17,8 @@ func TestValidateArgsMirrorsTheAPI(t *testing.T) {
 		{CmdMachineReboot, `{"delay_seconds":3600,"when_user_active":"skip"}`, ""},
 		{CmdMachineReboot, `{"delay_seconds":3601}`, ErrInvalidArgs},
 		{CmdMachineReboot, `{"when_user_active":"force"}`, ErrInvalidArgs},
+		{CmdLogSendLatest, ``, ""},
+		{CmdLogSendLatest, `{"lines":100}`, ErrInvalidArgs},
 		{"machine.format_disk", `{}`, ErrUnsupportedCommand},
 	}
 	for _, c := range cases {

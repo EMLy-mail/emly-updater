@@ -29,6 +29,7 @@ const (
 	CmdAppsListUpgradable   = "apps.list_upgradable"
 	CmdServiceRestart       = "service.restart"
 	CmdMachineReboot        = "machine.reboot"
+	CmdLogSendLatest        = "log.send_latest"
 )
 
 const (
@@ -65,7 +66,7 @@ const (
 
 var (
 	CommandNames = []string{CmdMachineInfo, CmdEMLyManifestCheck, CmdUpdaterManifestCheck,
-		CmdAppsListUpgradable, CmdServiceRestart, CmdMachineReboot}
+		CmdAppsListUpgradable, CmdServiceRestart, CmdMachineReboot, CmdLogSendLatest}
 	EventNames = []string{EvtMachineInfo, EvtSessionChanged, EvtUpdateAvailable,
 		EvtUpdateStarted, EvtUpdateApplied, EvtUpdateFailed, EvtServiceStarted}
 	TopicNames = []string{TopicReleasePublished, TopicConfigPublished}
@@ -217,6 +218,26 @@ const (
 	ScopeUser = "user"
 )
 
+// LogEncodingGzipBase64 is LogFile.Encoding: Content is the gzip of the
+// included bytes, base64 (standard alphabet, padded).
+const LogEncodingGzipBase64 = "gzip+base64"
+
+// LogFile is the result of log.send_latest: the tail of the service's
+// current log file (updater.log), compressed to fit one frame. Offset > 0
+// means the start of the file did not fit (Result.Truncated is set too);
+// Offset is always at a line start, so the first line is whole.
+type LogFile struct {
+	Name          string `json:"name"`
+	SizeBytes     int64  `json:"size_bytes"`
+	ModifiedAt    string `json:"modified_at,omitempty"`
+	Offset        int64  `json:"offset"`
+	IncludedBytes int64  `json:"included_bytes"`
+	Level         string `json:"level,omitempty"`
+	Encoding      string `json:"encoding"`
+	Content       string `json:"content"`
+	CollectedAt   string `json:"collected_at"`
+}
+
 const (
 	RebootDefaultDelaySeconds = 300
 	RebootMaxDelaySeconds     = 3600
@@ -291,7 +312,7 @@ func ValidateArgs(name string, raw json.RawMessage) *ErrorBody {
 			return invalidArgs("machine.reboot: when_user_active must be %q or %q", WhenUserActiveWarn, WhenUserActiveSkip)
 		}
 		return nil
-	case CmdEMLyManifestCheck, CmdUpdaterManifestCheck, CmdAppsListUpgradable, CmdServiceRestart:
+	case CmdEMLyManifestCheck, CmdUpdaterManifestCheck, CmdAppsListUpgradable, CmdServiceRestart, CmdLogSendLatest:
 		var none struct{}
 		if err := DecodeArgs(raw, &none); err != nil {
 			return invalidArgs("%s takes no arguments: %v", name, err)

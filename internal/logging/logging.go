@@ -86,10 +86,17 @@ func New(logDir string, exeLogPath string, console bool) *Logger {
 	return l
 }
 
+// FileName is the current (not yet rotated) log file under the log directory.
+const FileName = "updater.log"
+
+// FilePath is the current log file the service writes to - the one
+// ReadTail reads for the client channel's log.send_latest.
+func (l *Logger) FilePath() string { return filepath.Join(l.logDir, FileName) }
+
 // buildFiles creates the rolling file writers for s.
 func (l *Logger) buildFiles(s FileSettings) (io.Writer, []io.Closer) {
 	rolling := &lumberjack.Logger{
-		Filename:   filepath.Join(l.logDir, "updater.log"),
+		Filename:   l.FilePath(),
 		MaxSize:    s.MaxSizeMB,
 		MaxBackups: s.MaxBackups,
 		Compress:   s.Compress, // rotated backups become updater-<timestamp>.log.gz

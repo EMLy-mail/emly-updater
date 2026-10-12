@@ -77,7 +77,8 @@ internal/
                          (service.started, machine.info, session.changed payloads); clientnotify.go
                          turns release.published/config.published into a jittered RunLoop wake;
                          clientpower.go is service.restart/machine.reboot's admission, destructivePending
-                         state machine and execution (internal/power);
+                         state machine and execution (internal/power); clientlogs.go is log.send_latest
+                         (the tail of updater.log, gzip+base64, fitted to one frame);
                          product.go/products.go are the per-product engine (installProduct, driverFor,
                          the sequential round cycleProducts, unavailable/attempt bookkeeping);
                          report.go backs the `products` subcommand
@@ -585,6 +586,22 @@ EMLy is a product it distributes.
   with `PROC_THREAD_ATTRIBUTE_HANDLE_LIST`, like `os/exec`: plain `bInheritHandles`
   would leak into the child whatever pipes the SYSTEM-side `os/exec` run has made
   inheritable at that instant.
+- **`log.send_latest` sends the tail, never the whole file, and is opt-in** -
+  `sendLatestLog` (`internal/service/clientlogs.go`) answers in a single `result` frame,
+  so the current `updater.log` (only that one, not the rotated `.log.gz` backups) is
+  gzipped, base64'd and cut from the **start** at a line boundary until the payload fits
+  `resultPayloadBudget`: `offset > 0` plus `truncated: true` says lines are missing at the
+  top. Real logs gzip about 11:1, so a frame holds roughly the last 450-500 KB of log -
+  about a quarter of a default 2 MB file. It reads at most the last 2 MiB
+  (`logReadWindow`), whatever `logging.maxSizeMB` is. `logging.ReadTail` opens the file
+  with `FILE_SHARE_DELETE`: a plain `os.Open` would make lumberjack's rotation rename fail
+  for as long as the read lasts, losing the line being written. The command is read-only
+  but **not** in `policy.DefaultClientWSCommands`: it ships the service's log (hostnames,
+  users, IPs, server URLs) off the machine, so a document has to name it in
+  `clientWs.commands`. No chunking over several frames and no HTTP upload: one frame is
+  enough for a diagnosis, and anything bigger would be a per-machine MB burst over the
+  MPLS link (see *Deployment topology*). Spec:
+  `docs/superpowers/specs/2026-10-12-log-send-latest-design.md`.
 - **`state.json` holds three independent lifecycles** - EMLy's pending update, the updater's own
   self-update record, and the client channel's pending destructive commands (see above). Every
   setter goes through `Store.update` (read-modify-write); building a fresh `State` and saving it,
@@ -707,6 +724,11 @@ checklist is their verification.
 7. `POST /v2/client/notify` a `release.published` for the current updater version + 1 →
    the loop wakes within the jitter window, `update.available`/`update.started` events
    appear, then `update.applied` once the new build comes back up.
+8. `log.send_latest` with the default `clientWs.commands` → refused `disabled_by_policy`.
+   Add it to the document, repeat → `done`; decode `content` (base64, then gunzip) and
+   compare it with the end of `%ProgramData%\EMLyUpdater\logs\updater.log`. On a log
+   over ~500 KB the result has `truncated: true`, `offset > 0`, and the decoded text
+   starts at the beginning of a line.
 
 ## Tray (`EMLyUpdater.exe tray`)
 
@@ -1107,6 +1129,7 @@ land; the `selfUpdate` record left in `state.json` says which version was attemp
 ## Common Pitfalls
 
 - **Never patch `products` from an override while agents <= 1.7.x are in the field**: a global `products` section is harmless (`policy.complete` copies only the sections it knows), but an override whose patch touches `products` makes those agents reject the **whole** document ("not a patchable section"), and they then stay on their cached revision for everything - servers, kill switch, all of it. Same trap as `clientWs` in September. Wait until the fleet is all >= 1.8.0.
+- **Never name `log.send_latest` in a document while agents <= 1.8.1 are in the field**: their `knownClientWSCommands` does not have it, and an unknown name in `clientWs.commands` - global *or* inside any override's patch, matched or not - fails validation, so they reject the **whole** document and stay on their cached revision for everything. Same trap as `products` above. Publish it only once the fleet is all on the first release that ships the command.
 - **Removing a product from the document drops it from the inventory, so from the dashboard**: `installedProducts` walks the document's products, so a product that is no longer there is no longer reported. To stop updating a product use `enabled: false`, which keeps detection and the inventory intact.
 - **NSIS command lines are raw**: `/D=<dir>` must be the last argument and unquoted (even with spaces), and the uninstaller needs `_?=<dir>` last and unquoted too. Go's argument quoting would add quotes, so the nsis driver sets `SysProcAttr.CmdLine` itself. Without `_?=` the NSIS uninstaller copies itself to `%TEMP%`, relaunches and returns at once, and the agent would start the reinstall while the uninstall is still running.
 - **An uninstaller in a directory writable by Users is never run as SYSTEM** (`installer.CheckNotUserWritable`): it is stricter than "no write for Users". The owner of `InstallDir` and of the uninstaller must be SYSTEM, Administrators or TrustedInstaller, and any non-inherit-only allow ACE granting a write right (including `FILE_DELETE_CHILD`) to any other SID, an unknown allow-ACE type, or a NULL DACL refuses. A refusal only skips the clean-reinstall uninstall (Warn), the reinstall itself proceeds. Consequence: an install directory created by a user, or one inheriting "Authenticated Users: Modify" from `C:\` (e.g. `C:\3gIT\EMLy` unless its installer sets permissions), makes the uninstall step always skipped. That is by design, not a bug to relax.

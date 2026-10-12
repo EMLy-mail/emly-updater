@@ -114,7 +114,7 @@ func main() {
 	case "stop":
 		err = cmdStop()
 	case "run":
-		err = cmdRun()
+		err = cmdRun(os.Args[2:])
 	case "show-toast":
 		err = cmdShowToast(os.Args[2:])
 	case "show-progress":
@@ -179,7 +179,7 @@ func cmdSimulateCrash(args []string) error {
 }
 
 func usage() {
-	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run|products [--check]|tray\n", os.Args[0])
+	_, err := fmt.Fprintf(os.Stderr, "usage: %s install|uninstall|start|stop|run [--ws-delay=N]|products [--check]|tray\n", os.Args[0])
 	if err != nil {
 		return
 	}
@@ -308,7 +308,22 @@ func runService() {
 
 // cmdRun executes the update loop in the foreground with console logging -
 // the debug path; Ctrl+C stops it cleanly.
-func cmdRun() error {
+//
+// The presence channel dials at once here: the [clientWs] startup delay
+// spreads a fleet-wide service start, and a foreground run on one machine
+// has nothing to spread, only up to a minute of waiting. --ws-delay=N waits a
+// random 0..N seconds instead, and --ws-delay=-1 keeps config.ini's setting,
+// to reproduce exactly what the service does.
+func cmdRun(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	wsDelay := fs.Int("ws-delay", 0, "max random delay in seconds before the presence channel's first dial (-1 = config.ini [clientWs])")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *wsDelay < -1 || *wsDelay > 600 {
+		return fmt.Errorf("--ws-delay must be between -1 and 600, got %d", *wsDelay)
+	}
+
 	if err := config.EnsureDirs(); err != nil {
 		return err
 	}
@@ -326,6 +341,10 @@ func cmdRun() error {
 	cfg, err := config.Load(config.ConfigPath())
 	if err != nil {
 		return err
+	}
+	if *wsDelay >= 0 {
+		cfg.ClientWSStartupDelayEnabled = *wsDelay > 0
+		cfg.ClientWSStartupDelayMax = time.Duration(*wsDelay) * time.Second
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)

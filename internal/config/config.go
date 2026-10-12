@@ -98,6 +98,16 @@ type Config struct {
 	// counterpart, so only whoever can edit this file decides.
 	ProgressWindowEnabled bool
 
+	// [clientWs] - the random delay before the presence channel's very first
+	// dial (service.runClientWS), spreading a fleet-wide start so ~350
+	// machines do not all reach the API's rate limiter, from the same NAT per
+	// site, in one instant. Local-only like [progressWindow]: the document's
+	// clientWs section has no counterpart, and adding one would mean a new
+	// validation rule on both sides (testdata/remoteconfig). Enabled false, or
+	// a zero maximum, dials at once.
+	ClientWSStartupDelayEnabled bool
+	ClientWSStartupDelayMax     time.Duration
+
 	// [remoteConfig] - the bootstrap for the remote configuration document
 	// (GET /v2/config). Everything operational lives in that document and in
 	// its on-disk cache; these keys only say how to reach it. See
@@ -204,6 +214,7 @@ func Parse(data []byte) (*Config, error) {
 	certSec := f.Section("certificate")
 	pwSec := f.Section("progressWindow")
 	selfSec := f.Section("selfUpdate")
+	wsSec := f.Section("clientWs")
 	rcSec := f.Section("remoteConfig")
 
 	cfg := &Config{
@@ -233,6 +244,8 @@ func Parse(data []byte) (*Config, error) {
 
 		ProgressWindowEnabled: pwSec.Key("enabled").MustBool(true),
 
+		ClientWSStartupDelayEnabled: wsSec.Key("startupDelayEnabled").MustBool(true),
+
 		SelfUpdateEnabled:     selfSec.Key("enabled").MustBool(true),
 		SelfUpdateManifestURL: strings.TrimSpace(selfSec.Key("manifestURL").String()),
 
@@ -246,6 +259,12 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("remoteConfig.timeoutSeconds must be between 1 and 120, got %d", rcTimeout)
 	}
 	cfg.RemoteConfigTimeout = time.Duration(rcTimeout) * time.Second
+
+	wsDelay := wsSec.Key("startupDelayMaxSeconds").MustInt(60)
+	if wsDelay < 0 || wsDelay > 600 {
+		return nil, fmt.Errorf("clientWs.startupDelayMaxSeconds must be between 0 and 600, got %d", wsDelay)
+	}
+	cfg.ClientWSStartupDelayMax = time.Duration(wsDelay) * time.Second
 
 	retryAttempts := src.Key("dcLookupRetryAttempts").MustInt(6)
 	if retryAttempts < 0 || retryAttempts > 60 {

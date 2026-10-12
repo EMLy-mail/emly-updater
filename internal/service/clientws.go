@@ -127,12 +127,6 @@ func identityFromSource(s *source.HTTPSource) wsclient.Identity {
 // sleeping out a real 15s per test.
 const clientWSWatchInterval = 15 * time.Second
 
-// clientWSInitialJitterMax bounds the randomised delay runClientWS waits
-// before its very first dial attempt (see the call site). 60s matches the
-// order of magnitude of Backoff's own ceiling, wide enough to meaningfully
-// spread a fleet-wide start without meaningfully delaying it.
-const clientWSInitialJitterMax = 60 * time.Second
-
 // clientWSUnsupportedRetryAfter is how long a server stays marked
 // unsupported (see the 404 case in runClientWS) before the supervisor tries
 // it again on its own, without waiting for the source policy to move this
@@ -152,17 +146,18 @@ func (u *Updater) watchInterval() time.Duration {
 }
 
 // clientWSInitialDelay is the randomised startup delay runClientWS waits
-// before its first dial attempt, overridable by tests via
-// clientWSInitialDelayFn so the supervisor suite does not sleep up to 60s
-// per test.
+// before its first dial attempt: uniform in [0, max], where max is
+// config.ini's [clientWs] startupDelayMaxSeconds (60s by default; disabled
+// by startupDelayEnabled = false, and overridden by `run --ws-delay`).
+// Tests replace it via clientWSInitialDelayFn.
 func (u *Updater) clientWSInitialDelay() time.Duration {
 	if u.clientWSInitialDelayFn != nil {
 		return u.clientWSInitialDelayFn()
 	}
-	if clientWSInitialJitterMax <= 0 {
+	if u.Cfg == nil || !u.Cfg.ClientWSStartupDelayEnabled || u.Cfg.ClientWSStartupDelayMax <= 0 {
 		return 0
 	}
-	return time.Duration(rand.Int64N(int64(clientWSInitialJitterMax) + 1))
+	return time.Duration(rand.Int64N(int64(u.Cfg.ClientWSStartupDelayMax) + 1))
 }
 
 // runClientWS holds the presence channel open for the life of the service.
@@ -187,8 +182,15 @@ func (u *Updater) runClientWS(ctx context.Context) {
 	// attempt onward, once Next has actually been called. See Backoff's doc
 	// comment for why a synchronised burst matters here (the API's rate
 	// limiter and the shared-NAT-per-site fact, not server load).
-	if !u.clientWSSleep(ctx, u.clientWSInitialDelay(), false) {
-		return
+	// Skipped outright at zero: clientWSSleep floors a non-positive duration
+	// to 1s, which is right for its idle loops but would turn "no delay"
+	// into a second of waiting.
+	if delay := u.clientWSInitialDelay(); delay > 0 {
+		u.Log.Debug("presence channel waiting before its first connection attempt",
+			"delay", delay.Round(time.Second).String())
+		if !u.clientWSSleep(ctx, delay, false) {
+			return
+		}
 	}
 
 	backoff := wsclient.Backoff{}

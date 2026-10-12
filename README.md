@@ -395,6 +395,13 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 |---|---|---|
 | `enabled` | `true` | Show the user at the machine (console or RDP) a progress window while EMLy or AryxD Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
 
+### `[clientWs]`
+
+| Key | Default | Description |
+|---|---|---|
+| `startupDelayEnabled` | `true` | After a service start, wait a random time before the presence channel's first connection attempt, so a fleet restarted together does not reach the API in the same instant. Reconnects use their own backoff and are unaffected. **Local only**: the remote document's `clientWs` section has no equivalent |
+| `startupDelayMaxSeconds` | `60` | Upper bound of that random delay, 0-600 (0 = connect at once). `emly-updater run` connects at once regardless; `run --ws-delay=N` waits 0..N s, `--ws-delay=-1` uses these keys |
+
 ### `[fileAssociations]`
 
 | Key | Default | Description |

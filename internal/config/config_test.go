@@ -431,3 +431,28 @@ func TestLoadProgressWindow(t *testing.T) {
 		t.Error("progressWindow.enabled = false was not honoured")
 	}
 }
+
+func TestLoadClientWSStartupDelay(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "config.ini"))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if !cfg.ClientWSStartupDelayEnabled || cfg.ClientWSStartupDelayMax != 60*time.Second {
+		t.Errorf("defaults = %v/%s, want true/60s", cfg.ClientWSStartupDelayEnabled, cfg.ClientWSStartupDelayMax)
+	}
+
+	base := "[source]\nprimary = external\nexternalManifestURL = https://x\n\n[clientWs]\n"
+	cfg, err = Load(writeConfig(t, base+"startupDelayEnabled = false\nstartupDelayMaxSeconds = 5\n"))
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	if cfg.ClientWSStartupDelayEnabled || cfg.ClientWSStartupDelayMax != 5*time.Second {
+		t.Errorf("got %v/%s, want false/5s", cfg.ClientWSStartupDelayEnabled, cfg.ClientWSStartupDelayMax)
+	}
+
+	for _, bad := range []string{"-1", "601"} {
+		if _, err := Load(writeConfig(t, base+"startupDelayMaxSeconds = "+bad+"\n")); err == nil {
+			t.Errorf("startupDelayMaxSeconds = %s was accepted", bad)
+		}
+	}
+}

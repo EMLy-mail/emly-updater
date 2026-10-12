@@ -342,6 +342,18 @@ EMLy is a product it distributes.
   is honoured hot: `clientws.go` re-reads the current cycle every 15s
   while a connection is up, so a published revision closes the channel
   without waiting for the connection to drop on its own (event 923).
+- **The presence channel's first dial waits a random 0..60s, and that delay is
+  local-only** — `runClientWS` sleeps `clientWSInitialDelay()` before its
+  first attempt, so a fleet-wide service start (patch Tuesday reboots, a
+  self-update) does not put ~350 machines, behind one NAT per site, on the
+  API's rate limiter in the same instant; `wsclient.Backoff`'s full jitter
+  only applies from the second attempt. It runs once per service start, not
+  on reconnects. Configured by `config.ini` `[clientWs] startupDelayEnabled`
+  / `startupDelayMaxSeconds` (0-600), editable from the tray, and
+  deliberately **not** in the document's `clientWs` section: that would be a
+  new validation rule to mirror in `emly-go-api` with its fixtures, and
+  agents <= 1.8.x would reject any override patching the new key. `run`
+  dials at once unless `--ws-delay=N` (or `-1` = config.ini's value).
 - **A 404 on the WebSocket upgrade disables that server for an hour, not the
   feature, and not permanently** — this is its own convention, not the one
   `internal/source` defines: `internal/source` falls through to the chain's
@@ -718,8 +730,9 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   self-update, critical warning, certificate) show the document's value and are
   disabled. Unticking "Configurazione remota" re-enables them with config.ini's
   values, since that is what the service will use after the save. `remoteConfig`,
-  `ipc` and `progressWindow` have no counterpart in the document and are always
-  editable. The list mirrors `policy.DefaultsFromConfig`: a key added there
+  `ipc`, `progressWindow` and `clientWs.startupDelay*` have no counterpart in the
+  document and are always editable. Site and server chain are shown in
+  read-only boxes, not as settings. The list mirrors `policy.DefaultsFromConfig`: a key added there
   belongs in `governedKeys` too.
 - **Writing** goes through `EMLyUpdater.exe apply-settings --result <tmp>
   section.key=value...`, launched with `ShellExecuteEx("runas")`, because
@@ -838,6 +851,8 @@ the window, UAC and the Restart Manager need a desktop.
 | `enabled` | `[selfUpdate]` | `true` | Keep the updater itself up to date |
 | `manifestURL` | `[selfUpdate]` | _(empty)_ | Empty = derived from the manifest URL in use (`.../manifest` → `.../manifest/updater`); set only to point at a different host, in which case it applies to every source with no fallback |
 | `enabled` | `[progressWindow]` | `true` | Progress window for the user at the machine (console or RDP) while EMLy or the agent is downloaded/installed. **Local only**: deliberately absent from the remote document - see "Progress window" below |
+| `startupDelayEnabled` | `[clientWs]` | `true` | Random delay before the presence channel's first dial after a service start. **Local only** |
+| `startupDelayMaxSeconds` | `[clientWs]` | `60` | Upper bound of that delay (0-600; 0 = dial at once). `run` ignores both unless `--ws-delay` |
 
 ## IPC (EMLyUpdater ⇄ EMLy)
 

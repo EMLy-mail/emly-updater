@@ -79,7 +79,7 @@ func Run() error {
 
 	a.wnd = ui.NewMain(ui.OptsMain().
 		Title(version.ProductName + " - Impostazioni").
-		Size(ui.Dpi(560, 512)).
+		Size(ui.Dpi(560, 634)).
 		Center(true).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_MINIMIZEBOX | co.WS_CLIPCHILDREN | co.WS_BORDER).
 		CmdShow(co.SW_HIDE))

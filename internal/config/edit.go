@@ -31,6 +31,8 @@ var EditableKeys = []string{
 	"ipc.enabled",
 	"certificate.enabled",
 	"progressWindow.enabled",
+	"clientWs.startupDelayEnabled",
+	"clientWs.startupDelayMaxSeconds",
 }
 
 // ParseEdit parses "section.key=value" and checks the key is editable.

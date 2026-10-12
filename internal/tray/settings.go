@@ -40,6 +40,7 @@ type settingsForm struct {
 	snap snapshot // last load; snap.cfg nil while loading or on error
 
 	status                *ui.Static
+	site, servers         *ui.Edit // read-only: what the service resolved
 	poll                  *ui.Edit
 	channel, primary      *ui.ComboBox
 	remote                *checkRow
@@ -47,6 +48,8 @@ type settingsForm struct {
 	selfUpdate, crit      *checkRow
 	critSeconds           *ui.Edit
 	ipc, cert, progress   *checkRow
+	wsDelay               *checkRow
+	wsDelaySeconds        *ui.Edit
 	theme                 *themeRow
 	note                  *ui.Static
 	btnCheck, btnProducts *ui.Button
@@ -67,6 +70,23 @@ func newSettingsForm(a *app) *settingsForm {
 	// single line ("Caricamento…", "Salvataggio…").
 	f.bar = newLoadingBar(w, settingsBarTimer, lx, y+24, 520, 14)
 	y += 58
+
+	// Site and servers as read-only boxes rather than in the status text: a
+	// server list wraps there into one unreadable paragraph, and a box lets
+	// the URL be selected and copied. Wider than the control column, since a
+	// manifest URL does not fit in 270px.
+	const ix = lx + 150
+	readOnly := func(text string, height int, style co.ES, ws co.WS) *ui.Edit {
+		ui.NewStatic(w, ui.OptsStatic().Text(text).Position(ui.Dpi(lx, y+3)).Size(ui.Dpi(ix-lx-8, 18)))
+		return ui.NewEdit(w, ui.OptsEdit().Position(ui.Dpi(ix, y)).
+			Width(ui.DpiX(530-ix)).Height(ui.DpiY(height)).
+			CtrlStyle(co.ES_READONLY|style).
+			WndStyle(co.WS_CHILD|co.WS_VISIBLE|co.WS_TABSTOP|co.WS_GROUP|ws))
+	}
+	f.site = readOnly("Sede (domain controller)", 23, co.ES_AUTOHSCROLL, 0)
+	y += 30
+	f.servers = readOnly("Server, in ordine di prova", 54, co.ES_MULTILINE|co.ES_AUTOVSCROLL, co.WS_VSCROLL)
+	y += 64
 
 	label := func(text string) {
 		ui.NewStatic(w, ui.OptsStatic().Text(text).Position(ui.Dpi(lx, y+3)).Size(ui.Dpi(cx-lx-8, 18)))
@@ -111,6 +131,9 @@ func newSettingsForm(a *app) *settingsForm {
 	f.cert = check("Installa il certificato di code-signing 3gIT")
 	y += 28
 	f.progress = check("Finestra di avanzamento durante gli aggiornamenti")
+	y += 28
+	f.wsDelay = check("Ritardo casuale all'avvio del canale WS, max (s):")
+	f.wsDelaySeconds = number(cx+90, 60)
 	y += 30
 
 	label("Tema")
@@ -133,6 +156,7 @@ func newSettingsForm(a *app) *settingsForm {
 	}
 	f.remote.OnClick(func() { f.remoteToggled() })
 	f.crit.OnClick(func() { f.critToggled() })
+	f.wsDelay.OnClick(func() { f.wsDelayToggled() })
 	f.btnCheck.On().BnClicked(func() { a.checkNow() })
 	f.btnProducts.On().BnClicked(func() { showProducts(a) })
 	f.btnSave.On().BnClicked(func() { f.save() })
@@ -168,8 +192,9 @@ func (f *settingsForm) cancel() {
 
 // governedKeys are the config.ini keys a remote document overrides
 // (policy.DefaultsFromConfig/FromLegacy are where they turn into the
-// document's defaults). remoteConfig.enabled, ipc.enabled and
-// progressWindow.enabled have no counterpart in the document.
+// document's defaults). remoteConfig.enabled, ipc.enabled,
+// progressWindow.enabled and the clientWs.startupDelay* keys have no
+// counterpart in the document.
 var governedKeys = map[string]bool{
 	"updater.pollIntervalMinutes":           true,
 	"updater.channelOverride":               true,
@@ -208,6 +233,7 @@ func (f *settingsForm) fill(snap snapshot) {
 	}
 	f.setAllEnabled(true)
 	f.status.Hwnd().SetWindowText(f.statusText())
+	f.showSource()
 	f.showValues()
 }
 
@@ -224,13 +250,6 @@ func (f *settingsForm) statusText() string {
 		b.WriteString("Nessun documento remoto ricevuto finora: vale config.ini.")
 	} else {
 		b.WriteString("Configurazione remota disattivata: vale config.ini.")
-	}
-	b.WriteString("\n")
-	if p.Site != "" {
-		fmt.Fprintf(&b, "Sede: %s - ", p.Site)
-	}
-	if len(p.Servers) > 0 {
-		b.WriteString("server: " + strings.Join(p.Servers, ", "))
 	}
 	if p.Paused {
 		b.WriteString("\nAggiornamenti SOSPESI dalla configurazione remota.")
@@ -252,7 +271,30 @@ func (f *settingsForm) showValues() {
 	f.ipc.SetCheck(cfg.IPCEnabled)
 	f.progress.SetCheck(cfg.ProgressWindowEnabled)
 	f.primary.SelectIndex(indexOf(primaryValues, cfg.Primary))
+	f.wsDelay.SetCheck(cfg.ClientWSStartupDelayEnabled)
+	f.wsDelaySeconds.SetText(strconv.Itoa(int(cfg.ClientWSStartupDelayMax.Seconds())))
+	f.wsDelayToggled()
 	f.showGoverned()
+}
+
+// showSource fills the read-only site and server boxes.
+func (f *settingsForm) showSource() {
+	p := f.snap.policy
+	site := p.Site
+	if site == "" {
+		site = "nessuna sede mappata (fuori sede o DC non riconosciuto)"
+	}
+	f.site.SetText(site)
+	servers := "nessuno"
+	if len(p.Servers) > 0 {
+		servers = strings.Join(p.Servers, "\r\n")
+	}
+	f.servers.SetText(servers)
+}
+
+// wsDelayToggled greys the seconds out while the delay itself is off.
+func (f *settingsForm) wsDelayToggled() {
+	f.wsDelaySeconds.Hwnd().EnableWindow(f.wsDelay.IsChecked())
 }
 
 // remoteToggled runs when "Configurazione remota" is ticked or unticked:
@@ -313,10 +355,11 @@ func (f *settingsForm) critToggled() {
 
 func (f *settingsForm) setAllEnabled(on bool) {
 	for _, h := range []win.HWND{f.poll.Hwnd(), f.channel.Hwnd(), f.primary.Hwnd(),
-		f.dcAttempts.Hwnd(), f.dcDelay.Hwnd(), f.critSeconds.Hwnd(), f.btnSave.Hwnd(), f.btnCancel.Hwnd()} {
+		f.dcAttempts.Hwnd(), f.dcDelay.Hwnd(), f.critSeconds.Hwnd(), f.wsDelaySeconds.Hwnd(),
+		f.btnSave.Hwnd(), f.btnCancel.Hwnd()} {
 		h.EnableWindow(on)
 	}
-	for _, c := range []*checkRow{f.remote, f.selfUpdate, f.crit, f.ipc, f.cert, f.progress} {
+	for _, c := range []*checkRow{f.remote, f.selfUpdate, f.crit, f.ipc, f.cert, f.progress, f.wsDelay} {
 		c.Enable(on)
 	}
 }
@@ -350,6 +393,12 @@ func (f *settingsForm) edits() ([]config.Edit, error) {
 	set("remoteConfig.enabled", bool_(f.remote), strconv.FormatBool(cfg.RemoteConfigEnabled))
 	set("ipc.enabled", bool_(f.ipc), strconv.FormatBool(cfg.IPCEnabled))
 	set("progressWindow.enabled", bool_(f.progress), strconv.FormatBool(cfg.ProgressWindowEnabled))
+	set("clientWs.startupDelayEnabled", bool_(f.wsDelay), strconv.FormatBool(cfg.ClientWSStartupDelayEnabled))
+	wsSecs, err := num(f.wsDelaySeconds, "Ritardo WS")
+	if err != nil {
+		return nil, err
+	}
+	set("clientWs.startupDelayMaxSeconds", wsSecs, strconv.Itoa(int(cfg.ClientWSStartupDelayMax.Seconds())))
 	if gov {
 		return out, nil
 	}
@@ -472,6 +521,7 @@ func (f *settingsForm) saved(code uint32, runErr error, detail string) {
 func (f *settingsForm) unlock() {
 	f.setAllEnabled(true)
 	f.enableGoverned()
+	f.wsDelayToggled()
 	f.status.Hwnd().SetWindowText(f.statusText())
 }
 

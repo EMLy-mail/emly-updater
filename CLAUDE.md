@@ -60,6 +60,9 @@ The generated file is committed, so neither is needed for a build, `go test ./..
 ## Running it locally
 
 `emly-updater run` is the foreground debug mode (same loop as the service, logs to console).
+It opens the presence channel at once, skipping the service's random startup delay
+(`[clientWs] startupDelayMaxSeconds`); `run --ws-delay=N` waits 0..N s, `--ws-delay=-1`
+uses config.ini's value.
 `emly-updater tray` starts the per-user tray icon (AGENTS.md § *Tray*). It is read-only
 against the machine except through the elevated `apply-settings`, so it runs safely beside
 an installed service.

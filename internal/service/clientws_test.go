@@ -614,3 +614,25 @@ func waitForAtLeast(t *testing.T, counter *atomic.Int32, want int32, timeout tim
 		}
 	}
 }
+
+// The startup delay follows config.ini's [clientWs] keys: off, or a zero
+// maximum, dials at once; otherwise it never exceeds the maximum.
+func TestClientWSInitialDelayFollowsConfig(t *testing.T) {
+	cfg := internalCfg(t, config.SourceExternal)
+	u := newTestUpdater(t, cfg, dcNamed("DC-RM2"), ipsOf("172.16.96.10"))
+
+	cfg.ClientWSStartupDelayEnabled, cfg.ClientWSStartupDelayMax = false, time.Minute
+	if d := u.clientWSInitialDelay(); d != 0 {
+		t.Errorf("disabled: delay = %s, want 0", d)
+	}
+	cfg.ClientWSStartupDelayEnabled, cfg.ClientWSStartupDelayMax = true, 0
+	if d := u.clientWSInitialDelay(); d != 0 {
+		t.Errorf("zero max: delay = %s, want 0", d)
+	}
+	cfg.ClientWSStartupDelayEnabled, cfg.ClientWSStartupDelayMax = true, 2*time.Second
+	for range 50 {
+		if d := u.clientWSInitialDelay(); d < 0 || d > 2*time.Second {
+			t.Fatalf("delay = %s, want within [0, 2s]", d)
+		}
+	}
+}

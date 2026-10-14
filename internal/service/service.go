@@ -388,7 +388,34 @@ func (u *Updater) clock() time.Time {
 // mirrors the flag passed to logging.New, so the policy that is derived from
 // config.ini keeps the foreground `run` mode at debug level.
 func New(cfg *config.Config, log *logging.Logger, consoleDebug bool) *Updater {
-	machine := machineinfo.Collect()
+	return NewWithMachine(cfg, log, consoleDebug, CollectMachine(log))
+}
+
+// CollectMachine is machineinfo.CollectTimed, logged at info level as one
+// line with each step's duration: the process spawns behind it can take
+// seconds each, and it runs once per service start (once per tray process),
+// so the line is cheap and is what tells a slow machine's cause apart.
+func CollectMachine(log *logging.Logger) machineinfo.Info {
+	start := time.Now()
+	var mu sync.Mutex
+	var steps []any
+	machine := machineinfo.CollectTimed(func(name string, took time.Duration) {
+		mu.Lock()
+		steps = append(steps, name, took.Round(time.Millisecond).String())
+		mu.Unlock()
+	})
+	log.Info("machine info collected", append([]any{
+		"took", time.Since(start).Round(time.Millisecond).String(),
+		"hostname", machine.Hostname, "adDomain", machine.ADDomain,
+		"domainJoined", machineinfo.DomainJoined(machine.ADDomain, machine.Hostname),
+	}, steps...)...)
+	return machine
+}
+
+// NewWithMachine is New with the machine facts already collected: the tray
+// builds a fresh Updater on every load, and the facts do not change while it
+// runs, so it collects them once (CollectMachine) and reuses them.
+func NewWithMachine(cfg *config.Config, log *logging.Logger, consoleDebug bool, machine machineinfo.Info) *Updater {
 	// One Pacer for both download managers: the server's download slots are
 	// a single pool shared by EMLy's setups and the updater's own, so a 429
 	// on one must hold back the other too.

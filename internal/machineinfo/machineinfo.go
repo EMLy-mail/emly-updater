@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/denisbrodbeck/machineid"
 	"golang.org/x/sys/windows/registry"
@@ -43,31 +45,62 @@ type Info struct {
 
 // Collect gathers machine identity data. Fields that cannot be retrieved are
 // left empty; callers should handle missing values gracefully.
-func Collect() Info {
+func Collect() Info { return CollectTimed(nil) }
+
+// CollectTimed is Collect, calling step (when non-nil) after each source with
+// its name and how long it took; step may be called from several goroutines.
+//
+// The HWID, the AD domain and the firmware strings each cost a process spawn
+// (wmic, then PowerShell), measured at ~5 s apiece on a cold VM. They are
+// independent, so they run concurrently: the whole costs the slowest one,
+// not their sum. Each writes only its own fields of info.
+func CollectTimed(step func(name string, took time.Duration)) Info {
 	info := Info{}
-
-	if h, err := os.Hostname(); err == nil {
-		info.Hostname = h
+	timed := func(name string, fn func()) {
+		start := time.Now()
+		fn()
+		if step != nil {
+			step(name, time.Since(start))
+		}
 	}
 
-	if hwid, err := hardwareID(); err == nil {
-		info.HWID = hwid
+	var wg sync.WaitGroup
+	spawn := func(name string, fn func()) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			timed(name, fn)
+		}()
 	}
+	spawn("hardwareID", func() {
+		if hwid, err := hardwareID(); err == nil {
+			info.HWID = hwid
+		}
+	})
+	spawn("adDomain", func() {
+		if domain, err := adDomain(); err == nil {
+			info.ADDomain = domain
+		}
+	})
+	spawn("firmware", func() { info.Serial, info.Product = firmwareIdentifiers() })
 
-	if domain, err := adDomain(); err == nil {
-		info.ADDomain = domain
-	}
+	timed("hostname", func() {
+		if h, err := os.Hostname(); err == nil {
+			info.Hostname = h
+		}
+	})
+	timed("internalIP", func() {
+		if ip, err := internalIP(); err == nil {
+			info.InternalIP = ip
+		}
+	})
+	timed("windowsVersion", func() {
+		if v, err := getWindowsVersionInfo(); err == nil {
+			info.OSVersion = sanitizeHeaderValue(v)
+		}
+	})
 
-	if ip, err := internalIP(); err == nil {
-		info.InternalIP = ip
-	}
-
-	if v, err := getWindowsVersionInfo(); err == nil {
-		info.OSVersion = sanitizeHeaderValue(v)
-	}
-
-	info.Serial, info.Product = firmwareIdentifiers()
-
+	wg.Wait()
 	return info
 }
 

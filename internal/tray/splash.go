@@ -28,7 +28,8 @@ import (
 // of disabled controls. Always dark, whatever the theme: it is artwork, not a
 // form. The background (gradient and swoosh) is computed pixel by pixel once
 // per show; the logo and text are drawn over it once; each tick then only
-// repaints the indeterminate bar, from a back buffer.
+// repaints the indeterminate bar, from a back buffer, and every dotTicks the
+// status line, whose trailing dots cycle ... .. . .. as a second sign of life.
 //
 // A raw Win32 window rather than a windigo one: windigo has no borderless
 // top-level window, and this one has no controls and no events to wire.
@@ -44,12 +45,22 @@ type splash struct {
 	bar    windows.Rect
 	phase  int
 	shown  time.Time
-	status string
+	status string // without the trailing dots, which paint animates
+
+	statusFont uintptr
+	statusRc   windows.Rect
+	ticks      int
 }
 
 // splashMinShow keeps the splash up at least this long: a load that answers
 // from the cache in a few ms would otherwise flash it.
 const splashMinShow = 700 * time.Millisecond
+
+// statusDots is the status line's trailing dots, one entry per dotTicks:
+// ... .. . .. and round again.
+var statusDots = [...]string{"...", "..", ".", ".."}
+
+const dotTicks = 30 // ≈ 450 ms at barTickMs
 
 const (
 	splashTimer  = 1
@@ -176,7 +187,7 @@ func (s *gdiSurface) free() {
 }
 
 func newSplash(owner win.HWND) *splash {
-	return &splash{owner: owner, status: "Caricamento della configurazione…"}
+	return &splash{owner: owner, status: "Caricamento della configurazione"}
 }
 
 // show puts the splash up, centred over the (hidden) settings window, where
@@ -213,7 +224,7 @@ func (s *splash) show() {
 	corner := int32(dwmwcpRound)
 	procDwmSetWindowAttr.Call(h, dwmwaWindowCornerPref, uintptr(unsafe.Pointer(&corner)), unsafe.Sizeof(corner))
 
-	s.phase = 0
+	s.phase, s.ticks = 0, 0
 	s.shown = time.Now()
 	procShowWindow.Call(h, uintptr(co.SW_SHOW))
 	procSetForegroundWnd.Call(h)
@@ -235,6 +246,10 @@ func (s *splash) release() {
 	s.hwnd = 0
 	s.art.free()
 	s.back.free()
+	if s.statusFont != 0 {
+		procDeleteObject.Call(s.statusFont)
+		s.statusFont = 0
+	}
 }
 
 func registerSplashClass() bool {
@@ -270,6 +285,9 @@ func splashWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	case wmTimer:
 		s.phase = (s.phase + 1) % barPhases
 		procInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&s.bar)), 0)
+		if s.ticks++; s.ticks%dotTicks == 0 {
+			procInvalidateRect.Call(hwnd, uintptr(unsafe.Pointer(&s.statusRc)), 0)
+		}
 		return 0
 	case wmDestroy:
 		s.release()
@@ -279,10 +297,13 @@ func splashWndProc(hwnd, msg, wp, lp uintptr) uintptr {
 	return r
 }
 
-// paint copies the artwork into the back buffer, draws the bar over it and
-// blits the result: the bar never flickers between track and segment.
+// paint copies the artwork into the back buffer, draws the status line and
+// the bar over it and blits the result: neither flickers.
 func (s *splash) paint(dc uintptr) {
 	procBitBlt.Call(s.back.dc, 0, 0, uintptr(s.w), uintptr(s.h), s.art.dc, 0, 0, srcCopy)
+
+	dots := statusDots[(s.ticks/dotTicks)%len(statusDots)]
+	drawText(s.back.dc, s.statusFont, s.status+dots, win.RGB(214, 211, 224), s.statusRc, dtLeft|dtVCenter)
 
 	r := s.bar
 	fillColor(win.HDC(s.back.dc), win.RECT{Left: r.Left, Top: r.Top, Right: r.Right, Bottom: r.Bottom},
@@ -314,29 +335,46 @@ func (s *splash) render() error {
 
 	drawLogo(s.art.pix, int(s.w), int(px(20)), int(px(36)), int(px(48)))
 	text := func(str string, size, weight int, c win.COLORREF, l, t, r, b int32, format uint32) {
-		face, _ := windows.UTF16PtrFromString("Segoe UI")
-		font, _, _ := procCreateFontW.Call(uintptr(int(-px(size))), 0, 0, 0, uintptr(weight), 0, 0, 0, 0, 0, 0,
-			clearTypeQualty, 0, uintptr(unsafe.Pointer(face)))
+		font := splashFont(px(size), weight)
 		if font != 0 {
-			old, _, _ := procSelectObject.Call(dc, font)
-			defer func() { procSelectObject.Call(dc, old); procDeleteObject.Call(font) }()
+			defer procDeleteObject.Call(font)
 		}
-		procSetTextColor.Call(dc, uintptr(c))
-		rc := windows.Rect{Left: l, Top: t, Right: r, Bottom: b}
-		p, _ := windows.UTF16FromString(str)
-		procDrawTextW.Call(dc, uintptr(unsafe.Pointer(&p[0])), uintptr(len(p)-1), uintptr(unsafe.Pointer(&rc)),
-			uintptr(format|dtSingleLine|dtNoPrefix|dtEndEllipsis))
+		drawText(dc, font, str, c, windows.Rect{Left: l, Top: t, Right: r, Bottom: b}, format)
 	}
 
 	white, soft, dim := win.RGB(246, 245, 250), win.RGB(214, 211, 224), win.RGB(152, 148, 166)
 	text(version.ProductName, 30, 600, white, px(78), px(32), s.w-px(20), px(72), dtLeft|dtVCenter)
 	text("Agente di distribuzione e gestione", 19, 300, white, px(78), px(74), s.w-px(20), px(102), dtLeft|dtVCenter)
-	text(s.status, 13, 400, soft, px(20), px(140), s.w-px(20), px(162), dtLeft|dtVCenter)
+	// The status line is drawn by paint, over the artwork, for its dots.
+	procSetBkMode.Call(s.back.dc, bkTransparent)
+	s.statusFont = splashFont(px(13), 400)
+	s.statusRc = windows.Rect{Left: px(20), Top: px(140), Right: s.w - px(20), Bottom: px(162)}
 	text("Versione "+version.Version, 12, 400, dim, px(20), s.h-px(36), s.w/2, s.h-px(14), dtLeft|dtVCenter)
 	text(fmt.Sprintf("© %d 3gIT", time.Now().Year()), 12, 400, soft, s.w/2, s.h-px(36), s.w-px(20), s.h-px(14), dtRight|dtVCenter)
 
 	s.bar = windows.Rect{Left: px(20), Top: px(168), Right: s.w - px(20), Bottom: px(168) + max(px(3), 2)}
 	return nil
+}
+
+// splashFont creates a Segoe UI font height pixels tall; 0 on failure, in
+// which case DrawText falls back to the DC's default font.
+func splashFont(height int32, weight int) uintptr {
+	face, _ := windows.UTF16PtrFromString("Segoe UI")
+	font, _, _ := procCreateFontW.Call(uintptr(int(-height)), 0, 0, 0, uintptr(weight), 0, 0, 0, 0, 0, 0,
+		clearTypeQualty, 0, uintptr(unsafe.Pointer(face)))
+	return font
+}
+
+// drawText draws one line of str in rc with font (when non-zero) and colour c.
+func drawText(dc, font uintptr, str string, c win.COLORREF, rc windows.Rect, format uint32) {
+	if font != 0 {
+		old, _, _ := procSelectObject.Call(dc, font)
+		defer procSelectObject.Call(dc, old)
+	}
+	procSetTextColor.Call(dc, uintptr(c))
+	p, _ := windows.UTF16FromString(str)
+	procDrawTextW.Call(dc, uintptr(unsafe.Pointer(&p[0])), uintptr(len(p)-1), uintptr(unsafe.Pointer(&rc)),
+		uintptr(format|dtSingleLine|dtNoPrefix|dtEndEllipsis))
 }
 
 // paintBackground fills pix (BGRA, w*h) with the splash's artwork: a dark

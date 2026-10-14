@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"emlyupdater/internal/config"
 	"emlyupdater/internal/logging"
+	"emlyupdater/internal/machineinfo"
 	"emlyupdater/internal/service"
 )
 
@@ -24,14 +26,39 @@ type backend struct {
 	mu  sync.Mutex
 	log *logging.Logger
 	u   *service.Updater
+	// machine is collected once per tray process: hostname, HWID, AD domain
+	// and firmware strings do not change while it runs, and collecting them
+	// costs process spawns (~5 s on a cold machine). Concurrent callers wait
+	// for the first collection. Warmed up by prewarm.
+	machine func() machineinfo.Info
 }
 
+// prewarmDelay holds the background machine-info collection back after the
+// tray starts: it starts at logon, and the logon has better uses for the CPU.
+const prewarmDelay = 30 * time.Second
+
 func newBackend() *backend {
-	return &backend{
-		// Like `products`: a log of its own in the user's temp directory, never
-		// the service's (ProgramData\...\logs is not writable by users anyway).
-		log: logging.New(filepath.Join(os.TempDir(), "aryxd-agent-tray"), "", false),
+	// Like `products`: a log of its own in the user's temp directory, never
+	// the service's (ProgramData\...\logs is not writable by users anyway).
+	// At debug level, for the step-by-step timings of load: it is written
+	// only when the settings window or a product check loads.
+	log := logging.New(filepath.Join(os.TempDir(), "aryxd-agent-tray"), "", false)
+	log.SetLevel("debug")
+	b := &backend{log: log}
+	b.machine = sync.OnceValue(func() machineinfo.Info { return service.CollectMachine(log) })
+	return b
+}
+
+// prewarm collects the machine facts in the background, prewarmDelay after
+// the tray starts, so the first settings window does not wait on them.
+// Opening it sooner simply collects them then (the first caller does).
+func (b *backend) prewarm(ctx context.Context) {
+	select {
+	case <-time.After(prewarmDelay):
+	case <-ctx.Done():
+		return
 	}
+	b.machine()
 }
 
 // snapshot is what the settings window shows.
@@ -51,14 +78,25 @@ func (b *backend) load(ctx context.Context) snapshot {
 }
 
 func (b *backend) loadLocked(ctx context.Context) snapshot {
+	start := time.Now()
+	b.log.Debug("tray load started")
 	cfg, err := config.Load(config.ConfigPath())
+	b.log.Debug("tray load: config.ini read", "took", time.Since(start).String())
 	if err != nil {
+		b.log.Warn("tray load: config.ini unreadable", "error", err.Error())
 		return snapshot{err: err}
 	}
-	u := service.New(cfg, b.log, false)
+	step := time.Now()
+	u := service.NewWithMachine(cfg, b.log, false, b.machine())
+	b.log.Debug("tray load: updater built (machine info)", "took", time.Since(step).String())
+	step = time.Now()
 	u.Prepare(ctx, false)
+	b.log.Debug("tray load: policy prepared", "took", time.Since(step).String())
 	b.u = u
-	return snapshot{cfg: cfg, policy: u.EffectivePolicy()}
+	pv := u.EffectivePolicy()
+	b.log.Debug("tray load finished", "total", time.Since(start).String(),
+		"governed", pv.Governed, "site", pv.Site, "servers", len(pv.Servers))
+	return snapshot{cfg: cfg, policy: pv}
 }
 
 // products lists every product, loading the policy first if needed.

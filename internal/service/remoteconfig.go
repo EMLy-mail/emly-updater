@@ -339,6 +339,12 @@ func (u *Updater) restoreCache() error {
 // applyLogging pushes the effective logging section into the running logger
 // when it differs from what was applied last.
 func (u *Updater) applyLogging(lg policy.LoggingSettings) {
+	// A reporting Updater (Prepare: the tray, `products`) writes to a log of
+	// its own, which the document's logging section does not govern: the
+	// tray keeps its log at debug level so a slow load can be diagnosed.
+	if u.readOnly {
+		return
+	}
 	if u.appliedLogging != nil && *u.appliedLogging == lg {
 		return
 	}

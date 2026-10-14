@@ -50,7 +50,18 @@ type siteState struct {
 //
 // ctx cuts the wait short when the service is asked to stop mid-retry.
 func resolveDC(ctx context.Context, retry policy.DCLookupRetry, log *logging.Logger, dcFn dcLookup, domainJoined bool) (*machineinfo.DomainControllerInfo, error) {
+	// At info level: it runs at start, then only when the local addresses
+	// change or the answer is older than dcCacheTTL, and a slow DsGetDcName
+	// is a common reason for a slow start off the domain.
+	start := time.Now()
 	dc, err := dcFn("")
+	took := time.Since(start).Round(time.Millisecond).String()
+	if err != nil {
+		log.Info("domain controller lookup failed", "took", took,
+			"domainJoined", domainJoined, "error", err.Error())
+	} else {
+		log.Info("domain controller lookup", "took", took, "dc", dc.Name)
+	}
 	if err == nil {
 		return dc, nil
 	}
@@ -91,7 +102,10 @@ func resolveDC(ctx context.Context, retry policy.DCLookupRetry, log *logging.Log
 // is older than dcCacheTTL, a single attempt each time.
 func (u *Updater) resolveHost(ctx context.Context, first bool) policy.Host {
 	now := u.clock()
+	ipsStart := time.Now()
 	ips, ipsErr := u.ipsFn()
+	u.Log.Debug("local IP addresses enumerated", "took", time.Since(ipsStart).String(),
+		"localIPs", strings.Join(ips, ","))
 	if ipsErr != nil {
 		u.Log.Warn("could not enumerate local IP addresses", "error", ipsErr.Error())
 		ips = nil

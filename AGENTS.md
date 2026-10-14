@@ -746,6 +746,21 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   at once: the boot retry window is up to 30 s of "Caricamento…" for nothing on
   a machine that booted long ago. Everything runs off the UI thread, serialised
   by `backend.mu`.
+- **Machine facts are collected once per tray process** (`backend.machine`,
+  a `sync.OnceValue` over `service.CollectMachine`, passed to
+  `service.NewWithMachine`), warmed up in the background `prewarmDelay` (30 s)
+  after the tray starts. They cost three process spawns (HWID, AD domain,
+  firmware: measured ~5 s each on a cold VM, 15 s in all when serial), which
+  `machineinfo.CollectTimed` now runs concurrently; before this the splash
+  waited on all of them at every opening.
+- **The tray's log is always at debug level** (`%TEMP%\aryxd-agent-tray\updater.log`),
+  and a read-only Updater skips `applyLogging`: the document's `logging` section
+  governs the service's log, not a helper's. `backend.load` logs each step's
+  duration at debug (config.ini, Updater, `initPolicy`, local IPs, policy
+  evaluation). Both the tray and the service log, at **info**, `machine info
+  collected` (total and per source) and `domain controller lookup` (with
+  `took`): once per start / per DC re-query, so they stay in the service's
+  `updater.log` at its default level.
 - **The settings shown are the effective ones**: when a remote document is in
   force (`PolicyView.Governed`, i.e. the policy source is not `default`), the keys
   it overrides (`governedKeys` in `settings.go`: poll, channel, primary, DC retry,
@@ -838,7 +853,9 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   the cache does not flash it. A raw Win32 window (`CS_DROPSHADOW`, DWM rounded
   corners, owned by the settings window so no taskbar button), since windigo
   has no borderless top-level window; its artwork is computed per pixel into a
-  DIB once per show. If it cannot be created, the window opens as before.
+  DIB once per show. The status line is the one thing redrawn besides the
+  bar: its trailing dots cycle `...` `..` `.` `..` every `dotTicks` (≈ 450 ms).
+  If it cannot be created, the window opens as before.
   Re-loads with the window already open (a failed save) use the in-window bar.
 
 ### Tray manual verification

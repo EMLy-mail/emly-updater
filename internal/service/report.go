@@ -58,10 +58,16 @@ type PolicyView struct {
 // user is watching a "loading" label.
 func (u *Updater) Prepare(ctx context.Context, bootRetry bool) {
 	u.readOnly = true
+	start := time.Now()
 	u.initPolicy() // no-op when already set; cached document or config.ini otherwise
+	u.Log.Debug("prepare: policy loaded", "took", time.Since(start).String(),
+		"source", u.Policy.Current().Source.String())
 	// first=false: resolveHost then looks the DC up once (the address set
 	// differs from the empty one it remembers) with no retry.
-	u.beginCycle(ctx, bootRetry)
+	cycleStart := time.Now()
+	cyc := u.beginCycle(ctx, bootRetry)
+	u.Log.Debug("prepare: policy evaluated for this host", "took", time.Since(cycleStart).String(),
+		"site", cyc.site, "dc", cyc.host.DC, "total", time.Since(start).String())
 }
 
 // EffectivePolicy returns the effective policy prepared by Prepare.

@@ -77,6 +77,10 @@ func Run() error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	a := &app{exe: exe, be: newBackend(), ctx: ctx}
+	go func() {
+		defer crash.Guard(nil)
+		a.be.prewarm(ctx)
+	}()
 	a.icon, a.bigIcon = exeIcons(exe)
 	a.wmTaskbarCreated, _ = win.RegisterWindowMessage("TaskbarCreated")
 	setDarkMenus(isDark()) // the app mode must be set before any window exists

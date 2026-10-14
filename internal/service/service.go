@@ -862,6 +862,36 @@ func (u *Updater) showUpdateToast(version string) {
 	}
 }
 
+// trayStartDelay is how long the service waits after starting before it
+// looks for missing trays: after a self-update or an install, the Restart
+// Manager and the setup's own [Run] entry are restarting the tray in that
+// window, and a tray found running is one not to start.
+const trayStartDelay = 15 * time.Second
+
+// startTrays starts the tray (`EMLyUpdater.exe tray`) as the user in every
+// active session where it is not running (notify.EnsureTray), once, shortly
+// after the service starts. Service mode only: Execute calls it, `run` does
+// not, so a debug run never spawns trays.
+func (u *Updater) startTrays(ctx context.Context) {
+	select {
+	case <-time.After(trayStartDelay):
+	case <-ctx.Done():
+		return
+	}
+	self, err := os.Executable()
+	if err != nil {
+		u.Log.Warn("failed to resolve own executable path, not starting the tray", "error", err.Error())
+		return
+	}
+	for _, l := range notify.EnsureTray(self) {
+		if l.Err != nil {
+			u.Log.Warn("failed to start the tray in a user session", "sessionID", l.SessionID, "error", l.Err.Error())
+		} else {
+			u.Log.Info("tray was not running, started it in the user session", "sessionID", l.SessionID)
+		}
+	}
+}
+
 // notifySourcesUnreachable warns the user at the machine (console or RDP) that this poll cycle could
 // not reach any update source (primary retries exhausted, and the fallback -
 // when wired in - failed too), pointing them at their IT department. It is
@@ -913,11 +943,16 @@ func (h *Handler) Execute(_ []string, r <-chan svc.ChangeRequest, changes chan<-
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	done := make(chan struct{})
-	wg.Add(3)
+	wg.Add(4)
 	go func() {
 		defer wg.Done()
 		defer crash.Guard(h.Updater.Log)
 		h.Updater.RunLoop(ctx)
+	}()
+	go func() {
+		defer wg.Done()
+		defer crash.Guard(h.Updater.Log)
+		h.Updater.startTrays(ctx)
 	}()
 	go func() {
 		defer wg.Done()

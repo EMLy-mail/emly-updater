@@ -15,6 +15,7 @@ import (
 	"os"
 	"runtime"
 	"syscall"
+	"time"
 
 	"github.com/rodrigocfd/windigo/co"
 	"github.com/rodrigocfd/windigo/ui"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/sys/windows/svc"
 
 	"emlyupdater/internal/config"
+	"emlyupdater/internal/crash"
 	"emlyupdater/internal/version"
 )
 
@@ -48,6 +50,8 @@ type app struct {
 	be      *backend
 	ctx     context.Context
 	form    *settingsForm
+	splash  *splash // up while the settings window loads, see showSettings
+	opening bool    // a showSettings load is in flight
 	// wmTaskbarCreated is broadcast when Explorer restarts: the icon must be
 	// added again, or it silently disappears until the next logon.
 	wmTaskbarCreated co.WM
@@ -84,6 +88,7 @@ func Run() error {
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_MINIMIZEBOX | co.WS_CLIPCHILDREN | co.WS_BORDER).
 		CmdShow(co.SW_HIDE))
 	a.form = newSettingsForm(a)
+	a.splash = newSplash(0)
 	a.events()
 	a.wnd.RunAsMain()
 	return nil
@@ -106,6 +111,7 @@ func (a *app) events() {
 		if a.icon != 0 {
 			a.wnd.Hwnd().SendMessage(co.WM_SETICON, win.WPARAM(co.ICON_SZ_SMALL), win.LPARAM(a.icon))
 		}
+		a.splash.owner = a.wnd.Hwnd()
 		a.addTrayIcon()
 		return 0
 	})
@@ -179,13 +185,39 @@ func (a *app) balloon(title, text string, warn bool) {
 	_ = winsh.Shell_NotifyIcon(cosh.NIM_MODIFY, &nid)
 }
 
+// showSettings brings the settings window up. When it is hidden, the
+// configuration is re-read first, behind the splash: the window appears
+// only once filled, and the splash stays up at least splashMinShow so a
+// fast load does not flash it.
 func (a *app) showSettings() {
 	h := a.wnd.Hwnd()
-	if !h.IsWindowVisible() {
-		a.form.reload()
+	if h.IsWindowVisible() {
+		h.ShowWindow(co.SW_SHOWNORMAL)
+		h.SetForegroundWindow()
+		return
 	}
-	h.ShowWindow(co.SW_SHOWNORMAL)
-	h.SetForegroundWindow()
+	if a.opening {
+		a.splash.show() // already up: just to the front
+		return
+	}
+	a.opening = true
+	a.splash.show()
+	a.form.reload(func() {
+		reveal := func() {
+			a.opening = false
+			h.ShowWindow(co.SW_SHOWNORMAL)
+			h.SetForegroundWindow()
+			a.splash.hide() // after the window is up: no gap on screen
+		}
+		if wait := splashMinShow - time.Since(a.splash.shown); a.splash.hwnd != 0 && wait > 0 {
+			time.AfterFunc(wait, func() {
+				defer crash.Guard(nil)
+				a.wnd.UiThread(reveal)
+			})
+			return
+		}
+		reveal()
+	})
 }
 
 func (a *app) showMenu() {

@@ -12,6 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 
+	"emlyupdater/internal/notify"
 	"emlyupdater/internal/service"
 )
 
@@ -118,7 +119,7 @@ func registerRestart() {
 // singleInstance holds a per-session mutex: one tray per logged-on user.
 // ok=false means another tray already runs in this session.
 func singleInstance() (release func(), ok bool) {
-	name, _ := windows.UTF16PtrFromString(`Local\AryxDAgentTray`)
+	name, _ := windows.UTF16PtrFromString(`Local\` + notify.TrayMutexName) // EnsureTray looks it up
 	h, _, err := procCreateMutexW.Call(0, 0, uintptr(unsafe.Pointer(name)))
 	if h == 0 {
 		return func() {}, true // cannot tell: better two icons than none

@@ -793,6 +793,15 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
 - **It is a console binary**: the `Run` value starts it as `conhost.exe --headless
   "...\EMLyUpdater.exe" tray`, otherwise a console window stays open beside the
   icon. One tray per session (`Local\AryxDAgentTray` mutex).
+- **The service restarts missing trays** (`notify.EnsureTray`, from `Execute`
+  only, never `run`): 15 s after the service starts (`trayStartDelay`, leaving
+  the Restart Manager and the setup's `[Run]` time to bring theirs back), every
+  active WTS session whose tray mutex is absent - looked up from session 0 as
+  `Session\<id>\AryxDAgentTray` (`notify.TrayMutexName`) - gets `EMLyUpdater.exe
+  tray` started as its user (`WTSQueryUserToken` + `CreateProcessAsUser`, the
+  toast's hop). `CREATE_NO_WINDOW` plays the part of the Run value's `conhost
+  --headless`. Disconnected sessions are skipped. Once per service start, not on
+  every logon: the Run value covers logons.
 - **`ListViewItem.SetData` is not used** in the products window: in testing the
   agent's row read back EMLy's slug, so the window keeps its own index → slug
   slice instead.
@@ -820,6 +829,17 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   `msctls_progress32` + `PBS_MARQUEE`, which stays light in the dark palette.
   `Start`/`Stop` nest, so several checks in flight keep one animation. One per
   window: windigo keeps a single WM_DRAWITEM handler per window.
+- **Opening the settings window shows a splash first** (`splash.go`): a
+  borderless window in the logo's palette (charcoal, violet swoosh, yellow
+  bar; the 512 px logo is `splash_logo.png`, embedded, since the exe's icon is
+  32 px at most), with product name and status line, centred where the settings window will appear, while
+  `backend.load` runs; the window is shown only once filled, then the splash
+  goes. It stays up at least `splashMinShow` (700 ms) so a load answered from
+  the cache does not flash it. A raw Win32 window (`CS_DROPSHADOW`, DWM rounded
+  corners, owned by the settings window so no taskbar button), since windigo
+  has no borderless top-level window; its artwork is computed per pixel into a
+  DIB once per show. If it cannot be created, the window opens as before.
+  Re-loads with the window already open (a failed save) use the in-window bar.
 
 ### Tray manual verification
 

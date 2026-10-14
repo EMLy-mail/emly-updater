@@ -207,8 +207,9 @@ var governedKeys = map[string]bool{
 	"certificate.enabled":                   true,
 }
 
-// reload re-reads everything off the UI thread and refills the form.
-func (f *settingsForm) reload() {
+// reload re-reads everything off the UI thread and refills the form, then
+// calls done (if any) on the UI thread.
+func (f *settingsForm) reload(done func()) {
 	f.snap = snapshot{}
 	f.theme.Select(themeMode)
 	f.setAllEnabled(false)
@@ -220,6 +221,9 @@ func (f *settingsForm) reload() {
 		f.a.wnd.UiThread(func() {
 			f.bar.Stop()
 			f.fill(snap)
+			if done != nil {
+				done()
+			}
 		})
 	}()
 }
@@ -509,7 +513,7 @@ func (f *settingsForm) saved(code uint32, runErr error, detail string) {
 			detail = fmt.Sprintf("codice di uscita %d", code)
 		}
 		h.MessageBox("Salvataggio non riuscito:\n\n"+detail, version.ProductName, co.MB_ICONERROR)
-		f.reload()
+		f.reload(nil)
 		return
 	}
 	f.a.balloon(version.ProductName, "Impostazioni salvate, servizio riavviato.", false)

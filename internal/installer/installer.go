@@ -34,7 +34,8 @@ type Spec struct {
 	Type       string // "inno" | "nsis"
 	InstallDir string
 	LogsDir    string
-	// ForceUpgrade adds EMLy's /FORCEUPGRADE (Inno only).
+	// ForceUpgrade marks a setup built from EMLy's installer.iss (Inno only):
+	// it adds /FORCEUPGRADE and /ALLUSERS, see innoInstallArgs.
 	ForceUpgrade bool
 }
 

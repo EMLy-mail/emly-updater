@@ -65,7 +65,7 @@ internal/
                          channel, Installer spec, Legacy) and Detect, the closed `ini`/`file`/`exe`
                          version-source chain with three outcomes (installed / absent / unknown)
   installer/             Silent setup drivers behind `Driver` (`For(Spec)`): `inno` (EMLy,
-                         /VERYSILENT + /FORCEUPGRADE) and `nsis` (`/S /D=<dir>`, uninstall
+                         /VERYSILENT + /FORCEUPGRADE /ALLUSERS) and `nsis` (`/S /D=<dir>`, uninstall
                          `uninstall.exe /S _?=<dir>`); CheckNotUserWritable gates every uninstaller
   service/               Windows service handler + RunLoop / Cycle state machine + IPC server lifecycle;
                          remoteconfig.go fetches/validates/caches the policy document and builds the
@@ -268,9 +268,27 @@ the .iss has no BOM and Inno Setup would read UTF-8 as ANSI.
     from EMLy's config.ini; other products are Italian only, like the progress
     window), the channel from EMLy's config.ini with `updater.channelOverride`
     winning, fresh install when absent, blocking `WaitForExit`, the clean
-    retry with uninstall on every cycle with no attempt cap, `/FORCEUPGRADE`,
-    the `update.*` WS events with `target: "emly"`, and the historical manifest
+    retry with uninstall on every cycle with no attempt cap, `/FORCEUPGRADE`
+    and `/ALLUSERS`, the `update.*` WS events with `target: "emly"`, and the historical manifest
     path `/v2/updates/manifest`. A generic product gets none of these.
+  - **EMLy-style setups get `/ALLUSERS`** (`innoInstallArgs`, with
+    `/FORCEUPGRADE`). EMLy's `installer.iss` is `PrivilegesRequired=lowest`:
+    run by the agent as SYSTEM it registered itself in SYSTEM's own HKCU
+    (`HKU\S-1-5-18\...\Uninstall\EMLy_is1`), invisible in Programs and
+    Features and one more Inno registration of `C:\3gIT\EMLy` beside each
+    user's manual install - several registrations, one `unins000.exe`. With
+    `/ALLUSERS` it is the HKLM, machine-wide one. It needs
+    `PrivilegesRequiredOverridesAllowed=commandline` (plus
+    `UsePreviousPrivileges=no`, so a user's manual update stays per-user and
+    without UAC) in the emly repo's `installer.iss`; older EMLy setups ignore
+    the switch. The stale SYSTEM-HKCU entry is deleted by that same setup when
+    it runs in administrative mode (a `[Registry]` `deletekey` on
+    `HKU\S-1-5-18\...\EMLy_is1`, `Check: IsAdminInstallMode`), i.e. at the
+    first EMLy update the agent installs with it; users' own HKCU entries from
+    manual installs stay.
+  - **EMLy's clean retry never uninstalls in practice**: its `[Dirs]` gives
+    Users Modify on `C:\3gIT\EMLy`, so `CheckNotUserWritable` refuses to run
+    `unins000.exe` as SYSTEM and the retry reinstalls over the old files.
   - **Detection has three outcomes and only `installed` can lead to an
     install.** The chain is tried in order: a source whose file is missing
     falls through to the next; the first `installed(v)` wins; if a source
@@ -327,7 +345,7 @@ the .iss has no BOM and Inno Setup would read UTF-8 as ANSI.
     switch is pinned in the agent by slug: 3g-RocketChat is NSIS before 1.0.4
     (`/S /D=<installDir>`, as the document says) and Inno Setup from 1.0.4,
     with EMLy's arguments (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
-    /FORCEUPGRADE /LOG=`), its setup being built from EMLy's `installer.iss`.
+    /FORCEUPGRADE /ALLUSERS /LOG=`), its setup being built from EMLy's `installer.iss`.
     The version is the one being installed; a pre-release of 1.0.4 sorts
     before it and stays NSIS. The clean-reinstall uninstall goes by what is on
     disk instead (`UninstallerType`: an `unins*.exe` in `installDir` means

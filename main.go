@@ -1,4 +1,4 @@
-// AryxD Agent (binary and service still named EMLyUpdater, see AGENTS.md §
+// Aryx Agent (binary and service still named EMLyUpdater, see AGENTS.md §
 // "Product name vs. technical identifiers") is a standalone Windows service
 // (LocalSystem, auto-start): the distribution, monitoring and management agent
 // for 3gIT's supported products, today EMLy. It keeps EMLy up to date on
@@ -67,7 +67,7 @@ const (
 	// them (AGENTS.md § "Product name vs. technical identifiers").
 	productName = version.ProductName
 	displayName = productName + " Service"
-	description = "AryxD Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. "
+	description = "Aryx Agent: agente di distribuzione, monitoraggio e gestione per i prodotti supportati da 3gIT. "
 
 	// supportedProducts are the products this agent distributes, logged at
 	// startup so a log read in isolation says what the agent is for.
@@ -372,7 +372,7 @@ func acquireSingleton() (func(), error) {
 	}
 	if callErr == windows.ERROR_ALREADY_EXISTS {
 		windows.CloseHandle(windows.Handle(h))
-		return nil, fmt.Errorf("another AryxD Agent (EMLyUpdater) instance is already running (service or foreground)")
+		return nil, fmt.Errorf("another Aryx Agent (EMLyUpdater) instance is already running (service or foreground)")
 	}
 	return func() { windows.CloseHandle(windows.Handle(h)) }, nil
 }

@@ -28,143 +28,215 @@ var channelValues = []string{"", "stable", "beta"}
 var primaryValues = []string{config.SourceInternal, config.SourceExternal}
 
 // settingsForm is the settings window's content: one control per editable
-// config.ini key (config.EditableKeys).
+// config.ini key (config.EditableKeys), on pages picked from the navigation
+// pane (layout in settings_layout.go), plus the Prodotti page (products.go).
 //
 // Keys the remote configuration document overrides (governedKeys) are shown
-// with the document's effective value and disabled while a document is in
-// force: editing them would change nothing until remoteConfig is turned off.
-// Unticking "Configurazione remota" re-enables them with config.ini's values,
-// since that is what the service will use once the edit is saved.
+// with the document's effective value, disabled and marked with a lock
+// badge while a document is in force: editing them would change nothing
+// until remoteConfig is turned off. Switching "Configurazione remota" off
+// re-enables them with config.ini's values, since that is what the service
+// will use once the edit is saved.
 type settingsForm struct {
 	a    *app
 	snap snapshot // last load; snap.cfg nil while loading or on error
 
-	status                *ui.Static
-	site, servers         *ui.Edit // read-only: what the service resolved
-	poll                  *ui.Edit
-	channel, primary      *ui.ComboBox
-	remote                *checkRow
-	dcAttempts, dcDelay   *ui.Edit
-	selfUpdate, crit      *checkRow
-	critSeconds           *ui.Edit
-	ipc, cert, progress   *checkRow
-	wsDelay               *checkRow
-	wsDelaySeconds        *ui.Edit
-	theme                 *themeRow
-	note                  *ui.Static
-	btnCheck, btnProducts *ui.Button
-	btnSave, btnCancel    *ui.Button
-	saving                bool
-	bar                   *loadingBar // while loading or saving
+	nav                 *navList
+	info                *infoBar
+	view                *scrollView
+	site, servers       *ui.Edit // read-only: what the service resolved
+	poll                *ui.Edit
+	channel, primary    *fluentCombo
+	remote              *toggleSwitch
+	dcAttempts, dcDelay *ui.Edit
+	selfUpdate, crit    *toggleSwitch
+	critSeconds         *ui.Edit
+	ipc, cert, progress *toggleSwitch
+	wsDelay             *toggleSwitch
+	wsDelaySeconds      *ui.Edit
+	theme               *fluentCombo
+	badges              []*lockBadge // one per governed row
+	products            *productsTab
+	btnSave, btnCancel  *fluentButton
+	saving              bool
+	bar                 *loadingBar // while loading or saving
 }
+
+// The pages, in navigation order: newSettingsForm builds them in this order.
+const (
+	pageConnection = iota
+	pageUpdates
+	pageProducts
+	pageService
+	pageLook
+)
+
+// settingsNote is the footer's reminder of what saving implies.
+const settingsNote = "Salvare richiede i privilegi di amministratore e riavvia il servizio."
 
 func newSettingsForm(a *app) *settingsForm {
 	f := &settingsForm{a: a}
 	w := a.wnd
-	const lx, cx = 16, 260 // label column, control column
-	y := 12
 
-	f.status = ui.NewStatic(w, ui.OptsStatic().Position(ui.Dpi(lx, y)).Size(ui.Dpi(520, 48)).
-		Text("Caricamento della configurazione…"))
-	// Under the status line's first row: while it shows, the status is a
-	// single line ("Caricamento…", "Salvataggio…").
-	f.bar = newLoadingBar(w, settingsBarTimer, lx, y+24, 520, 14)
-	y += 58
+	w.On().WmEraseBkgnd(func(_ ui.WmEraseBkgnd) int { return 1 }) // over installTheme's
+	w.On().WmPaint(func() {
+		paintBuffered(w.Hwnd(), func(c *canvas, rc win.RECT) { paintSettingsChrome(c, rc, settingsNote) })
+	})
 
-	// Site and servers as read-only boxes rather than in the status text: a
-	// server list wraps there into one unreadable paragraph, and a box lets
-	// the URL be selected and copied. Wider than the control column, since a
-	// manifest URL does not fit in 270px.
-	const ix = lx + 150
-	readOnly := func(text string, height int, style co.ES, ws co.WS) *ui.Edit {
-		ui.NewStatic(w, ui.OptsStatic().Text(text).Position(ui.Dpi(lx, y+3)).Size(ui.Dpi(ix-lx-8, 18)))
-		return ui.NewEdit(w, ui.OptsEdit().Position(ui.Dpi(ix, y)).
-			Width(ui.DpiX(530-ix)).Height(ui.DpiY(height)).
-			CtrlStyle(co.ES_READONLY|style).
-			WndStyle(co.WS_CHILD|co.WS_VISIBLE|co.WS_TABSTOP|co.WS_GROUP|ws))
+	f.nav = newNavList(w, 8, 8, navPaneW-16, 5*40, []navItem{
+		{glyphGlobe, "Connessione"},
+		{glyphSync, "Aggiornamenti"},
+		{glyphPackage, "Prodotti"},
+		{glyphServer, "Servizio"},
+		{glyphColor, "Aspetto"},
+	})
+	f.info = newInfoBar(w, contentX, infoBarY, contentW, infoBarH)
+	f.bar = newLoadingBar(w, settingsBarTimer, contentX, barY, contentW, barH)
+	f.view = newScrollView(w)
+	f.buildConnection()
+	f.buildUpdates()
+	f.buildProducts()
+	f.buildService()
+	f.buildLook()
+	f.nav.OnSelect(func(i int) {
+		f.view.show(i)
+		f.pageShown(i)
+	})
+
+	// Footer buttons, right-aligned on the band's centre line, created left
+	// to right for the tab order. "Controlla ora" is in the tray menu only.
+	const saveW, cancelW = 90, 90
+	by := settingsClientH - footerH + (footerH-32)/2
+	x := settingsClientW - 24 - saveW - cancelW - ctlGap
+	f.btnCancel = newFluentButton(w, "Annulla", 0, false, x, by, cancelW)
+	x += cancelW + ctlGap
+	f.btnSave = newFluentButton(w, "Salva", 0, true, x, by, saveW)
+
+	f.remote.OnChange(func() { f.remoteToggled() })
+	f.crit.OnChange(func() { f.critToggled() })
+	f.wsDelay.OnChange(func() { f.wsDelayToggled() })
+	f.theme.OnChange(func() { f.previewTheme(f.theme.SelectedIndex()) })
+	f.btnSave.OnClick(func() { f.save() })
+	f.btnCancel.OnClick(func() { f.cancel() })
+	for _, b := range f.badges {
+		b.OnClick(func() { f.explainLock() })
 	}
-	f.site = readOnly("Sede (domain controller)", 23, co.ES_AUTOHSCROLL, 0)
-	y += 30
-	f.servers = readOnly("Server, in ordine di prova", 54, co.ES_MULTILINE|co.ES_AUTOVSCROLL, co.WS_VSCROLL)
-	y += 64
-
-	label := func(text string) {
-		ui.NewStatic(w, ui.OptsStatic().Text(text).Position(ui.Dpi(lx, y+3)).Size(ui.Dpi(cx-lx-8, 18)))
-	}
-	number := func(x, width int) *ui.Edit {
-		return ui.NewEdit(w, ui.OptsEdit().Position(ui.Dpi(x, y)).Width(ui.DpiX(width)).
-			CtrlStyle(co.ES_AUTOHSCROLL|co.ES_NUMBER))
-	}
-	check := func(text string) *checkRow { return newCheckRow(w, text, lx, y, 330) }
-
-	label("Intervallo di controllo (minuti)")
-	f.poll = number(cx, 70)
-	y += 30
-
-	label("Canale di rilascio (override)")
-	f.channel = ui.NewComboBox(w, ui.OptsComboBox().Position(ui.Dpi(cx, y)).Width(ui.DpiX(270)).
-		CtrlStyle(co.CBS_DROPDOWNLIST).Texts("Nessuno (segue il canale di EMLy)", "stable", "beta"))
-	y += 30
-
-	f.remote = check("Configurazione remota attiva (/v2/config)")
-	y += 28
-
-	label("Sorgente primaria del manifest")
-	f.primary = ui.NewComboBox(w, ui.OptsComboBox().Position(ui.Dpi(cx, y)).Width(ui.DpiX(270)).
-		CtrlStyle(co.CBS_DROPDOWNLIST).Texts("internal (server interno)", "external (API pubblica)"))
-	y += 30
-
-	label("Rilevamento DC: tentativi / attesa (s)")
-	f.dcAttempts = number(cx, 60)
-	f.dcDelay = number(cx+80, 60)
-	y += 30
-
-	f.selfUpdate = check("Aggiornamento automatico dell'agente (self-update)")
-	y += 28
-
-	f.crit = check("Avvisi per gli aggiornamenti critici, attesa (s):")
-	f.critSeconds = number(cx+90, 60)
-	y += 30
-
-	f.ipc = check("Server IPC per EMLy (named pipe)")
-	y += 28
-	f.cert = check("Installa il certificato di code-signing 3gIT")
-	y += 28
-	f.progress = check("Finestra di avanzamento durante gli aggiornamenti")
-	y += 28
-	f.wsDelay = check("Ritardo casuale all'avvio del canale WS, max (s):")
-	f.wsDelaySeconds = number(cx+90, 60)
-	y += 30
-
-	label("Tema")
-	f.theme = newThemeRow(w, cx, y, func(mode int) { f.previewTheme(mode) })
-	y += 34
-
-	f.note = ui.NewStatic(w, ui.OptsStatic().Position(ui.Dpi(lx, y)).Size(ui.Dpi(520, 66)).Text(
-		"Salvare richiede i privilegi di amministratore e riavvia il servizio.\n"+
-			"Le modifiche valgono fino al prossimo aggiornamento dell'agente: ogni installazione "+
-			"ripristina config.ini dai valori predefiniti (il precedente resta in config.prev.ini)."))
-	y += 76
-
-	f.btnCheck = ui.NewButton(w, ui.OptsButton().Text("&Controlla ora").Position(ui.Dpi(lx, y)).Width(ui.DpiX(110)))
-	f.btnProducts = ui.NewButton(w, ui.OptsButton().Text("&Prodotti…").Position(ui.Dpi(lx+120, y)).Width(ui.DpiX(100)))
-	f.btnSave = ui.NewButton(w, ui.OptsButton().Text("&Salva").Position(ui.Dpi(350, y)).Width(ui.DpiX(85)))
-	f.btnCancel = ui.NewButton(w, ui.OptsButton().Text("&Annulla").Position(ui.Dpi(445, y)).Width(ui.DpiX(85)))
-
-	for _, b := range []*ui.Button{f.btnCheck, f.btnProducts, f.btnSave, f.btnCancel} {
-		darkButton(b)
-	}
-	f.remote.OnClick(func() { f.remoteToggled() })
-	f.crit.OnClick(func() { f.critToggled() })
-	f.wsDelay.OnClick(func() { f.wsDelayToggled() })
-	f.btnCheck.On().BnClicked(func() { a.checkNow() })
-	f.btnProducts.On().BnClicked(func() { showProducts(a) })
-	f.btnSave.On().BnClicked(func() { f.save() })
-	f.btnCancel.On().BnClicked(func() { f.cancel() })
 	return f
 }
 
-// previewTheme applies a theme radio's mode at once, without saving it.
+// buildConnection is the "Connessione" page: where the service gets its
+// manifests from.
+func (f *settingsForm) buildConnection() {
+	p := newSettingsPage(f.view, "Connessione", true)
+
+	// Site and servers as read-only boxes: the URL can be selected and copied.
+	r := p.row("Sede (domain controller)", "Rilevata automaticamente", rowMinHeight)
+	xs, _ := r.place(300)
+	f.site = r.input(xs[0], 300, co.ES_READONLY|co.ES_AUTOHSCROLL)
+
+	const listH = 72   // three URLs
+	const listTop = 62 // under the label block, which is centred in the row's first rowMinHeight
+	r = p.row("Server, in ordine di prova", "Un indirizzo per riga", listTop+listH+16)
+	f.servers = p.input(pageCardX+rowPadX, r.top+listTop, contentW-2*rowPadX, listH,
+		co.ES_READONLY|co.ES_MULTILINE|co.ES_AUTOVSCROLL, 0)
+
+	r = p.row("Rilevamento DC", "Tentativi e attesa (s)", rowMinHeight)
+	xs, bx := r.place(64, 64)
+	f.badges = append(f.badges, r.badge(bx))
+	f.dcAttempts = r.input(xs[0], 64, co.ES_AUTOHSCROLL|co.ES_NUMBER|co.ES_RIGHT)
+	f.dcDelay = r.input(xs[1], 64, co.ES_AUTOHSCROLL|co.ES_NUMBER|co.ES_RIGHT)
+
+	r = p.row("Configurazione remota attiva", "Scarica le impostazioni da /v2/config", rowMinHeight)
+	xs, _ = r.place(toggleW)
+	f.remote = r.toggle(xs[0])
+
+	r = p.row("Sorgente primaria del manifest", "Da dove leggere gli aggiornamenti", rowMinHeight)
+	xs, bx = r.place(200)
+	f.badges = append(f.badges, r.badge(bx))
+	f.primary = r.combo(xs[0], 200, "internal (server interno)", "external (API pubblica)")
+	p.finish()
+}
+
+// buildUpdates is the "Aggiornamenti" page: when and what the agent updates.
+func (f *settingsForm) buildUpdates() {
+	p := newSettingsPage(f.view, "Aggiornamenti", false)
+
+	r := p.row("Intervallo di controllo", "Minuti tra un controllo e l'altro", rowMinHeight)
+	xs, bx := r.place(80)
+	f.badges = append(f.badges, r.badge(bx))
+	f.poll = r.input(xs[0], 80, co.ES_AUTOHSCROLL|co.ES_NUMBER|co.ES_RIGHT)
+
+	r = p.row("Canale di rilascio (override)", "Sostituisce quello di EMLy", rowMinHeight)
+	xs, bx = r.place(240)
+	f.badges = append(f.badges, r.badge(bx))
+	f.channel = r.combo(xs[0], 240, "Nessuno (segue il canale di EMLy)", "stable", "beta")
+
+	r = p.row("Aggiornamento automatico dell'agente", "Installa da sé le nuove versioni (self-update)", rowMinHeight)
+	xs, bx = r.place(toggleW)
+	f.badges = append(f.badges, r.badge(bx))
+	f.selfUpdate = r.toggle(xs[0])
+
+	r = p.row("Avvisi per gli aggiornamenti critici", "Attesa in secondi prima di installare", rowMinHeight)
+	xs, bx = r.place(64, toggleW)
+	f.badges = append(f.badges, r.badge(bx))
+	f.critSeconds = r.input(xs[0], 64, co.ES_AUTOHSCROLL|co.ES_NUMBER|co.ES_RIGHT)
+	f.crit = r.toggle(xs[1])
+
+	r = p.row("Finestra di avanzamento", "Mostrata durante gli aggiornamenti", rowMinHeight)
+	xs, _ = r.place(toggleW)
+	f.progress = r.toggle(xs[0])
+	p.finish()
+}
+
+// buildService is the "Servizio" page: what else the service runs.
+func (f *settingsForm) buildService() {
+	p := newSettingsPage(f.view, "Servizio", false)
+
+	r := p.row("Server IPC per EMLy", "Named pipe per dialogare con EMLy", rowMinHeight)
+	xs, _ := r.place(toggleW)
+	f.ipc = r.toggle(xs[0])
+
+	r = p.row("Certificato di code-signing 3gIT", "Installato nell'archivio della macchina", rowMinHeight)
+	xs, bx := r.place(toggleW)
+	f.badges = append(f.badges, r.badge(bx))
+	f.cert = r.toggle(xs[0])
+
+	r = p.row("Ritardo casuale del canale WS", "Attesa massima in secondi all'avvio", rowMinHeight)
+	xs, _ = r.place(64, toggleW)
+	f.wsDelaySeconds = r.input(xs[0], 64, co.ES_AUTOHSCROLL|co.ES_NUMBER|co.ES_RIGHT)
+	f.wsDelay = r.toggle(xs[1])
+	p.finish()
+}
+
+// buildLook is the "Aspetto" page: the tray's own, per-user preferences.
+func (f *settingsForm) buildLook() {
+	p := newSettingsPage(f.view, "Aspetto", false)
+	r := p.row("Tema", "Chiaro, scuro o come Windows", rowMinHeight)
+	xs, _ := r.place(200)
+	f.theme = r.combo(xs[0], 200, "Sistema", "Chiaro", "Scuro") // themeSystem, themeLight, themeDark
+	p.finish()
+}
+
+// showPage switches to page i as if picked in the navigation pane. With the
+// window hidden it only selects the page: showSettings' reload runs
+// pageShown once the window is filled.
+func (f *settingsForm) showPage(i int) {
+	f.nav.Select(i)
+	f.view.show(i)
+	if f.a.wnd.Hwnd().IsWindowVisible() {
+		f.pageShown(i)
+	}
+}
+
+// pageShown runs when page i becomes the visible one: the Prodotti page
+// loads its rows the first time after each reload.
+func (f *settingsForm) pageShown(i int) {
+	if i == pageProducts && !f.products.loaded {
+		f.products.load()
+	}
+}
+
+// previewTheme applies the theme combo's mode at once, without saving it.
 func (f *settingsForm) previewTheme(mode int) {
 	themeMode = mode
 	applyTheme(f.a.wnd)
@@ -213,9 +285,10 @@ var governedKeys = map[string]bool{
 // calls done (if any) on the UI thread.
 func (f *settingsForm) reload(done func()) {
 	f.snap = snapshot{}
-	f.theme.Select(themeMode)
+	f.products.loaded = false
+	f.theme.SelectIndex(themeMode)
 	f.setAllEnabled(false)
-	f.status.Hwnd().SetWindowText("Caricamento della configurazione…")
+	f.info.Set(severityInfo, "Caricamento della configurazione…", "")
 	f.bar.Start()
 	go func() {
 		defer crash.Guard(nil)
@@ -223,6 +296,7 @@ func (f *settingsForm) reload(done func()) {
 		f.a.wnd.UiThread(func() {
 			f.bar.Stop()
 			f.fill(snap)
+			f.pageShown(f.view.cur)
 			if done != nil {
 				done()
 			}
@@ -233,51 +307,67 @@ func (f *settingsForm) reload(done func()) {
 func (f *settingsForm) fill(snap snapshot) {
 	f.snap = snap
 	if snap.err != nil {
-		f.status.Hwnd().SetWindowText("Impossibile leggere config.ini: " + snap.err.Error())
-		f.btnCancel.Hwnd().EnableWindow(true)
+		f.info.Set(severityWarning, "Impossibile leggere config.ini", snap.err.Error())
+		f.btnCancel.Enable(true)
 		return
 	}
 	f.setAllEnabled(true)
-	f.status.Hwnd().SetWindowText(f.statusText())
+	f.showStatus()
 	f.showSource()
 	f.showValues()
 }
 
-func (f *settingsForm) statusText() string {
+// showStatus puts where the settings come from in the InfoBar.
+func (f *settingsForm) showStatus() {
+	f.info.Set(f.status())
+}
+
+func (f *settingsForm) status() (sev infoSeverity, title, body string) {
 	p := f.snap.policy
-	var b strings.Builder
-	if p.Governed {
-		fmt.Fprintf(&b, "Configurazione remota in vigore: revisione %d (%s", p.Revision, p.Source)
+	switch {
+	case p.Governed:
+		title = fmt.Sprintf("Versione configurazione remota: revisione %d", p.Revision)
+		body = capitalize(p.Source)
 		if !p.FetchedAt.IsZero() {
-			fmt.Fprintf(&b, ", scaricata il %s", p.FetchedAt.Local().Format("02/01/2006 15:04"))
+			body += ", scaricata il " + p.FetchedAt.Local().Format("02/01/2006 15:04")
 		}
-		b.WriteString("). I campi disattivati mostrano il valore remoto.")
-	} else if f.snap.cfg.RemoteConfigEnabled {
-		b.WriteString("Nessun documento remoto ricevuto finora: vale config.ini.")
-	} else {
-		b.WriteString("Configurazione remota disattivata: vale config.ini.")
+		body += "."
+	case f.snap.cfg.RemoteConfigEnabled:
+		title = "Nessuna configurazione remota ricevuta"
+		body = "Uso config.ini."
+	default:
+		title = "Configurazione remota disattivata"
+		body = "Uso config.ini."
 	}
 	if p.Paused {
-		b.WriteString("\nAggiornamenti SOSPESI dalla configurazione remota.")
+		return severityWarning, title, "Aggiornamenti SOSPESI dalla configurazione remota. " + body
 	}
-	return b.String()
+	return severityInfo, title, body
+}
+
+// capitalize upper-cases s's first letter: policy sources are lower case.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // governed reports whether the document overrides the governed keys given
-// the form's current remoteConfig tick.
+// the form's current remoteConfig switch.
 func (f *settingsForm) governed() bool {
-	return f.snap.policy.Governed && f.remote.IsChecked()
+	return f.snap.policy.Governed && f.remote.IsOn()
 }
 
 // showValues fills every control: the document's values for governed keys
 // when a document is in force, config.ini's otherwise.
 func (f *settingsForm) showValues() {
 	cfg := f.snap.cfg
-	f.remote.SetCheck(cfg.RemoteConfigEnabled)
-	f.ipc.SetCheck(cfg.IPCEnabled)
-	f.progress.SetCheck(cfg.ProgressWindowEnabled)
+	f.remote.SetOn(cfg.RemoteConfigEnabled)
+	f.ipc.SetOn(cfg.IPCEnabled)
+	f.progress.SetOn(cfg.ProgressWindowEnabled)
 	f.primary.SelectIndex(indexOf(primaryValues, cfg.Primary))
-	f.wsDelay.SetCheck(cfg.ClientWSStartupDelayEnabled)
+	f.wsDelay.SetOn(cfg.ClientWSStartupDelayEnabled)
 	f.wsDelaySeconds.SetText(strconv.Itoa(int(cfg.ClientWSStartupDelayMax.Seconds())))
 	f.wsDelayToggled()
 	f.showGoverned()
@@ -288,7 +378,7 @@ func (f *settingsForm) showSource() {
 	p := f.snap.policy
 	site := p.Site
 	if site == "" {
-		site = "nessuna sede mappata (fuori sede o DC non riconosciuto)"
+		site = "N/A (fuori sede o DC non riconosciuto)"
 	}
 	f.site.SetText(site)
 	servers := "nessuno"
@@ -300,10 +390,11 @@ func (f *settingsForm) showSource() {
 
 // wsDelayToggled greys the seconds out while the delay itself is off.
 func (f *settingsForm) wsDelayToggled() {
-	f.wsDelaySeconds.Hwnd().EnableWindow(f.wsDelay.IsChecked())
+	f.wsDelaySeconds.Hwnd().EnableWindow(f.wsDelay.IsOn())
+	f.view.invalidate()
 }
 
-// remoteToggled runs when "Configurazione remota" is ticked or unticked:
+// remoteToggled runs when "Configurazione remota" is switched on or off:
 // with a document in force, that switches the governed keys between the
 // document's values (disabled) and config.ini's (editable), since config.ini
 // is what the service will use once remoteConfig is off.
@@ -324,50 +415,67 @@ func (f *settingsForm) showGoverned() {
 		f.channel.SelectIndex(indexOf(channelValues, u.Channel()))
 		f.dcAttempts.SetText(strconv.Itoa(u.DCLookupRetry.Attempts))
 		f.dcDelay.SetText(strconv.Itoa(u.DCLookupRetry.DelaySeconds))
-		f.selfUpdate.SetCheck(u.SelfUpdate.Enabled)
-		f.crit.SetCheck(u.CriticalWarning.Enabled)
+		f.selfUpdate.SetOn(u.SelfUpdate.Enabled)
+		f.crit.SetOn(u.CriticalWarning.Enabled)
 		f.critSeconds.SetText(strconv.Itoa(u.CriticalWarning.Seconds))
-		f.cert.SetCheck(u.InstallCertificate.Enabled)
+		f.cert.SetOn(u.InstallCertificate.Enabled)
 	} else {
 		f.poll.SetText(strconv.Itoa(int(cfg.PollInterval.Minutes())))
 		f.channel.SelectIndex(indexOf(channelValues, cfg.ChannelOverride))
 		f.dcAttempts.SetText(strconv.Itoa(cfg.DCLookupRetryAttempts))
 		f.dcDelay.SetText(strconv.Itoa(int(cfg.DCLookupRetryDelay.Seconds())))
-		f.selfUpdate.SetCheck(cfg.SelfUpdateEnabled)
-		f.crit.SetCheck(cfg.CriticalWarningEnabled)
+		f.selfUpdate.SetOn(cfg.SelfUpdateEnabled)
+		f.crit.SetOn(cfg.CriticalWarningEnabled)
 		f.critSeconds.SetText(strconv.Itoa(cfg.CriticalWarningSeconds))
-		f.cert.SetCheck(cfg.CertificateEnabled)
+		f.cert.SetOn(cfg.CertificateEnabled)
 	}
 	f.enableGoverned()
 }
 
-// enableGoverned disables the governed keys while a document overrides them.
+// explainLock answers a click on a lock badge: why the field next to it
+// cannot be edited, and how to edit it anyway.
+func (f *settingsForm) explainLock() {
+	msg := fmt.Sprintf("Questo valore è impostato dalla configurazione remota (revisione %d) "+
+		"e non si può modificare da qui.\n\n"+
+		"Per usare il valore di config.ini, disattiva \"Configurazione remota attiva\" "+
+		"nella pagina Connessione.", f.snap.policy.Revision)
+	f.a.wnd.Hwnd().MessageBox(msg, version.ProductName, co.MB_ICONINFORMATION)
+}
+
+// enableGoverned disables the governed keys, and shows their lock badges,
+// while a document overrides them.
 func (f *settingsForm) enableGoverned() {
 	gov := f.governed()
 	for _, h := range []win.HWND{f.poll.Hwnd(), f.channel.Hwnd(), f.primary.Hwnd(), f.dcAttempts.Hwnd(),
 		f.dcDelay.Hwnd()} {
 		h.EnableWindow(!gov)
 	}
-	for _, c := range []*checkRow{f.selfUpdate, f.crit, f.cert} {
-		c.Enable(!gov)
+	for _, t := range []*toggleSwitch{f.selfUpdate, f.crit, f.cert} {
+		t.Enable(!gov)
+	}
+	for _, b := range f.badges {
+		b.Show(gov)
 	}
 	f.critToggled()
 }
 
 // critToggled greys the seconds out while the warning itself is off.
 func (f *settingsForm) critToggled() {
-	f.critSeconds.Hwnd().EnableWindow(!f.governed() && f.crit.IsChecked())
+	f.critSeconds.Hwnd().EnableWindow(!f.governed() && f.crit.IsOn())
+	f.view.invalidate()
 }
 
 func (f *settingsForm) setAllEnabled(on bool) {
 	for _, h := range []win.HWND{f.poll.Hwnd(), f.channel.Hwnd(), f.primary.Hwnd(),
-		f.dcAttempts.Hwnd(), f.dcDelay.Hwnd(), f.critSeconds.Hwnd(), f.wsDelaySeconds.Hwnd(),
-		f.btnSave.Hwnd(), f.btnCancel.Hwnd()} {
+		f.dcAttempts.Hwnd(), f.dcDelay.Hwnd(), f.critSeconds.Hwnd(), f.wsDelaySeconds.Hwnd()} {
 		h.EnableWindow(on)
 	}
-	for _, c := range []*checkRow{f.remote, f.selfUpdate, f.crit, f.ipc, f.cert, f.progress, f.wsDelay} {
-		c.Enable(on)
+	for _, t := range []*toggleSwitch{f.remote, f.selfUpdate, f.crit, f.ipc, f.cert, f.progress, f.wsDelay} {
+		t.Enable(on)
 	}
+	f.btnSave.Enable(on)
+	f.btnCancel.Enable(on)
+	f.view.invalidate()
 }
 
 // edits compares the form with config.ini and returns the keys that
@@ -394,7 +502,7 @@ func (f *settingsForm) edits() ([]config.Edit, error) {
 		}
 		return s, nil
 	}
-	bool_ := func(c *checkRow) string { return strconv.FormatBool(c.IsChecked()) }
+	bool_ := func(t *toggleSwitch) string { return strconv.FormatBool(t.IsOn()) }
 
 	set("remoteConfig.enabled", bool_(f.remote), strconv.FormatBool(cfg.RemoteConfigEnabled))
 	set("ipc.enabled", bool_(f.ipc), strconv.FormatBool(cfg.IPCEnabled))
@@ -488,7 +596,7 @@ func (f *settingsForm) save() {
 	f.saving = true
 	f.bar.Start()
 	f.setAllEnabled(false)
-	f.status.Hwnd().SetWindowText("Salvataggio: confermare la richiesta di amministratore…")
+	f.info.Set(severityInfo, "Salvataggio in corso", "Confermare la richiesta di amministratore…")
 	go func() {
 		defer crash.Guard(nil)
 		code, runErr := runElevated(h, f.a.exe, args)
@@ -528,7 +636,7 @@ func (f *settingsForm) unlock() {
 	f.setAllEnabled(true)
 	f.enableGoverned()
 	f.wsDelayToggled()
-	f.status.Hwnd().SetWindowText(f.statusText())
+	f.showStatus()
 }
 
 func indexOf(list []string, v string) int {

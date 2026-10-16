@@ -1,6 +1,6 @@
 //go:build windows
 
-// Package tray is AryxD Agent's notification-area icon, run in each user's
+// Package tray is Aryx Agent's notification-area icon, run in each user's
 // session as `EMLyUpdater.exe tray`: a settings window over config.ini, a
 // "check now" that wakes the service, and a dry-run manifest check per
 // product. It is a client of the service, never a second agent: it installs
@@ -92,10 +92,11 @@ func Run() error {
 
 	a.wnd = ui.NewMain(ui.OptsMain().
 		Title(version.ProductName + " - Impostazioni").
-		Size(ui.Dpi(560, 634)).
+		Size(ui.Dpi(settingsClientW, settingsClientH)).
 		Center(true).
 		Style(co.WS_CAPTION | co.WS_SYSMENU | co.WS_MINIMIZEBOX | co.WS_CLIPCHILDREN | co.WS_BORDER).
 		CmdShow(co.SW_HIDE))
+	installTheme(a.wnd) // first: the form's own WM_ERASEBKGND/WM_PAINT override it
 	a.form = newSettingsForm(a)
 	a.splash = newSplash(0)
 	a.events()
@@ -104,7 +105,6 @@ func Run() error {
 }
 
 func (a *app) events() {
-	installTheme(a.wnd)
 	a.wnd.On().Wm(wmSettingChange, func(p ui.Wm) uintptr {
 		if isThemeChange(p) {
 			applyTheme(a.wnd)
@@ -246,6 +246,7 @@ func (a *app) showSettings() {
 	a.form.reload(func() {
 		reveal := func() {
 			a.opening = false
+			hideFocusCues(h)
 			h.ShowWindow(co.SW_SHOWNORMAL)
 			h.SetForegroundWindow()
 			a.splash.hide() // after the window is up: no gap on screen
@@ -310,7 +311,8 @@ func (a *app) showMenu() {
 	case idMenuSettings:
 		a.showSettings()
 	case idMenuProducts:
-		showProducts(a)
+		a.form.showPage(pageProducts)
+		a.showSettings()
 	case idMenuCheckNow:
 		a.checkNow()
 	case idMenuLogs:

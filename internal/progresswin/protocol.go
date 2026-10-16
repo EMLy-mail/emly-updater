@@ -1,5 +1,5 @@
 // Package progresswin draws the "please wait" window shown while an update of
-// EMLy or of AryxD Agent itself is downloaded and installed: a fixed-size,
+// EMLy or of Aryx Agent itself is downloaded and installed: a fixed-size,
 // non-closable dialog with a heading, a detail line and a progress bar, whose
 // title-bar icon is taken from an executable (EMLy.exe for EMLy's updates).
 //

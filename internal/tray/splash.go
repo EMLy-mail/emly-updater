@@ -434,7 +434,7 @@ func paintBackground(pix []uint32, w, h int) {
 	}
 }
 
-// splashLogo is the agent's logo at 512 px, the AryxD wolf in white like
+// splashLogo is the agent's logo at 512 px, the Aryx wolf in white like
 // appicon_dark.ico - the splash is always dark, whatever the theme: the
 // exe's own icon is at most 32 px through ExtractIconEx, blurry at 48, and
 // black.

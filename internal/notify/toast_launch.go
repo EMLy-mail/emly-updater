@@ -34,13 +34,13 @@ func UpdateCompleteMessage(lang, version, channel string) Message {
 func SourcesUnreachableMessage(lang string) Message {
 	if lang == "it" {
 		return Message{
-			Title: "AryxD Agent - Errore di connessione",
-			Body:  "AryxD Agent non riesce a contattare il server degli aggiornamenti. Contattare il proprio IT.",
+			Title: "Aryx Agent - Errore di connessione",
+			Body:  "Aryx Agent non riesce a contattare il server degli aggiornamenti. Contattare il proprio IT.",
 		}
 	}
 	return Message{
-		Title: "AryxD Agent - Connection Error",
-		Body:  "AryxD Agent cannot reach the update server. Please contact your IT department.",
+		Title: "Aryx Agent - Connection Error",
+		Body:  "Aryx Agent cannot reach the update server. Please contact your IT department.",
 	}
 }
 

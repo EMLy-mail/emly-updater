@@ -1,4 +1,4 @@
-// Package crash tells the user, with a message box, that AryxD Agent hit a
+// Package crash tells the user, with a message box, that Aryx Agent hit a
 // fatal error and is about to close - instead of the process silently
 // disappearing (the tray icon vanishing, a window closing on its own).
 //

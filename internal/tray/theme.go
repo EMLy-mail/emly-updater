@@ -11,8 +11,6 @@ import (
 	"github.com/rodrigocfd/windigo/win"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
-
-	"emlyupdater/internal/version"
 )
 
 // Dark/light theme for plain Win32 controls, chosen by the user in the
@@ -28,15 +26,12 @@ import (
 // Every step is best-effort: on an older build an attribute or ordinal that
 // does not exist leaves the light look, never an error.
 //
-// A themed checkbox draws its own text in black whatever WM_CTLCOLORBTN says,
-// which is unreadable on the dark background: that is why the settings
-// window draws each checkbox as a bare glyph plus a Static (checkRow), and
-// each theme radio the same way (themeRow).
+// The settings window draws most of itself (fluent.go); this covers the
+// native controls left in it (edits, the viewport's scroll bar).
 
 type palette struct {
 	bg, editBg, text   win.COLORREF
-	dim                win.COLORREF // text of a greyed-out label
-	bgBrush, editBrush win.HBRUSH   // created once, kept for the process lifetime
+	bgBrush, editBrush win.HBRUSH // created once, kept for the process lifetime
 }
 
 var (
@@ -47,8 +42,8 @@ var (
 	dwmapi               = windows.NewLazySystemDLL("dwmapi.dll")
 	procDwmSetWindowAttr = dwmapi.NewProc("DwmSetWindowAttribute")
 
-	lightPal = withDim(newPalette(win.RGB(240, 240, 240), win.RGB(255, 255, 255), win.RGB(0, 0, 0)), win.RGB(109, 109, 109))
-	darkPal  = withDim(newPalette(win.RGB(32, 32, 32), win.RGB(45, 45, 45), win.RGB(240, 240, 240)), win.RGB(125, 125, 125))
+	lightPal = newPalette(win.RGB(240, 240, 240), win.RGB(255, 255, 255), win.RGB(0, 0, 0))
+	darkPal  = newPalette(win.RGB(32, 32, 32), win.RGB(45, 45, 45), win.RGB(240, 240, 240))
 	curPal   = &lightPal
 )
 
@@ -58,11 +53,6 @@ func newPalette(bg, editBg, text win.COLORREF) palette {
 		return win.HBRUSH(h)
 	}
 	return palette{bg: bg, editBg: editBg, text: text, bgBrush: brush(bg), editBrush: brush(editBg)}
-}
-
-func withDim(p palette, dim win.COLORREF) palette {
-	p.dim = dim
-	return p
 }
 
 // themedWindow is what ui.Main and ui.Modal have in common.
@@ -82,15 +72,11 @@ func installTheme(w themedWindow) {
 		return 1
 	})
 
-	// Labels, glyph-only checkboxes, push buttons; also disabled and
+	// Labels and push buttons; also disabled and
 	// read-only edits, which Windows paints as statics.
 	paintCtl := func(p ui.Wm) uintptr {
 		hdc := win.HDC(p.WParam)
-		if dimmed[win.HWND(p.LParam)] {
-			hdc.SetTextColor(curPal.dim)
-		} else {
-			hdc.SetTextColor(curPal.text)
-		}
+		hdc.SetTextColor(curPal.text)
 		hdc.SetBkColor(curPal.bg)
 		return uintptr(curPal.bgBrush)
 	}
@@ -117,9 +103,11 @@ const (
 )
 
 // themeKey/themeValue hold the user's choice: per user, like the tray
-// itself, and outside config.ini, which is machine-wide and admin-only.
+// itself, and outside config.ini, which is machine-wide and admin-only. The
+// key keeps the product's former name: following ProductName would forget
+// every user's saved theme at each rename.
 var (
-	themeKey   = `Software\` + version.ProductName + `\Tray`
+	themeKey   = `Software\AryxD Agent\Tray`
 	themeValue = "Theme"
 )
 
@@ -190,28 +178,15 @@ func applyTheme(w themedWindow) {
 	allowDark(w.Hwnd(), dark)
 	for _, h := range w.Hwnd().EnumChildWindows() {
 		class, _ := h.GetClassName()
-		// Without it the DarkMode_* styles below stay light on push buttons
-		// and list view headers.
+		// Without it the DarkMode_* styles below stay light on some classes.
 		allowDark(h, dark)
 		if !dark {
 			setWindowTheme(h, "")
-			if class == "SysListView32" {
-				setListColors(h, lightPal.editBg, lightPal.text)
-			}
 			continue
 		}
 		switch class {
-		case "Edit", "ComboBox":
+		case "Edit":
 			setWindowTheme(h, "DarkMode_CFD")
-		case "Button":
-			// Checkbox glyphs; push buttons ignore it and are drawn by
-			// darkButton instead.
-			setWindowTheme(h, "DarkMode_Explorer")
-		case "SysListView32":
-			setWindowTheme(h, "DarkMode_Explorer")
-			setListColors(h, darkPal.editBg, darkPal.text)
-		case "SysHeader32":
-			setWindowTheme(h, "ItemsView") // with allowDark: dark header, light text
 		}
 	}
 	w.Hwnd().RedrawWindow(nil, 0, co.RDW_INVALIDATE|co.RDW_ERASE|co.RDW_ALLCHILDREN|co.RDW_UPDATENOW)
@@ -237,12 +212,6 @@ func setWindowTheme(h win.HWND, name string) {
 		p, _ = windows.UTF16PtrFromString(name)
 	}
 	procSetWindowTheme.Call(uintptr(h), uintptr(unsafe.Pointer(p)), 0)
-}
-
-func setListColors(h win.HWND, bg, text win.COLORREF) {
-	h.SendMessage(co.LVM_SETBKCOLOR, 0, win.LPARAM(bg))
-	h.SendMessage(co.LVM_SETTEXTBKCOLOR, 0, win.LPARAM(bg))
-	h.SendMessage(co.LVM_SETTEXTCOLOR, 0, win.LPARAM(text))
 }
 
 // DWM window attributes (dwmapi.h).
@@ -294,97 +263,6 @@ func setDarkMenus(dark bool) {
 	}
 }
 
-// Push button colours in dark mode.
-var (
-	btnFace    = newPalette(win.RGB(51, 51, 51), win.RGB(69, 69, 69), win.RGB(240, 240, 240))
-	btnPressed = newPalette(win.RGB(40, 40, 40), win.RGB(40, 40, 40), win.RGB(240, 240, 240))
-	btnBorder  = newPalette(win.RGB(110, 110, 110), win.RGB(150, 150, 150), win.RGB(0, 0, 0))
-)
-
-// darkButton paints a push button itself while the dark palette is active:
-// no visual style draws a dark push button on every Windows build (neither
-// "DarkMode_Explorer" nor "Explorer" + AllowDarkModeForWindow did on Windows
-// 11 26100), so the face, border and caption come from NM_CUSTOMDRAW. In the
-// light theme the system draws it. Register before the button is created.
-func darkButton(b *ui.Button) {
-	b.On().NmCustomDraw(func(p *win.NMCUSTOMDRAW) co.CDRF {
-		if curPal != &darkPal || p.DwDrawStage != co.CDDS_PREPAINT {
-			return co.CDRF_DODEFAULT
-		}
-		hdc, rc := p.Hdc, p.Rc
-		hot := p.UItemState&co.CDIS_HOT != 0
-		face, border := btnFace.bgBrush, btnBorder.bgBrush
-		switch {
-		case p.UItemState&co.CDIS_SELECTED != 0:
-			face = btnPressed.bgBrush
-		case hot:
-			face, border = btnFace.editBrush, btnBorder.editBrush
-		}
-		hdc.FillRect(&rc, border) // 1px border: outer rect, then the face inset
-		in := win.RECT{Left: rc.Left + 1, Top: rc.Top + 1, Right: rc.Right - 1, Bottom: rc.Bottom - 1}
-		hdc.FillRect(&in, face)
-
-		text, _ := b.Hwnd().GetWindowText()
-		hdc.SetBkMode(co.BKMODE_TRANSPARENT)
-		color := darkPal.text
-		if p.UItemState&co.CDIS_DISABLED != 0 {
-			color = win.RGB(120, 120, 120)
-		}
-		hdc.SetTextColor(color)
-		hdc.DrawText(text, &in, co.DT_CENTER|co.DT_VCENTER|co.DT_SINGLELINE) // '&' still underlines
-		return co.CDRF_SKIPDEFAULT
-	})
-}
-
-// darkListHeader makes a list view's column titles readable in the dark
-// theme. The dark header styles keep a dark-grey caption on the dark face,
-// and they draw it with DrawThemeText, which ignores SetTextColor: so in the
-// header's NM_CUSTOMDRAW - sent to the list view, its parent - each item is
-// drawn here instead. windigo routes WM_NOTIFY by (ID, code) only
-// (WmNotify), never through a plain Wm(WM_NOTIFY) handler, and the header's
-// ID is whatever comctl32 gave it: fixHeaderID pins it to headerID once the
-// list view exists. Register before the list view is created.
-func darkListHeader(lv *ui.ListView) {
-	lv.OnSubclass().WmNotify(headerID, co.NM_CUSTOMDRAW, func(ptr unsafe.Pointer) uintptr {
-		cd := (*win.NMCUSTOMDRAW)(ptr)
-		if curPal != &darkPal {
-			return lv.Hwnd().DefSubclassProc(co.WM_NOTIFY, headerID, win.LPARAM(ptr))
-		}
-		switch cd.DwDrawStage {
-		case co.CDDS_PREPAINT:
-			return uintptr(co.CDRF_NOTIFYITEMDRAW)
-		case co.CDDS_ITEMPREPAINT:
-			hdc, rc := cd.Hdc, cd.Rc
-			hdc.FillRect(&rc, darkPal.editBrush)
-			sep := win.RECT{Left: rc.Right - 1, Top: rc.Top + 4, Right: rc.Right, Bottom: rc.Bottom - 4}
-			hdc.FillRect(&sep, btnBorder.bgBrush)
-			title := ""
-			if i := int(cd.DwItemSpec); i < lv.ColCount() {
-				title = lv.Col(i).Title()
-			}
-			hdc.SetBkMode(co.BKMODE_TRANSPARENT)
-			hdc.SetTextColor(darkPal.text)
-			text := win.RECT{Left: rc.Left + 6, Top: rc.Top, Right: rc.Right - 6, Bottom: rc.Bottom}
-			hdc.DrawText(title, &text, co.DT_LEFT|co.DT_VCENTER|co.DT_SINGLELINE|co.DT_END_ELLIPSIS|co.DT_NOPREFIX)
-			return uintptr(co.CDRF_SKIPDEFAULT)
-		}
-		return uintptr(co.CDRF_DODEFAULT)
-	})
-}
-
-// headerID is the control ID darkListHeader expects on a list view's header.
-const headerID = 0x7F01
-
-// fixHeaderID gives every list view header under w the ID darkListHeader
-// listens on. Call once the controls exist (WM_CREATE).
-func fixHeaderID(w themedWindow) {
-	for _, h := range w.Hwnd().EnumChildWindows() {
-		if class, _ := h.GetClassName(); class == "SysHeader32" {
-			h.SetWindowLongPtr(co.GWLP_ID, headerID)
-		}
-	}
-}
-
 // allowDark calls uxtheme's undocumented AllowDarkModeForWindow (ordinal
 // 133, Windows 10 1809+), which the DarkMode_* visual styles require on some
 // control classes before they actually draw dark.
@@ -401,83 +279,4 @@ func allowDark(h win.HWND, dark bool) {
 		on = 1
 	}
 	syscall.SyscallN(fn, uintptr(h), on)
-}
-
-// checkRow is a checkbox drawn as a bare glyph plus a Static for its text
-// (see the package comment above on why). Clicking the text toggles the box
-// exactly as clicking the glyph does, BN_CLICKED handlers included.
-type checkRow struct {
-	box     *ui.CheckBox
-	lbl     *ui.Static
-	enabled bool
-}
-
-func newCheckRow(parent ui.Parent, text string, x, y, width int) *checkRow {
-	c := &checkRow{enabled: true}
-	c.box = ui.NewCheckBox(parent, ui.OptsCheckBox().Position(ui.Dpi(x, y)).Size(ui.Dpi(18, 20)))
-	c.lbl = ui.NewStatic(parent, ui.OptsStatic().Text(text).Position(ui.Dpi(x+20, y+3)).Size(ui.Dpi(width-20, 16)))
-	c.lbl.On().StnClicked(func() {
-		if c.enabled {
-			c.box.SetCheckAndTrigger(!c.box.IsChecked())
-		}
-	})
-	return c
-}
-
-func (c *checkRow) IsChecked() bool    { return c.box.IsChecked() }
-func (c *checkRow) SetCheck(on bool)   { c.box.SetCheck(on) }
-func (c *checkRow) OnClick(fun func()) { c.box.On().BnClicked(fun) }
-
-// Enable greys the row out. The label is not disabled - a disabled Static
-// is drawn etched, unreadable on the dark background - but painted in the
-// palette's dim colour (see dimmed), and its click is ignored.
-func (c *checkRow) Enable(on bool) {
-	c.enabled = on
-	c.box.Hwnd().EnableWindow(on)
-	dimmed[c.lbl.Hwnd()] = !on
-	c.lbl.Hwnd().InvalidateRect(nil, true)
-}
-
-// dimmed are the Statics painted in the dim colour: checkRow labels of
-// disabled rows. UI thread only.
-var dimmed = map[win.HWND]bool{}
-
-// themeRow is the settings window's "Tema" choice: one radio per theme mode,
-// each a bare glyph plus a Static like checkRow. Clicking either part
-// previews the theme at once (onPick); the window saves or reverts it.
-type themeRow struct {
-	radios []*ui.RadioButton
-}
-
-func newThemeRow(parent ui.Parent, x, y int, onPick func(mode int)) *themeRow {
-	names := []string{"Sistema", "Chiaro", "Scuro"} // themeSystem, themeLight, themeDark
-	opts := make([]*ui.VarOptsRadioButton, len(names))
-	for i := range names {
-		opts[i] = ui.OptsRadioButton().Position(ui.Dpi(x+i*90, y)).Size(ui.Dpi(18, 20))
-	}
-	g := ui.NewRadioGroup(parent, opts...)
-	t := &themeRow{}
-	for i, name := range names {
-		mode := i
-		t.radios = append(t.radios, g.Get(i))
-		lbl := ui.NewStatic(parent, ui.OptsStatic().Text(name).Position(ui.Dpi(x+i*90+20, y+3)).Size(ui.Dpi(65, 16)))
-		lbl.On().StnClicked(func() {
-			t.Select(mode)
-			onPick(mode)
-		})
-	}
-	g.On().BnClicked(func(r *ui.RadioButton) { onPick(r.Index()) })
-	return t
-}
-
-// Select checks one radio and unchecks the others: BM_SETCHECK does not do
-// the mutual exclusion a mouse click on a radio does.
-func (t *themeRow) Select(mode int) {
-	for i, r := range t.radios {
-		state := co.BST_UNCHECKED
-		if i == mode {
-			state = co.BST_CHECKED
-		}
-		r.Hwnd().SendMessage(co.BM_SETCHECK, win.WPARAM(state), 0)
-	}
 }

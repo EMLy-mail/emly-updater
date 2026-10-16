@@ -1,4 +1,4 @@
-name: Build AryxD Agent
+name: Build Aryx Agent
 
 on:
   push:
@@ -43,7 +43,7 @@ jobs:
       - name: Install InnoSetup
         run: choco install innosetup -y
 
-      - name: Build AryxD Agent (EMLyUpdater.exe)
+      - name: Build Aryx Agent (EMLyUpdater.exe)
         run: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
 
       - name: Decode signing certificate

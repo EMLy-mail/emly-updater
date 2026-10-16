@@ -1,4 +1,4 @@
-# AryxD Agent (EMLyUpdater) - Agent Instructions
+# Aryx Agent (EMLyUpdater) - Agent Instructions
 
 ## Build & Test
 
@@ -86,7 +86,7 @@ internal/
   logging/               Two sinks: lumberjack rolling file + Windows Event Log; exe-side log
   notify/                WTS warning dialog + update-complete toast launcher (SYSTEM -> user-session hop) in the active user session;
                          session_exec.go runs a process as a session's user and captures its output (RunInSession)
-  crash/                 Fatal-error box ("AryxD Agent ha subito un grave errore e deve chiudersi" + the error):
+  crash/                 Fatal-error box ("Aryx Agent ha subito un grave errore e deve chiudersi" + the error):
                          Guard (deferred: report a panic, then re-panic) and Report (before a fatal os.Exit).
                          MessageBoxW in a desktop session; in session 0 (the service) notify.SendErrorBox
                          sends it to the viewer session via WTSSendMessageW, where it outlives the process.
@@ -141,7 +141,7 @@ Read this before designing anything that moves bytes over the network.
 
 ## Product name vs. technical identifiers
 
-The product is called **AryxD Agent**: the distribution, monitoring and
+The product is called **Aryx Agent**: the distribution, monitoring and
 management agent for 3gIT's supported products: EMLy, plus any other product the
 remote configuration's `products` section describes (see *Products other than EMLy*). The rename is **display-only**. Every name another component or an
 existing install relies on keeps the old `EMLyUpdater` spelling, and must not
@@ -159,12 +159,20 @@ be renamed without a coordinated migration:
 | Event Log source | `EMLyUpdater` | registered at `install`; existing event-log filters/SIEM rules |
 | User-Agent | `EMLy-Updater/<ver> (...)` | `emly-go-api` (`updaterclient.go` regex) identifies updater requests by it |
 | Download prefix | `EMLyUpdater-` | cache cleanup in `internal/download` |
+| Tray mutex | `AryxDAgentTray` (`notify.TrayMutexName`) | a service of the previous version looks it up to restart missing trays |
+| Tray theme key | `HKCU\Software\AryxD Agent\Tray` | every user's saved theme (pinned in `theme.go`, no longer follows `ProductName`) |
+| Window classes, manifest identity | `AryxD*`, `3gIT.AryxDAgent` | nothing outside the process; left as they are |
 
 What *is* renamed: the service display name and description, `versioninfo.json`
 `ProductName`/`FileDescription`, the installer's `AppName`/`AppVerName`
 (Programs and Features), toast titles, CLI messages, and the first log lines of
 every run (`logIdentity` in `main.go`), which state the agent's roles and that
-EMLy is a product it distributes.
+EMLy is a product it distributes. The name went from "AryxD Agent" to "Aryx Agent" in 1.8.3: the
+installer's `Run` value is named after the product, so `installer.iss` deletes
+the old `AryxD Agent` value before writing the new one (otherwise every logon
+would launch the tray twice). The setup wizard is Italian-only (`[Languages]`,
+`Italian.isl`); its own strings are ASCII, with `#$00E0`-style escapes, since
+the .iss has no BOM and Inno Setup would read UTF-8 as ANSI.
 
 ## Key Conventions
 
@@ -740,7 +748,7 @@ checklist is their verification.
 
 `internal/tray`. A notification-area icon started at every logon (HKLM `Run`,
 written by the installer) with a settings window over `config.ini`, a "check
-now", and a products window. It is a **client of the service, never a second
+now", and a Prodotti page (agent and products, with a dry-run check). It is a **client of the service, never a second
 agent**: it installs nothing, and the service gains no new inbound surface for it.
 
 - **Reading**: `config.Load` plus a `service.Updater` of its own (what
@@ -770,8 +778,10 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
 - **The settings shown are the effective ones**: when a remote document is in
   force (`PolicyView.Governed`, i.e. the policy source is not `default`), the keys
   it overrides (`governedKeys` in `settings.go`: poll, channel, primary, DC retry,
-  self-update, critical warning, certificate) show the document's value and are
-  disabled. Unticking "Configurazione remota" re-enables them with config.ini's
+  self-update, critical warning, certificate) show the document's value, are
+  disabled and carry a square lock (`lockBadge`); clicking it explains in a
+  message box that the remote document sets the value. Switching "Configurazione
+  remota" off re-enables them with config.ini's
   values, since that is what the service will use after the save. `remoteConfig`,
   `ipc`, `progressWindow` and `clientWs.startupDelay*` have no counterpart in the
   document and are always editable. Site and server chain are shown in
@@ -788,8 +798,9 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   first so a bad value never costs a UAC prompt. The edit is logged with the
   account (`apply-settings: config.ini edited from the tray`), then the service is
   restarted, since it reads `config.ini` only at start. **The edit lasts until the
-  next install or self-update**, which resets the file (`config.Reset`); the
-  window says so.
+  next install or self-update**, which resets the file (`config.Reset`). The
+  window no longer says so: its footer note was cut to the UAC prompt and the
+  restart.
 - **"Controlla ora" is a service control code, not IPC**: `service.CheckNowControl`
   (200, in the user-defined range). The default service DACL already grants
   interactive users `SERVICE_USER_DEFINED_CONTROL` (`sc sdshow EMLyUpdater` →
@@ -801,7 +812,7 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   minute (`checkNowThrottle`). It runs a full ordinary cycle, downloads and
   installs included, paced by the server's 429s like any other. An older service
   ignores the code.
-- **"Verifica" in the products window is a dry run**: `CheckProduct` /
+- **"Verifica" on the Prodotti page is a dry run**: `CheckProduct` /
   `CheckUpdater` (`notePreferred=false`, no download, no `state.json` write). It
   does reach the server, with the usual `X-EMLy-*` identity headers, from the
   user's session: one small manifest GET per row checked.
@@ -823,24 +834,82 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   toast's hop). `CREATE_NO_WINDOW` plays the part of the Run value's `conhost
   --headless`. Disconnected sessions are skipped. Once per service start, not on
   every logon: the Run value covers logons.
-- **`ListViewItem.SetData` is not used** in the products window: in testing the
-  agent's row read back EMLy's slug, so the window keeps its own index → slug
-  slice instead.
+- **The settings window is drawn in the Windows 11 Fluent style** (`fluent*.go`,
+  `settings_layout.go`): navigation pane (Connessione / Aggiornamenti / Prodotti /
+  Servizio / Aspetto), an InfoBar with the policy status, one scrolling page of cards per
+  section, and a one-line footer: shield glyph + "Salvare richiede i privilegi di
+  amministratore e riavvia il servizio.", then "Annulla" and "Salva" (accent).
+  "Controlla ora" is only in the tray menu. Win32 has none of these, so:
+  - `fluent.go` holds the design tokens (WinUI 3 colours, light and dark) and the
+    icon code points; `fp()` picks the palette at paint time, so `applyTheme`'s
+    redraw is all a theme switch needs.
+  - `fluent_draw.go` paints double-buffered (`paintBuffered`): shapes through the
+    GDI+ flat API (antialiased; strokes inset by half their width so 1px
+    outlines stay on whole pixels), text through GDI with ClearType on the opaque
+    buffer. Fonts are Segoe UI Variable, falling back to Segoe UI; semibold uses
+    the separate "… Semibold" family, because weight 600 on the variable family is
+    synthesised by GDI (wide, blurry). Icons come from Segoe Fluent Icons (Segoe
+    MDL2 Assets on Windows 10), drawn grayscale-antialiased, since ClearType
+    fringes them in colour.
+  - `fluent_controls.go`: toggle, nav list, button, InfoBar and lock badge as
+    `ui.Control`s. Each paints its own backdrop (`setBackdrop`) behind the rounded
+    shape, and toggles/buttons extend 3 px past their nominal box (`focusPad`) for
+    the focus ring, which shows only when the window is in keyboard-cue mode
+    (`WM_QUERYUISTATE`). `showSettings` starts the window with cues hidden
+    (`hideFocusCues`, `WM_CHANGEUISTATE`): a new window has them on, so the nav
+    list showed its ring from the first frame. They claim Enter through `WM_GETDLGCODE`, since the dialog
+    loop would swallow it. `fluentButton` draws its text literally: no `&`
+    mnemonics.
+  - The pages' scroll bar is `fluentScrollBar` (`fluent_scroll.go`), not WS_VSCROLL:
+    even with `DarkMode_Explorer` the native bar is the wide classic one with
+    arrows. It is a sibling of the pages, raised above them in the viewport's
+    WM_CREATE, over their right margin: a thin line at rest, a wider thumb on a
+    faint track under the mouse, hidden when the page fits. The wheel still
+    reaches the viewport through DefWindowProc.
+  - Edits stay native, borderless, inside a painted frame (`paintInputFrame`).
+  - The Prodotti page (`products.go`, `fluent_products.go`) replaced the old
+    products modal. Its card is **one painted control, `productList`**, not a
+    row of child controls per product: windigo creates child controls only at
+    their parent's `WM_CREATE`, and the rows arrive later from
+    `backend.products`. Row labels, results and the per-row "Verifica" buttons
+    are drawn and hit-tested by hand; the control resizes to its rows and the
+    page grows with it (`settingsPage.grow`). One tab stop: Up/Down/Home/End
+    move the highlighted row, Space/Enter check it. The rows are loaded the
+    first time the page is shown after each reload of the window
+    (`settingsForm.pageShown`), not at every opening; a load or check
+    answered after a newer load is dropped (`productsTab.gen`). The tray menu's
+    "Prodotti e versioni…" opens the window on this page.
+  - Selects are `fluentCombo` (`fluent_combo.go`), not native ComboBoxes: a
+    native combo's box, button and drop-down list are drawn by the system and
+    cannot be restyled to WinUI's. The closed box is a `ctlBase` control; the
+    list is a raw `WS_POPUP` (`AryxDComboPopup`, `CS_DROPSHADOW`, DWM rounded
+    corners and border colour) placed so the selected item lies over the box,
+    clamped to the work area. The popup never activates (`WS_EX_NOACTIVATE`,
+    `SW_SHOWNA`, `MA_NOACTIVATE`), so the window keeps its active title bar and
+    the combo keeps the keyboard focus; it holds the mouse capture instead, and
+    closes on a click outside, on the combo losing focus and on
+    `WM_CAPTURECHANGED` (Alt+Tab, a menu). While open the combo answers
+    `DLGC_WANTALLKEYS`, or IsDialogMessage would turn Esc/Enter/Tab into
+    IDCANCEL, the default button and a focus move. The mouse wheel is left to
+    DefWindowProc while closed, which hands it to the viewport (the page
+    scrolls, the selection does not change), and dropped while open.
+  - `installTheme(a.wnd)` must run before `newSettingsForm`: its `WM_ERASEBKGND`
+    would otherwise replace the form's own erase/paint handlers.
+  - The gated `EMLY_FLUENT_TEST=1` tests (`fluent_draw_test.go`,
+    `fluent_controls_test.go`, `settings_test.go`) render each piece in both
+    themes and save PNGs (`captureWindowPNG`, folder from `EMLY_FLUENT_SHOTS`).
+    `settings_test.go` activates `app.manifest` on the test thread, otherwise the
+    test binary gets Common Controls 5 and classic scroll bars. The open combo
+    is shot from the screen (`captureScreenPNG`), since PrintWindow on one
+    window cannot show a separate popup.
 - **Theme is the user's choice, "Sistema" by default** (`theme.go`): the
-  settings window's "Tema" row (Sistema / Chiaro / Scuro, glyph + Static radios
-  like `checkRow`) previews on click, keeps it on "Salva" and reverts it on
+  settings window's "Tema" combo on the Aspetto page (Sistema / Chiaro / Scuro)
+  previews on selection, keeps it on "Salva" and reverts it on
   "Annulla" or the close button. It is stored per user in
-  `HKCU\Software\AryxD Agent\Tray\Theme` (DWORD 0/1/2), not in `config.ini`:
+  `HKCU\Software\Aryx Agent\Tray\Theme` (DWORD 0/1/2), not in `config.ini`:
   no UAC prompt, and saved even when the `config.ini` save is cancelled.
   "Sistema" follows `AppsUseLightTheme`, re-applied live on
-  `WM_SETTINGCHANGE("ImmersiveColorSet")`. DWM dark title bar, rounded corners and Mica. Three things no visual style
-  does on Windows 11 26100, so they are drawn by hand in dark mode only:
-  checkbox captions (a themed checkbox ignores `WM_CTLCOLORBTN`, so each row is a
-  bare glyph + a Static, `checkRow`; a disabled row's label is painted dim rather
-  than disabled, because a disabled Static is drawn etched), push buttons
-  (`darkButton`, NM_CUSTOMDRAW), and list view column titles (`darkListHeader`,
-  NM_CUSTOMDRAW on the header via a list view subclass - windigo dispatches
-  WM_NOTIFY only by (ID, code), so `fixHeaderID` pins the header's ID first). The
+  `WM_SETTINGCHANGE("ImmersiveColorSet")`. DWM dark title bar, rounded corners and Mica. The
   undocumented uxtheme ordinals (104, 133, 135, 136) are looked up by ordinal and
   skipped when missing. All of it depends on the Common Controls 6 manifest (see
   Common Pitfalls → `versioninfo.json`).
@@ -865,7 +934,7 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   Re-loads with the window already open (a failed save) use the in-window bar.
   The splash is always dark, so its logo is the white wolf.
 - **The icon follows the theme** (`icon.go`): the exe's icon
-  (`installer/appicon.ico`) is the AryxD wolf in black on transparent, since a
+  (`installer/appicon.ico`) is the Aryx wolf in black on transparent, since a
   file icon cannot change with the theme; the tray embeds the same wolf in
   white (`appicon_dark.ico`). The notification-area icon follows the
   *taskbar's* mode (`SystemUsesLightTheme`), the window icons the *app's*
@@ -885,8 +954,11 @@ notification-area icon turns black/white at once.
 1. Install, log on as a **standard user**: the icon appears, with no console
    window. The menu's first line shows the service state.
 2. Settings with a cached document: the governed fields show the document's
-   values, greyed out; untick "Configurazione remota" and they become editable
-   with config.ini's values.
+   values, greyed out with a lock beside them (a click explains why); switch "Configurazione remota"
+   off and they become editable with config.ini's values. Tab through every page:
+   the focus ring follows, Space/Enter flip toggles, Up/Down move the nav pane,
+   and a focused field scrolls into view. Switch Tema between Chiaro and Scuro:
+   every control repaints at once.
 3. Change the poll interval and save: UAC prompt (admin credentials), then the
    balloon, the `apply-settings: config.ini edited from the tray` line in the
    service log, a service restart, and `config.ini` with only that value changed.
@@ -895,7 +967,8 @@ notification-area icon turns black/white at once.
 4. "Controlla ora": `update check requested from the tray, waking the update
    loop`, then a cycle, in the service log; a second click within a minute logs
    `throttled`. With the service stopped, the balloon says so and nothing is sent.
-5. Prodotti → "Verifica tutti": the agent's row shows the updater manifest's
+5. Prodotti page → "Verifica tutti" (also from the tray menu's "Prodotti e
+   versioni…", which opens the window on that page): the agent's row shows the updater manifest's
    version, each product its own. The service log shows nothing (it was not
    involved); the tray's own log is `%TEMP%\aryxd-agent-tray\updater.log`.
 6. Self-update with the tray open, from the service (silent, as SYSTEM): the setup

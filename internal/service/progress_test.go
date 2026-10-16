@@ -44,8 +44,8 @@ func TestProgressUITexts(t *testing.T) {
 		t.Errorf("title = %q", p.title())
 	}
 
-	self := &progressUI{product: "AryxD Agent", version: "1.7.4", self: true}
-	if h, d := self.installText(); h != "Installazione di AryxD Agent 1.7.4 in corso" || !strings.Contains(d, "EMLy resta utilizzabile") {
+	self := &progressUI{product: "Aryx Agent", version: "1.7.4", self: true}
+	if h, d := self.installText(); h != "Installazione di Aryx Agent 1.7.4 in corso" || !strings.Contains(d, "EMLy resta utilizzabile") {
 		t.Errorf("self install = %q / %q: the agent's own update does not touch EMLy", h, d)
 	}
 }

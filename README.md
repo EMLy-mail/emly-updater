@@ -1,7 +1,7 @@
-# AryxD Agent (EMLyUpdater)
+# Aryx Agent (EMLyUpdater)
 
-**AryxD Agent** is the distribution, monitoring and management agent for 3gIT's
-supported products. **EMLy** is a supported product, distributed by AryxD Agent.
+**Aryx Agent** is the distribution, monitoring and management agent for 3gIT's
+supported products. **EMLy** is a supported product, distributed by Aryx Agent.
 The binary, service, pipe and data directories keep their technical name
 `EMLyUpdater` - see AGENTS.md § *Product name vs. technical identifiers*.
 
@@ -240,7 +240,7 @@ retry entirely: there the failure is the answer.
 
 When a poll cycle still cannot reach any source (primary exhausted, fallback
 also failed or not configured), a Windows notification tells the user at
-the machine to contact their IT department ("AryxD Agent non riesce a
+the machine to contact their IT department ("Aryx Agent non riesce a
 contattare il server degli aggiornamenti. Contattare il proprio IT." / the
 English equivalent), carrying EMLy's own icon like every other toast this
 service shows. It fires at most once per outage - shown once, then suppressed
@@ -393,7 +393,7 @@ running. The file does survive uninstall (`%ProgramData%` is kept).
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Show the user at the machine (console or RDP) a progress window while EMLy or AryxD Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
+| `enabled` | `true` | Show the user at the machine (console or RDP) a progress window while EMLy or Aryx Agent is downloaded and installed. **Local only**: the remote configuration has no equivalent. `config.ini` is rewritten from the defaults on every install, so a manual change lasts until the next update |
 
 ### `[clientWs]`
 

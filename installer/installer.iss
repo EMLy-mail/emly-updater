@@ -5,8 +5,8 @@
 ; different AppId would install side by side instead of upgrading), so it
 ; stays EMLyUpdater. ProductName is what people see.
 #define ApplicationName 'EMLyUpdater'
-#define ProductName 'AryxD Agent'
-#define ApplicationVersion '1.8.2'
+#define ProductName 'Aryx Agent'
+#define ApplicationVersion '1.8.3'
 #define ServiceName 'EMLyUpdater'
 
 ; Microsoft.WinGet.Client, the PowerShell module internal/winget drives.
@@ -61,10 +61,16 @@ PrivilegesRequired=admin
 UninstallDisplayIcon={app}\appicon.ico
 WizardStyle=modern
 SetupIconFile=appicon.ico
-SignTool=signtool
-SignedUninstaller=yes
+;SignTool=signtool
+;SignedUninstaller=yes
 ; .zip extraction (the WinGet module's .nupkg) needs the full 7-Zip engine.
 ArchiveExtraction=full
+
+; One language: the wizard, its buttons and Inno Setup's own messages in
+; Italian, like the rest of the agent's UI. With a single entry Setup shows no
+; language dialog.
+[Languages]
+Name: "it"; MessagesFile: "compiler:Languages\Italian.isl"
 
 ; The first type is the default, so a silent install without /COMPONENTS
 ; (the GPO command line) installs the updater alone. Opt in with:
@@ -75,15 +81,15 @@ ArchiveExtraction=full
 ; whatever the selection. Without /COMPONENTS an upgrade (self-update
 ; included) keeps the previous install's choice.
 [Types]
-Name: "compact"; Description: "{#ProductName} only"
-Name: "full"; Description: "{#ProductName} + WinGet PowerShell module (with PowerShell 7)"
-Name: "custom"; Description: "Custom"; Flags: iscustom
+Name: "compact"; Description: "Solo {#ProductName}"
+Name: "full"; Description: "{#ProductName} + modulo PowerShell WinGet (con PowerShell 7)"
+Name: "custom"; Description: "Personalizzata"; Flags: iscustom
 
 [Components]
-Name: "updater"; Description: "{#ProductName} service (distributes EMLy)"; Types: compact full custom; Flags: fixed
+Name: "updater"; Description: "Servizio {#ProductName} (distribuisce EMLy)"; Types: compact full custom; Flags: fixed
 ; ExtraDiskSpaceRequired: the module's extracted size plus PowerShell 7's
 ; installed size (~250 MB), since nothing in [Files] accounts for either.
-Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} PowerShell module + PowerShell {#PwshVersion} (download)"; Types: full; ExtraDiskSpaceRequired: 306025934
+Name: "wingetmodule"; Description: "{#WinGetModuleName} {#WinGetModuleVersion} (modulo PowerShell) + PowerShell {#PwshVersion} (scaricati)"; Types: full; ExtraDiskSpaceRequired: 306025934
 
 [Files]
 ; Built by: go build -ldflags "-s -w" -o build\EMLyUpdater.exe .
@@ -100,6 +106,10 @@ Source: "appicon.ico"; DestDir: "{app}"; Flags: ignoreversion
 ; it would open a console window for the life of the tray, so it is hosted by
 ; a headless conhost instead (Windows 10 1809+). The value name is the
 ; display name Task Manager's Startup tab shows.
+; The value is named after the product, so a rename leaves the old one
+; behind and every logon would start the tray twice (the second exits on the
+; session mutex, but Task Manager lists both): delete the former name first.
+Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "AryxD Agent"; Flags: deletevalue
 Root: HKLM; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#ProductName}"; ValueData: """{sys}\conhost.exe"" --headless ""{app}\{#ApplicationName}.exe"" tray"; Flags: uninsdeletevalue
 
 [Run]
@@ -256,7 +266,7 @@ begin
   for I := 0 to WizardForm.ComponentsList.Items.Count - 1 do
     if Pos('{#WinGetModuleName}', WizardForm.ComponentsList.ItemCaption[I]) = 1 then begin
       WizardForm.ComponentsList.ItemEnabled[I] := False;
-      WizardForm.ComponentsList.ItemSubItem[I] := 'already installed';
+      WizardForm.ComponentsList.ItemSubItem[I] := 'gi' + #$00E0 + ' installato';
     end;
 end;
 
@@ -304,7 +314,7 @@ begin
   // half-extracted module left behind by an interrupted install.
   Staging := Dest + '.partial';
   try
-    WizardForm.StatusLabel.Caption := 'Installing {#WinGetModuleName} {#WinGetModuleVersion}...';
+    WizardForm.StatusLabel.Caption := 'Installazione di {#WinGetModuleName} {#WinGetModuleVersion}...';
     Archive := ExpandConstant('{tmp}\{#WinGetModuleName}.zip');
 
     if DirExists(Staging) then
@@ -360,7 +370,7 @@ begin
   end;
 
   try
-    WizardForm.StatusLabel.Caption := 'Installing PowerShell {#PwshVersion}...';
+    WizardForm.StatusLabel.Caption := 'Installazione di PowerShell {#PwshVersion}...';
     Msi := ExpandConstant('{tmp}\{#PwshMSI}');
     LogFile := ExpandConstant('{commonappdata}\{#ApplicationName}\logs\pwsh-install-{#PwshVersion}.log');
     ForceDirectories(ExtractFileDir(LogFile));

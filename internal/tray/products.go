@@ -4,143 +4,140 @@ package tray
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/rodrigocfd/windigo/co"
 	"github.com/rodrigocfd/windigo/ui"
-	"github.com/rodrigocfd/windigo/win"
 
 	"emlyupdater/internal/crash"
 	"emlyupdater/internal/product"
 	"emlyupdater/internal/version"
 )
 
-// productsBarTimer is the products window's loadingBar timer ID.
-const productsBarTimer = 1
-
-// agentSlug is the products window's row for AryxD Agent itself: checked
+// agentSlug is the Prodotti page's row for Aryx Agent itself: checked
 // against the updater manifest instead of a product manifest.
 const agentSlug = "aryxd-agent"
 
-// Columns of the products list.
+// productsTab is the settings window's Prodotti page: the agent and every
+// product with what the agent knows locally (detection, pending entry), and
+// the manifest check per row on request. The check is a dry run -
+// service.Updater.CheckProduct / CheckUpdater - so it downloads and installs
+// nothing; "Controlla ora" is what makes the service act.
+//
+// The rows are loaded the first time the page is shown after each reload of
+// the settings window, not when the window opens: most openings never look
+// at them.
+type productsTab struct {
+	f      *settingsForm
+	page   *settingsPage
+	list   *productList
+	btnAll *fluentButton
+	status string
+	loaded bool // rows loaded since the last settings reload
+	busy   int  // checks in flight, this generation
+	gen    int  // bumped by every load: older results are dropped
+}
+
+// Prodotti page layout, 96-DPI units.
 const (
-	colName = iota
-	colEnabled
-	colDetected
-	colPending
-	colOffered
+	productsHeaderH = 44 // status line and "Verifica tutti"
+	productsAllW    = 120
+	productsListY   = pageTitleH + productsHeaderH + 4
 )
 
-// productsWindow lists the agent and every product with what the agent
-// knows locally (detection, pending entry), and runs the manifest check per
-// row on request. The check is a dry run - service.Updater.CheckProduct /
-// CheckUpdater - so it downloads and installs nothing; "Controlla ora" in
-// the settings window is what makes the service act.
-type productsWindow struct {
-	a        *app
-	wnd      *ui.Modal
-	list     *ui.ListView
-	status   *ui.Static
-	bar      *loadingBar
-	btnOne   *ui.Button
-	btnAll   *ui.Button
-	btnClose *ui.Button
-	busy     int      // checks in flight
-	slugs    []string // per row index; rows are only ever appended
-}
+// buildProducts is the "Prodotti" page.
+func (f *settingsForm) buildProducts() {
+	t := &productsTab{f: f}
+	f.products = t
+	p := newSettingsPage(f.view, "Prodotti", false)
+	t.page = p
 
-// showProducts opens the window and blocks until it is closed (a modal loop,
-// which keeps dispatching the tray icon's messages meanwhile).
-func showProducts(a *app) {
-	p := &productsWindow{a: a}
-	p.wnd = ui.NewModal(a.wnd, ui.OptsModal().
-		Title(version.ProductName+" - Prodotti e versioni").
-		Size(ui.Dpi(700, 330)))
+	t.btnAll = newFluentButton(p.ctl, "Verifica tutti", 0, false,
+		pageCardX+contentW-productsAllW, pageTitleH+(productsHeaderH-32)/2, productsAllW)
+	t.btnAll.setBackdrop(func() argb { return fp().windowBg })
+	t.btnAll.OnClick(func() {
+		for i := range t.list.rows {
+			t.list.check(i)
+		}
+	})
 
-	p.list = ui.NewListView(p.wnd, ui.OptsListView().
-		Position(ui.Dpi(12, 12)).Size(ui.Dpi(676, 230)).
-		CtrlStyle(co.LVS_REPORT|co.LVS_SINGLESEL|co.LVS_SHOWSELALWAYS|co.LVS_NOSORTHEADER).
-		CtrlExStyle(co.LVS_EX_FULLROWSELECT|co.LVS_EX_DOUBLEBUFFER).
-		Column("Prodotto", ui.DpiX(120)).
-		Column("Aggiornamenti", ui.DpiX(90)).
-		Column("Installato", ui.DpiX(200)).
-		Column("In sospeso", ui.DpiX(110)).
-		Column("Offerto dal server", ui.DpiX(150)))
-	p.status = ui.NewStatic(p.wnd, ui.OptsStatic().Position(ui.Dpi(12, 252)).Size(ui.Dpi(420, 18)).
-		Text("Caricamento…"))
-	p.bar = newLoadingBar(p.wnd, productsBarTimer, 448, 253, 240, 14)
-	p.btnOne = ui.NewButton(p.wnd, ui.OptsButton().Text("&Verifica selezionato").
-		Position(ui.Dpi(12, 280)).Width(ui.DpiX(140)))
-	p.btnAll = ui.NewButton(p.wnd, ui.OptsButton().Text("Verifica &tutti").
-		Position(ui.Dpi(162, 280)).Width(ui.DpiX(110)))
-	p.btnClose = ui.NewButton(p.wnd, ui.OptsButton().Text("&Chiudi").
-		Position(ui.Dpi(603, 280)).Width(ui.DpiX(85)))
-
-	installTheme(p.wnd)
-	darkListHeader(p.list)
-	for _, b := range []*ui.Button{p.btnOne, p.btnAll, p.btnClose} {
-		darkButton(b)
+	t.list = newProductList(p.ctl, pageCardX, productsListY, contentW)
+	t.list.onCheck = t.check
+	t.list.onResize = func(h int) { p.grow(productsListY + h) }
+	t.list.onHi = func(top, bottom int) {
+		f.view.ensureSpan(ui.DpiY(productsListY+top), ui.DpiY(productsListY+bottom))
 	}
-	p.wnd.On().Wm(wmSettingChange, func(m ui.Wm) uintptr {
-		if isThemeChange(m) {
-			applyTheme(p.wnd)
-		}
-		return 0
-	})
-	p.wnd.On().WmCreate(func(_ ui.WmCreate) int {
-		fixHeaderID(p.wnd)
-		applyTheme(p.wnd)
-		p.load()
-		return 0
-	})
-	p.btnOne.On().BnClicked(func() {
-		for _, it := range p.list.SelectedItems() {
-			p.check(it)
-		}
-	})
-	p.list.On().NmDblClk(func(_ *win.NMITEMACTIVATE) {
-		for _, it := range p.list.SelectedItems() {
-			p.check(it)
-		}
-	})
-	p.btnAll.On().BnClicked(func() {
-		for _, it := range p.list.Items() {
-			p.check(it)
-		}
-	})
-	p.btnClose.On().BnClicked(func() { p.wnd.Hwnd().SendMessage(co.WM_CLOSE, 0, 0) })
-	p.wnd.ShowModal()
+
+	p.extra = func(c *canvas) {
+		rc := dpiRect(pageCardX, pageTitleH, contentW-productsAllW-ctlGap, productsHeaderH)
+		c.text(t.status, rc, fontBody, fp().textSecondary,
+			co.DT_LEFT|co.DT_VCENTER|co.DT_SINGLELINE|co.DT_END_ELLIPSIS|co.DT_NOPREFIX)
+	}
+	p.grow(productsListY)
 }
 
-func (p *productsWindow) load() {
-	p.addRow(agentSlug, version.ProductName, "sì", version.Version, "")
-	p.bar.Start()
+func (t *productsTab) setStatus(s string) {
+	t.status = s
+	if h := t.page.ctl.Hwnd(); h != 0 {
+		h.InvalidateRect(nil, false)
+	}
+}
+
+// load shows the agent's own row at once, then the products from the
+// backend, off the UI thread.
+func (t *productsTab) load() {
+	t.loaded = true
+	t.gen++
+	gen := t.gen
+	t.busy = 0
+	t.list.setRows([]productEntry{{slug: agentSlug, name: version.ProductName,
+		sub: productSub(version.Version, "", true)}})
+	t.setStatus("Caricamento dei prodotti…")
+	f := t.f
+	f.bar.Start()
 	go func() {
 		defer crash.Guard(nil)
-		rows, err := p.a.be.products(p.a.ctx)
-		p.wnd.UiThread(func() {
-			p.bar.Stop()
-			if err != nil {
-				p.status.Hwnd().SetWindowText("Impossibile leggere i prodotti: " + err.Error())
+		rows, err := f.a.be.products(f.a.ctx)
+		f.a.wnd.UiThread(func() {
+			f.bar.Stop()
+			if gen != t.gen {
 				return
 			}
+			if err != nil {
+				t.setStatus("Impossibile leggere i prodotti: " + err.Error())
+				return
+			}
+			entries := t.list.rows
 			for _, r := range rows {
 				name := r.Name
 				if name == "" {
 					name = r.Slug
 				}
-				enabled := "sì"
-				if !r.Enabled {
-					enabled = "disattivati"
-				}
-				p.addRow(r.Slug, name, enabled, installedText(r.Detection), r.Pending)
+				entries = append(entries, productEntry{slug: r.Slug, name: name,
+					sub: productSub(installedText(r.Detection), r.Pending, r.Enabled)})
 			}
-			p.status.Hwnd().SetWindowText(strconv.Itoa(len(rows)) + " prodotti. \"Verifica\" non scarica nulla.")
+			t.list.setRows(entries)
+			t.setStatus(strconv.Itoa(len(rows)) + " prodotti. \"Verifica\" non scarica nulla.")
 		})
 	}()
 }
 
-// installedText is the "Installato" cell: just the version, not detection's
-// full "installed X (source)" string; the source is in the service log.
+// productSub is a row's subtitle: what is installed, what is pending, and
+// whether the agent updates the product at all.
+func productSub(installed, pending string, enabled bool) string {
+	parts := []string{"Installato: " + installed}
+	if pending != "" {
+		parts = append(parts, "in sospeso: "+pending)
+	}
+	if !enabled {
+		parts = append(parts, "aggiornamenti disattivati")
+	}
+	return strings.Join(parts, " · ")
+}
+
+// installedText is the installed part of a row: just the version, not
+// detection's full "installed X (source)" string; the source is in the
+// service log.
 func installedText(r product.Result) string {
 	switch r.Outcome {
 	case product.Installed:
@@ -152,42 +149,36 @@ func installedText(r product.Result) string {
 	}
 }
 
-// addRow appends a row and remembers its slug by index.
-// Not ListViewItem.SetData: in testing, the agent's row read back EMLy's
-// slug. The list is never sorted or pruned, so the index is stable.
-func (p *productsWindow) addRow(slug string, texts ...string) {
-	p.list.AddItem(texts...)
-	p.slugs = append(p.slugs, slug)
-}
-
-// check runs the dry-run manifest check for one row, off the UI thread.
+// check runs the dry-run manifest check for row i, off the UI thread.
 // Checks are serialised by the backend, so "Verifica tutti" asks the server
 // one manifest at a time, like a cycle does.
-func (p *productsWindow) check(it ui.ListViewItem) {
-	idx := it.Index()
-	if idx < 0 || idx >= len(p.slugs) {
-		return
-	}
-	slug := p.slugs[idx]
+func (t *productsTab) check(i int) {
+	slug := t.list.rows[i].slug
 	if slug == "" {
 		return
 	}
-	it.SetText(colOffered, "verifica in corso…")
-	p.busy++
-	p.bar.Start()
-	p.status.Hwnd().SetWindowText("Verifica in corso…")
+	f := t.f
+	gen := t.gen
+	t.list.setOffered(i, "", true)
+	t.busy++
+	f.bar.Start()
+	t.setStatus("Verifica in corso…")
 	go func() {
 		defer crash.Guard(nil)
-		offered, err := p.a.be.check(p.a.ctx, slug)
-		p.wnd.UiThread(func() {
-			if err != nil {
-				offered = "errore: " + err.Error()
+		offered, err := f.a.be.check(f.a.ctx, slug)
+		f.a.wnd.UiThread(func() {
+			f.bar.Stop()
+			if gen != t.gen {
+				return // the rows were reloaded meanwhile
 			}
-			it.SetText(colOffered, offered)
-			p.busy--
-			p.bar.Stop()
-			if p.busy == 0 {
-				p.status.Hwnd().SetWindowText("Verifica completata.")
+			text := "Server: " + offered
+			if err != nil {
+				text = "errore: " + err.Error()
+			}
+			t.list.setOffered(i, text, false)
+			t.busy--
+			if t.busy == 0 {
+				t.setStatus("Verifica completata.")
 			}
 		})
 	}()

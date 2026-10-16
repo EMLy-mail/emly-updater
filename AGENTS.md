@@ -178,7 +178,13 @@ EMLy is a product it distributes.
   document from `config.ini`'s `[source]` keys when no document has ever been
   accepted - which is what makes this a no-op on a machine that never reaches
   the API. A document is only accepted when its `revision` is >= the cached
-  one, so a lagging mirror cannot roll a machine back. Adding a field to the
+  one, so a lagging mirror cannot roll a machine back. **The cache holds the
+  bytes that were validated** (`Snapshot.Raw`), never a re-marshal of the
+  parsed structs: those do not round-trip through `Parse` (`Selector.All`
+  marshals as `"all": false`, which is rejected), and up to 1.8.2 that made
+  every cache with a non-`all` override unloadable - quarantined at each
+  service start, default policy until the next fetch, and the tray always on
+  the default policy. Adding a field to the
   document touches `internal/policy/document.go`, its validation in
   `parse.go`, the defaults in `legacy.go`, **and** the shared fixtures under
   `testdata/remoteconfig/` (see below).

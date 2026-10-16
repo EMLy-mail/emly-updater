@@ -79,6 +79,7 @@ func (u *Updater) initPolicy() {
 		FetchedAt:   cache.FetchedAt,
 		FetchedFrom: cache.FetchedFrom,
 		ETag:        cache.ETag,
+		Raw:         cache.Document,
 	}
 	u.Policy = policy.NewStore(snap)
 	u.Log.InfoEvent(logging.EventRemoteConfigApplied, "remote configuration loaded from cache",
@@ -248,6 +249,7 @@ func (u *Updater) acceptDocument(resp *source.ConfigResponse, from, url string, 
 		FetchedAt:   now,
 		FetchedFrom: from,
 		ETag:        resp.ETag,
+		Raw:         resp.Body,
 	}
 	u.Policy.Set(snap)
 	u.saveCache(snap)
@@ -256,23 +258,24 @@ func (u *Updater) acceptDocument(resp *source.ConfigResponse, from, url string, 
 		"fetchedFrom", from, "source", snap.Source.String(), "overrides", len(parsed.Global.Overrides))
 }
 
-// saveCache persists snap as the last-known-good document. A failure (disk
-// full, ACL) is logged and tolerated: the policy stays in memory for this
-// run and the write is retried at the next fetch.
+// saveCache persists snap as the last-known-good document: the bytes that
+// were validated (snap.Raw), so the cache loads back through the same Parse.
+// A failure (disk full, ACL) is logged and tolerated: the policy stays in
+// memory for this run and the write is retried at the next fetch.
 func (u *Updater) saveCache(snap *policy.Snapshot) {
 	if snap.Source == policy.SourceDefault {
 		return
 	}
-	raw, err := json.Marshal(snap.Parsed.Global)
-	if err != nil {
-		u.Log.Warn("could not serialise the remote configuration for the cache", "error", err.Error())
+	if len(snap.Raw) == 0 {
+		u.Log.Warn("remote configuration has no raw document to cache, the policy stays in memory for this run",
+			"revision", snap.Revision())
 		return
 	}
 	c := &policy.CacheFile{
 		FetchedAt:   snap.FetchedAt,
 		FetchedFrom: snap.FetchedFrom,
 		ETag:        snap.ETag,
-		Document:    raw,
+		Document:    snap.Raw,
 	}
 	if err := policy.SaveCache(u.cachePath(), c); err != nil {
 		u.Log.Warn("could not write the remote configuration cache, the policy stays in memory for this run",

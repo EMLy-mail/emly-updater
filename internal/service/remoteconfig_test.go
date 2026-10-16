@@ -140,6 +140,36 @@ func TestRefreshConfigAppliesAndCaches(t *testing.T) {
 	}
 }
 
+// The cache written after a fetch must load back on the next start, for a
+// document with a hostname override and through a 304 re-save too. The
+// cache used to hold a re-marshal of the parsed document, whose Selector
+// wrote "all": false - which Parse rejects - so every restart moved the
+// cache aside and ran on the default policy until the next fetch.
+func TestCacheWrittenAfterAFetchLoadsBack(t *testing.T) {
+	doc := document(t, 18, map[string]any{
+		"overrides": []any{map[string]any{
+			"id":    "debug-log-selected",
+			"match": map[string]any{"hostnames": []string{"RM095"}},
+			"patch": map[string]any{"logging": map[string]any{"level": "debug"}},
+		}},
+	})
+	notModified := &source.ConfigResponse{Status: http.StatusNotModified, ETag: `"v18"`}
+	u, _ := remoteUpdater(t, ok200(doc, `"v18"`), notModified)
+	u.initPolicy()
+	u.refreshConfig(context.Background(), true)
+	u.refreshConfig(context.Background(), true) // 304: re-saves the cache
+
+	restarted, _ := remoteUpdater(t)
+	restarted.CachePath = u.CachePath
+	restarted.initPolicy()
+	if snap := restarted.Policy.Current(); snap.Source != policy.SourceCache || snap.Revision() != 18 {
+		t.Fatalf("after a restart the snapshot is %v rev %d, want the cached rev 18", snap.Source, snap.Revision())
+	}
+	if _, err := os.Stat(u.CachePath + ".bad"); !os.IsNotExist(err) {
+		t.Errorf("the cache was moved aside: %v", err)
+	}
+}
+
 // A cached document is the policy from the very first cycle, before any
 // fetch: a machine that boots with no network still runs its real policy.
 func TestInitPolicyLoadsTheCache(t *testing.T) {

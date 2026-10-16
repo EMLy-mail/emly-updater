@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"encoding/json"
 	"sync/atomic"
 	"time"
 )
@@ -40,6 +41,12 @@ type Snapshot struct {
 	FetchedAt   time.Time
 	FetchedFrom string
 	ETag        string
+	// Raw is the document exactly as it was received and validated (or read
+	// from the cache), nil for the default policy. The cache stores these
+	// bytes, never a re-marshal of Parsed: the Go structs do not round-trip
+	// through the validator (Selector.All marshals as "all": false, which
+	// Parse rejects), so a re-marshalled cache could not be loaded back.
+	Raw json.RawMessage
 }
 
 // Revision is the document's revision, 0 for the default policy.

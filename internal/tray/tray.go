@@ -45,9 +45,13 @@ type app struct {
 	exe     string
 	wnd     *ui.Main // the settings window, hidden until asked for
 	nid     winsh.NOTIFYICONDATA
-	icon    win.HICON
+	icon    win.HICON // the exe's own icon: the black wolf, for light themes
 	bigIcon win.HICON
-	be      *backend
+	// darkIcon/darkBigIcon are the white wolf, for dark themes: the tray icon
+	// follows the taskbar's mode, the window icons the app's (themeIcons).
+	darkIcon    win.HICON
+	darkBigIcon win.HICON
+	be          *backend
 	ctx     context.Context
 	form    *settingsForm
 	splash  *splash // up while the settings window loads, see showSettings
@@ -82,6 +86,7 @@ func Run() error {
 		a.be.prewarm(ctx)
 	}()
 	a.icon, a.bigIcon = exeIcons(exe)
+	a.darkIcon, a.darkBigIcon = darkIcons()
 	a.wmTaskbarCreated, _ = win.RegisterWindowMessage("TaskbarCreated")
 	setDarkMenus(isDark()) // the app mode must be set before any window exists
 
@@ -103,18 +108,14 @@ func (a *app) events() {
 	a.wnd.On().Wm(wmSettingChange, func(p ui.Wm) uintptr {
 		if isThemeChange(p) {
 			applyTheme(a.wnd)
+			a.themeIcons()
 		}
 		return 0
 	})
 
 	a.wnd.On().WmCreate(func(_ ui.WmCreate) int {
 		applyTheme(a.wnd) // the controls exist only once the window does
-		if a.bigIcon != 0 {
-			a.wnd.Hwnd().SendMessage(co.WM_SETICON, win.WPARAM(co.ICON_SZ_BIG), win.LPARAM(a.bigIcon))
-		}
-		if a.icon != 0 {
-			a.wnd.Hwnd().SendMessage(co.WM_SETICON, win.WPARAM(co.ICON_SZ_SMALL), win.LPARAM(a.icon))
-		}
+		a.themeIcons()
 		a.splash.owner = a.wnd.Hwnd()
 		a.addTrayIcon()
 		return 0
@@ -161,8 +162,44 @@ func (a *app) quit() {
 	a.wnd.Hwnd().DestroyWindow() // WM_DESTROY ends the message loop
 }
 
+// pick returns the white icon when dark and it loaded, the exe's otherwise.
+func pick(dark bool, light, white win.HICON) win.HICON {
+	if dark && white != 0 {
+		return white
+	}
+	return light
+}
+
+// themeIcons sets the window icons for the app mode and, once the tray icon
+// exists, swaps it for the taskbar's mode. Called at creation and on every
+// theme change.
+func (a *app) themeIcons() {
+	dark := isDark()
+	if big := pick(dark, a.bigIcon, a.darkBigIcon); big != 0 {
+		a.wnd.Hwnd().SendMessage(co.WM_SETICON, win.WPARAM(co.ICON_SZ_BIG), win.LPARAM(big))
+	}
+	if small := pick(dark, a.icon, a.darkIcon); small != 0 {
+		a.wnd.Hwnd().SendMessage(co.WM_SETICON, win.WPARAM(co.ICON_SZ_SMALL), win.LPARAM(small))
+	}
+	if a.nid.HWnd != 0 {
+		if icon := a.trayIcon(); icon != 0 {
+			nid := a.nid
+			nid.UFlags = cosh.NIF_ICON
+			nid.HIcon = icon
+			if winsh.Shell_NotifyIcon(cosh.NIM_MODIFY, &nid) == nil {
+				a.nid.HIcon = icon
+			}
+		}
+	}
+}
+
+// trayIcon is the notification-area icon for the taskbar's current mode.
+func (a *app) trayIcon() win.HICON {
+	return pick(taskbarDark(), a.icon, a.darkIcon)
+}
+
 func (a *app) addTrayIcon() {
-	icon := a.icon
+	icon := a.trayIcon()
 	if icon == 0 {
 		icon, _ = win.HINSTANCE(0).LoadIcon(win.IconResIdi(co.IDI_APPLICATION))
 	}

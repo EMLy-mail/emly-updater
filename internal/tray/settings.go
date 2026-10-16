@@ -168,6 +168,7 @@ func newSettingsForm(a *app) *settingsForm {
 func (f *settingsForm) previewTheme(mode int) {
 	themeMode = mode
 	applyTheme(f.a.wnd)
+	f.a.themeIcons()
 }
 
 // saveTheme keeps the previewed theme. It is the user's own preference, in
@@ -186,6 +187,7 @@ func (f *settingsForm) cancel() {
 	if saved := loadThemeMode(); saved != themeMode {
 		themeMode = saved
 		applyTheme(f.a.wnd)
+		f.a.themeIcons()
 	}
 	f.a.wnd.Hwnd().ShowWindow(co.SW_HIDE)
 }

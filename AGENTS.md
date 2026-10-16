@@ -863,11 +863,24 @@ agent**: it installs nothing, and the service gains no new inbound surface for i
   bar: its trailing dots cycle `...` `..` `.` `..` every `dotTicks` (≈ 450 ms).
   If it cannot be created, the window opens as before.
   Re-loads with the window already open (a failed save) use the in-window bar.
+  The splash is always dark, so its logo is the white wolf.
+- **The icon follows the theme** (`icon.go`): the exe's icon
+  (`installer/appicon.ico`) is the AryxD wolf in black on transparent, since a
+  file icon cannot change with the theme; the tray embeds the same wolf in
+  white (`appicon_dark.ico`). The notification-area icon follows the
+  *taskbar's* mode (`SystemUsesLightTheme`), the window icons the *app's*
+  (`isDark`, i.e. the tray's own theme setting); both are swapped on
+  `ImmersiveColorSet` and on a theme preview. The two .ico files and
+  `splash_logo.png` are generated from the same source PNG
+  (`emly-dashboard-react/public/aryx-logo.png`, 96 px): regenerate all three
+  together.
 
 ### Tray manual verification
 
-`go test` covers only `config` (edits) and `service` (`RequestCheck`, `Prepare`):
-the window, UAC and the Restart Manager need a desktop.
+`go test` covers only `config` (edits), `service` (`RequestCheck`, `Prepare`)
+and the tray's `.ico` loading: the window, UAC and the Restart Manager need a
+desktop. Switch Windows between light and dark mode with the tray running: the
+notification-area icon turns black/white at once.
 
 1. Install, log on as a **standard user**: the icon appears, with no console
    window. The menu's first line shows the service state.

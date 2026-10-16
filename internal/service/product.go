@@ -123,13 +123,27 @@ func (u *Updater) downloadsFor(p *product.Product) *download.Manager {
 	return m
 }
 
-// driverFor returns the installer driver of p: its installer technology,
-// with EMLy's /FORCEUPGRADE for EMLy only.
-func (u *Updater) driverFor(p *product.Product) installer.Driver {
+// driverFor returns the installer driver that installs version v of p: its
+// installer technology for that version (product.SetupFor - a product's
+// setup may have changed technology), with /FORCEUPGRADE for EMLy and for
+// setups built like EMLy's.
+func (u *Updater) driverFor(p *product.Product, v string) installer.Driver {
 	if u.driverFn != nil {
 		return u.driverFn(p)
 	}
-	return installer.For(installer.Spec{Slug: p.Slug, Type: p.Installer.Type, InstallDir: p.InstallDir,
+	typ, force := p.SetupFor(v)
+	return installer.For(installer.Spec{Slug: p.Slug, Type: typ, InstallDir: p.InstallDir,
+		LogsDir: config.LogsDir(), ForceUpgrade: force})
+}
+
+// uninstallerFor returns the driver for the uninstaller on disk, which
+// belongs to whatever version is installed, not to the one being installed
+// (product.UninstallerType).
+func (u *Updater) uninstallerFor(p *product.Product) installer.Driver {
+	if u.driverFn != nil {
+		return u.driverFn(p)
+	}
+	return installer.For(installer.Spec{Slug: p.Slug, Type: p.UninstallerType(), InstallDir: p.InstallDir,
 		LogsDir: config.LogsDir(), ForceUpgrade: p.Legacy})
 }
 
@@ -602,7 +616,7 @@ func (u *Updater) installProduct(ctx context.Context, cyc *cycleState, p *produc
 		label := "running setup (retry)"
 		if p.Installer.CleanReinstall {
 			label = "running setup (clean install)"
-			if uerr := u.driverFor(p).Uninstall(); uerr != nil {
+			if uerr := u.uninstallerFor(p).Uninstall(); uerr != nil {
 				// Best-effort: a failed cleanup is not itself a reason to give up
 				// on the reinstall (e.g. no uninstaller present at all).
 				u.Log.Warn("clean-install uninstall step reported an error, reinstalling anyway",
@@ -731,7 +745,7 @@ func (u *Updater) forceRedownloadProduct(ctx context.Context, cyc *cycleState, p
 // not by this function per call.
 func (u *Updater) runSetupAndVerifyProduct(p *product.Product, pend *state.Pending, label string) error {
 	u.Log.Info(label, "product", p.Slug, "path", pend.SetupPath, "version", pend.Version)
-	if err := u.driverFor(p).Install(pend.SetupPath, pend.Version); err != nil {
+	if err := u.driverFor(p, pend.Version).Install(pend.SetupPath, pend.Version); err != nil {
 		return err
 	}
 	if p.Legacy {

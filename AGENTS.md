@@ -321,6 +321,19 @@ the .iss has no BOM and Inno Setup would read UTF-8 as ANSI.
     delete the IT-managed `config.ini` (recreated from defaults by the setup)
     and the user's `data\`. Turn it on per product only when the installer is
     known to keep user data. EMLy always does the clean retry.
+  - **A product's setup can change technology at a version** (`product.SetupFor`,
+    `setupChanges` in `internal/product/setup.go`). The document names one
+    `installer.type` per product and cannot say "from version X on", so the
+    switch is pinned in the agent by slug: 3g-RocketChat is NSIS before 1.0.4
+    (`/S /D=<installDir>`, as the document says) and Inno Setup from 1.0.4,
+    with EMLy's arguments (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+    /FORCEUPGRADE /LOG=`), its setup being built from EMLy's `installer.iss`.
+    The version is the one being installed; a pre-release of 1.0.4 sorts
+    before it and stays NSIS. The clean-reinstall uninstall goes by what is on
+    disk instead (`UninstallerType`: an `unins*.exe` in `installDir` means
+    Inno), since the installed version may predate the switch. Leave the
+    document's type at `nsis` while older releases can still be offered; an
+    agent older than this change runs every 3g-RocketChat setup as NSIS.
   - **`state.json` layout**: EMLy's pending entry stays in the historical
     `pending` field, byte-identical to before, so rolling the agent back does
     not lose a downloaded EMLy install; every other product is in `products`,
